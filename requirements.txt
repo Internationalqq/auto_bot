@@ -1,0 +1,11 @@
+beautifulsoup4
+lxml
+openpyxl
+pandas
+playwright
+requests
+xlrd
+rarfile
+flask
+ddgs
+python-dotenv

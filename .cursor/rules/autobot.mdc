@@ -1,0 +1,11 @@
+---
+description: Контекст проекта auto_bot — пакет autobot, пути, документация
+alwaysApply: true
+---
+
+# auto_bot
+
+- Весь прикладной код в пакете **`autobot/`**; корень репозитория = **`REPO_ROOT`** (`autobot/paths.py`). Каталог **`data/`** всегда у корня репо, не внутри `autobot/`.
+- Архитектура, потоки данных и точки входа: **`docs/ARCHITECTURE.md`** — при изменении пайплайна или структуры обновляй этот файл.
+- Запуск: из корня репо **`py -3 tools/run_module.py autobot.<модуль> [args…]`** или **`py -3 tools/launch_web_ui.py`** / **`tools/launch_scheduled_pipeline.py`**. Обёртка: **`py -3 botctl.py web`**. У **`py -3 -m autobot…`** и **`PYTHONPATH`** на изолированном launcher часто нет эффекта — см. **`docs/ARCHITECTURE.md`**.
+- Установка cron/Task Scheduler: скрипты в **`tools/`**; рабочая директория задач = корень репозитория.

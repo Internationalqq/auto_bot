@@ -1,0 +1,37 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+data/alice_playwright_profile/
+*.pyo
+*.pyd
+
+# IDE/system artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime artifacts (local/VPS)
+*.log
+logs/
+*.pid
+*.pid.lock
+
+# Python tool caches
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Generated parser outputs
+data/downloads/
+data/extracted/
+data/reports/
+data/reports_site/
+data/tenders.json
+data/last_new_tender_ids.txt
+data/logs/
