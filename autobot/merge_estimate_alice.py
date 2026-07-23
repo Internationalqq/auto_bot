@@ -28,6 +28,35 @@ from autobot.report_prompt import REPORTS_DIR
 ALICE_PREFIX = "АЛИСА_РЫНОК_"
 OUT_PREFIX = "СВОДКА_РЫНОК_"
 
+_MOJIBAKE_ALICE_COLUMNS = {
+    "РћС‚РІРµС‚ РђР»РёСЃС‹": "Ответ Алисы",
+    "РћС‚РІРµС‚ РђР»РёСЃС‹ (РїРѕР»РЅС‹Р№)": "Ответ Алисы (полный)",
+    "Р¦РµРЅС‹ Р·Р° РµРґ. (СЂС‹РЅРѕРє, СЂСѓР±)": "Цены за ед. (рынок, руб)",
+    "РњРµРґРёР°РЅР° С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": "Медиана цена за ед. (рынок)",
+    "РњРёРЅ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": "Мин цена за ед. (рынок)",
+    "РњР°РєСЃ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": "Макс цена за ед. (рынок)",
+    "РўРµР»РµС„РѕРЅС‹ (СЃС‚СЂРѕРіРѕ)": "Телефоны (строго)",
+    "РЎСЃС‹Р»РєРё (СЃС‚СЂРѕРіРѕ)": "Ссылки (строго)",
+    "Р¦РµРЅР°-СЃР°Р№С‚-С‚РµР»РµС„РѕРЅ (json)": "Цена-сайт-телефон (json)",
+    "РСЃС‚РѕС‡РЅРёРєРё (СЃСЃС‹Р»РєРё/С‚РµР»РµС„РѕРЅС‹)": "Источники (ссылки/телефоны)",
+    "РћС€РёР±РєР° / СЃС‚Р°С‚СѓСЃ": "Ошибка / статус",
+}
+
+
+def _normalize_alice_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for old, new in _MOJIBAKE_ALICE_COLUMNS.items():
+        if old not in out.columns:
+            continue
+        if new in out.columns:
+            old_s = out[old].fillna("").astype(str)
+            new_s = out[new].fillna("").astype(str)
+            out[new] = out[new].where(new_s.str.strip() != "", out[old])
+            out = out.drop(columns=[old], errors="ignore")
+        else:
+            out = out.rename(columns={old: new})
+    return out
+
 
 def refresh_svodka_if_estimate_newer(tender_id: str) -> Path | None:
     """
@@ -99,6 +128,7 @@ def merge_estimate_and_alice(tender_id: str) -> Path | None:
     est = pd.read_excel(est_path)
     est = recalc_estimate_qty_price_from_unit(est)
     ali = pd.read_excel(alice_path)
+    ali = _normalize_alice_columns(ali)
 
     if COL_NAME not in est.columns or COL_NAME not in ali.columns:
         return None
@@ -139,6 +169,7 @@ def merge_estimate_and_alice(tender_id: str) -> Path | None:
         return None
 
     ali_small = ali[take].copy()
+    ali_small["Алиса обработано"] = "Да"
     ali_small["__merge_key"] = ali_small[COL_NAME].map(_norm_key)
     drop_name = [c for c in ali_small.columns if c != "__merge_key" and c in est.columns]
     for c in drop_name:
@@ -158,6 +189,13 @@ def merge_estimate_and_alice(tender_id: str) -> Path | None:
     merged = est.merge(ali_small, on="__merge_key", how="left")
     merged = merged.drop(columns=["__merge_key"], errors="ignore")
     merged = recalc_estimate_qty_price_from_unit(merged)
+
+    if "Алиса обработано" in merged.columns:
+        processed = merged["Алиса обработано"].fillna("").astype(str).str.strip().ne("")
+        if "Ошибка / статус" not in merged.columns:
+            merged["Ошибка / статус"] = ""
+        status = merged["Ошибка / статус"].fillna("").astype(str).str.strip()
+        merged.loc[processed & status.eq(""), "Ошибка / статус"] = "обработано, данных нет"
 
     def _rub_line(txt) -> str:
         if txt is None or (isinstance(txt, float) and pd.isna(txt)):

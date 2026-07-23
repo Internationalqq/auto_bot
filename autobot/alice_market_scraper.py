@@ -79,6 +79,55 @@ RUB_PRICE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_MOJIBAKE_ALICE_COLUMNS = {
+    "РћС‚РІРµС‚ РђР»РёСЃС‹": "Ответ Алисы",
+    "РћС‚РІРµС‚ РђР»РёСЃС‹ (РїРѕР»РЅС‹Р№)": "Ответ Алисы (полный)",
+    "Р¦РµРЅС‹ Р·Р° РµРґ. (СЂС‹РЅРѕРє, СЂСѓР±)": "Цены за ед. (рынок, руб)",
+    "РњРµРґРёР°РЅР° С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": "Медиана цена за ед. (рынок)",
+    "РњРёРЅ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": "Мин цена за ед. (рынок)",
+    "РњР°РєСЃ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": "Макс цена за ед. (рынок)",
+    "РўРµР»РµС„РѕРЅС‹ (СЃС‚СЂРѕРіРѕ)": "Телефоны (строго)",
+    "РЎСЃС‹Р»РєРё (СЃС‚СЂРѕРіРѕ)": "Ссылки (строго)",
+    "Р¦РµРЅР°-СЃР°Р№С‚-С‚РµР»РµС„РѕРЅ (json)": "Цена-сайт-телефон (json)",
+    "РСЃС‚РѕС‡РЅРёРєРё (СЃСЃС‹Р»РєРё/С‚РµР»РµС„РѕРЅС‹)": "Источники (ссылки/телефоны)",
+    "РћС€РёР±РєР° / СЃС‚Р°С‚СѓСЃ": "Ошибка / статус",
+}
+
+
+def _alice_web_event_path(tender_id: str) -> Path:
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", (tender_id or "unknown").strip())[:80] or "unknown"
+    return REPO_ROOT / "data" / "logs" / f"alice_web_events_{safe}.jsonl"
+
+
+def _append_alice_web_event(
+    tender_id: str,
+    kind: str,
+    seq: int,
+    total: int,
+    *,
+    work_name: str = "",
+    detail: str = "",
+) -> None:
+    if total <= 0 or seq <= 0:
+        return
+    event = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "source": "alice",
+        "kind": kind,
+        "tender_id": (tender_id or "").strip(),
+        "seq": int(seq),
+        "total": int(total),
+        "work_name": (work_name or "").strip()[:500],
+        "detail": (detail or "").strip()[:500],
+    }
+    try:
+        path = _alice_web_event_path(tender_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
 
 def sites_request_phrase(region: str) -> str:
     """
@@ -758,6 +807,7 @@ class _AliceTgEphemeralProgress:
             pass
 
     def begin(self, seq: int, total: int, work_name: str) -> None:
+        _append_alice_web_event(self.tender_id, "begin", seq, total, work_name=work_name)
         if not self._active() or total <= 0 or seq <= 0:
             return
         from autobot.telegram_notify import send_message_first_chunk_message_id
@@ -781,6 +831,7 @@ class _AliceTgEphemeralProgress:
         )
 
     def finish_ok(self, seq: int, total: int) -> None:
+        _append_alice_web_event(self.tender_id, "done", seq, total)
         self._delete(self._start_mid)
         self._start_mid = None
         if not self._active() or total <= 0 or seq <= 0:
@@ -797,6 +848,7 @@ class _AliceTgEphemeralProgress:
         )
 
     def finish_warn(self, seq: int, total: int, work_name: str) -> None:
+        _append_alice_web_event(self.tender_id, "warn", seq, total, work_name=work_name, detail="Пустой ответ")
         self._delete(self._start_mid)
         self._start_mid = None
         _log_alice_row_issue(
@@ -808,6 +860,7 @@ class _AliceTgEphemeralProgress:
         )
 
     def finish_err(self, seq: int, total: int, work_name: str, detail: str) -> None:
+        _append_alice_web_event(self.tender_id, "error", seq, total, work_name=work_name, detail=detail)
         self._delete(self._start_mid)
         self._start_mid = None
         _log_alice_row_issue(
@@ -824,6 +877,17 @@ def _normalize_alice_xlsx_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Старые выгрузки Алисы → имена колонок как в merge_estimate_alice."""
     if df is None or df.empty:
         return df
+    df = df.copy()
+    for old, new in _MOJIBAKE_ALICE_COLUMNS.items():
+        if old not in df.columns:
+            continue
+        if new in df.columns:
+            old_s = df[old].fillna("").astype(str)
+            new_s = df[new].fillna("").astype(str)
+            df[new] = df[new].where(new_s.str.strip() != "", df[old])
+            df = df.drop(columns=[old], errors="ignore")
+        else:
+            df = df.rename(columns={old: new})
     ren: dict[str, str] = {}
     if "Цены за ед. (рынок, руб)" not in df.columns and "Цены (строго, руб)" in df.columns:
         ren["Цены (строго, руб)"] = "Цены за ед. (рынок, руб)"
@@ -903,19 +967,19 @@ def _build_alice_output_row(m: dict, ans: str, err: str) -> dict:
     }
     return {
         **m2,
-        "РћС‚РІРµС‚ РђР»РёСЃС‹": ans,
-        "РћС‚РІРµС‚ РђР»РёСЃС‹ (РїРѕР»РЅС‹Р№)": ans,
-        "Р¦РµРЅС‹ Р·Р° РµРґ. (СЂС‹РЅРѕРє, СЂСѓР±)": _fmt_prices(prices),
-        "РњРµРґРёР°РЅР° С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": (round(float(statistics.median(prices)), 2) if prices else ""),
-        "РњРёРЅ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": (prices[0] if prices else ""),
-        "РњР°РєСЃ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": (prices[-1] if prices else ""),
-        "РўРµР»РµС„РѕРЅС‹ (СЃС‚СЂРѕРіРѕ)": "; ".join(phones[:10]),
-        "РЎСЃС‹Р»РєРё (СЃС‚СЂРѕРіРѕ)": "; ".join(urls[:10]),
-        "Р¦РµРЅР°-СЃР°Р№С‚-С‚РµР»РµС„РѕРЅ (json)": (json.dumps(bundle, ensure_ascii=False) if bundle else ""),
-        "РСЃС‚РѕС‡РЅРёРєРё (СЃСЃС‹Р»РєРё/С‚РµР»РµС„РѕРЅС‹)": (
+        "Ответ Алисы": ans,
+        "Ответ Алисы (полный)": ans,
+        "Цены за ед. (рынок, руб)": _fmt_prices(prices),
+        "Медиана цена за ед. (рынок)": (round(float(statistics.median(prices)), 2) if prices else ""),
+        "Мин цена за ед. (рынок)": (prices[0] if prices else ""),
+        "Макс цена за ед. (рынок)": (prices[-1] if prices else ""),
+        "Телефоны (строго)": "; ".join(phones[:10]),
+        "Ссылки (строго)": "; ".join(urls[:10]),
+        "Цена-сайт-телефон (json)": (json.dumps(bundle, ensure_ascii=False) if bundle else ""),
+        "Источники (ссылки/телефоны)": (
             (("; ".join(urls[:10])) + (" | " if urls and phones else "") + ("; ".join(phones[:10])))
         ),
-        "РћС€РёР±РєР° / СЃС‚Р°С‚СѓСЃ": err or ("РѕРє" if ans else "РїСѓСЃС‚РѕР№ РѕС‚РІРµС‚"),
+        "Ошибка / статус": err or ("ок" if ans else "пустой ответ"),
     }
 
 

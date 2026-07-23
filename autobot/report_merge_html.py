@@ -536,6 +536,35 @@ def _render_html(
         rub_col = "Суммы из текста ответа (авто)"
     err_col = "Ошибка / статус"
 
+    def _has_text_value(val: object) -> bool:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return False
+        s = str(val).strip()
+        return bool(s and s.casefold() not in ("nan", "none", "—", "-", "н/д", "нет"))
+
+    def _row_has_partial_market(row: pd.Series) -> bool:
+        for c in [
+            rub_col,
+            "Цены за ед. (рынок, руб)",
+            "Медиана цена за ед. (рынок)",
+            "Цена-сайт-телефон (json)",
+            "Ссылки (строго)",
+            "Телефоны (строго)",
+            "Алиса обработано",
+            alice_col,
+            alice_full_col,
+        ]:
+            if c in df.columns and _has_text_value(row.get(c, "")):
+                return True
+        return False
+
+    df = df.copy()
+    df["__has_partial_market"] = df.apply(_row_has_partial_market, axis=1)
+    df["__orig_order"] = range(len(df))
+    ready_count = int(df["__has_partial_market"].sum())
+    total_count = int(len(df))
+    df = df.sort_values(["__has_partial_market", "__orig_order"], ascending=[False, True])
+
     rows_compare: list[str] = []
     rows_alice: list[str] = []
     rows_est: list[str] = []
@@ -543,6 +572,7 @@ def _render_html(
     est_cols = [c for c in [COL_ITEM, COL_NAME, COL_UNIT, COL_QTY, COL_UNIT_PRICE, COL_SUM] if c in df.columns]
 
     for _, row in df.iterrows():
+        row_cls = " class='row-ready'" if bool(row.get("__has_partial_market", False)) else ""
         item_no = _cell(row.get(COL_ITEM, "")) if COL_ITEM in df.columns else "—"
         name = _cell(row.get(COL_NAME, ""))
         sum_smeta = _smeta_unit_display(row)
@@ -582,13 +612,13 @@ def _render_html(
         source_focus_col = _bundle_focus_html(bundle_rows, qty_scale=q_scale, unit_label=u_lbl)
 
         rows_compare.append(
-            f"<tr><td>{item_no}</td><td>{name}</td><td>{sum_smeta}</td><td class='sources-col'>{source_focus_col}</td><td>{rub_med}</td></tr>"
+            f"<tr{row_cls}><td>{item_no}</td><td>{name}</td><td>{sum_smeta}</td><td class='sources-col'>{source_focus_col}</td><td>{rub_med}</td></tr>"
         )
 
         err = _cell(row.get(err_col, "")) if err_col in df.columns else ""
         rub_raw_cell = _cell(row.get(rub_col, "")) if rub_col in df.columns else "—"
         rows_alice.append(
-            f"<tr><td>{item_no}</td><td>{name}</td><td class='alice-text'><details class='alice-details'><summary>{alice_preview_html}</summary>"
+            f"<tr{row_cls}><td>{item_no}</td><td>{name}</td><td class='alice-text'><details class='alice-details'><summary>{alice_preview_html}</summary>"
             f"<div class='alice-scroll'>{alice_full_html}</div></details></td>"
             f"<td>{rub_raw_cell}</td><td>{err}</td></tr>"
         )
@@ -600,14 +630,19 @@ def _render_html(
                 tds.append(f"<td>{_cell_estimate_numeric(raw)}</td>")
             else:
                 tds.append(f"<td>{_cell(raw)}</td>")
-        rows_est.append("<tr>" + "".join(tds) + "</tr>")
+        rows_est.append(f"<tr{row_cls}>" + "".join(tds) + "</tr>")
 
     th_est = "".join(f"<th>{html_mod.escape(c)}</th>" for c in est_cols)
 
     title_esc = html_mod.escape(tender_title)
     tid_esc = html_mod.escape(tender_id)
+    tid_js = json.dumps(tender_id, ensure_ascii=False)
     pub_raw = (publish_date or "").strip()
     pub_esc = html_mod.escape(pub_raw) if pub_raw else "—"
+    partial_note = (
+        f"Найдено/обработано строк: <b>{ready_count}</b> из <b>{total_count}</b>. "
+        "Сохранённые строки Алисы подняты наверх; если цены/сайты найдены, они показаны сразу."
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -712,6 +747,86 @@ def _render_html(
       gap: 8px;
     }}
     .viewer__hint {{ font-size: .78rem; opacity: .9; }}
+    .live-note {{
+      margin: 0 0 1rem;
+      padding: .75rem .9rem;
+      border: 1px solid rgba(45,212,191,.22);
+      border-radius: 14px;
+      background: rgba(45,212,191,.07);
+      color: #cfe7e2;
+      font-size: .92rem;
+      line-height: 1.45;
+    }}
+    .report-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .55rem;
+      margin: 0 0 1rem;
+    }}
+    .report-btn {{
+      border: 1px solid rgba(45,212,191,.32);
+      background: rgba(45,212,191,.09);
+      color: #d7fff3;
+      border-radius: 10px;
+      padding: .55rem .75rem;
+      cursor: pointer;
+      font-size: .86rem;
+      font-weight: 650;
+    }}
+    .report-btn:hover {{ background: rgba(45,212,191,.15); }}
+    .report-btn.secondary {{
+      border-color: rgba(255,255,255,.13);
+      background: rgba(255,255,255,.05);
+      color: #dbe7f7;
+    }}
+    .report-status {{
+      color: var(--muted);
+      font-size: .84rem;
+      line-height: 1.35;
+    }}
+    .site-log-fab {{
+      position: fixed; right: 18px; bottom: 18px; z-index: 50;
+      width: 54px; height: 54px; border-radius: 999px;
+      border: 1px solid rgba(45,212,191,.42);
+      background: linear-gradient(180deg, #1f766f, #155e59);
+      color: #fff; cursor: pointer; box-shadow: 0 14px 32px rgba(0,0,0,.42);
+      display: flex; align-items: center; justify-content: center; font-size: 23px;
+    }}
+    .site-log-fab.has-new::after {{
+      content: ""; position: absolute; right: 7px; top: 7px;
+      width: 10px; height: 10px; border-radius: 999px; background: #5eead4;
+      box-shadow: 0 0 0 3px rgba(94,234,212,.18);
+    }}
+    .site-log-panel {{
+      position: fixed; right: 18px; bottom: 84px; z-index: 49;
+      width: min(390px, calc(100vw - 28px)); max-height: min(560px, calc(100vh - 120px));
+      border: 1px solid rgba(45,212,191,.28);
+      border-radius: 15px; overflow: hidden;
+      background: linear-gradient(180deg, #121a30, #0e1528);
+      box-shadow: 0 18px 46px rgba(0,0,0,.5);
+    }}
+    .site-log-panel[hidden] {{ display: none !important; }}
+    .site-log-head {{
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 11px 12px; border-bottom: 1px solid var(--border);
+      color: #e4edff; font-size: 13px; font-weight: 750;
+    }}
+    .site-log-close {{
+      border: 1px solid rgba(255,255,255,.13); background: rgba(15,19,36,.85);
+      color: #c8d8f8; border-radius: 8px; cursor: pointer; padding: 4px 8px;
+    }}
+    .site-log-feed {{
+      max-height: 430px; overflow: auto; padding: 10px;
+      display: flex; flex-direction: column; gap: 8px;
+    }}
+    .site-log-empty {{ color: var(--muted); font-size: 12px; line-height: 1.45; padding: 4px 2px 8px; }}
+    .site-log-msg {{
+      border: 1px solid rgba(45,212,191,.13); border-radius: 11px;
+      background: rgba(8, 12, 24, 0.48); padding: 8px 9px;
+    }}
+    .site-log-meta {{ color: var(--muted); font-size: 10px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }}
+    .site-log-text {{ color: #edf3ff; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }}
     .viewer__table {{ width: 100%; overflow: auto; }}
     .panel {{ display: none; }}
     .panel.active {{ display: block; }}
@@ -728,6 +843,13 @@ def _render_html(
     }}
     th {{ color: var(--muted); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }}
     tr:last-child td {{ border-bottom: none; }}
+    tr.row-ready td {{
+      background: rgba(34, 197, 94, .055);
+      border-bottom-color: rgba(34, 197, 94, .18);
+    }}
+    tr.row-ready:hover td {{
+      background: rgba(34, 197, 94, .095);
+    }}
     .contacts {{ font-size: .78rem; line-height: 1.35; }}
     .contacts a {{ color: var(--teal); word-break: break-all; }}
     .sources-col {{ min-width: 560px; }}
@@ -839,6 +961,13 @@ def _render_html(
       <p><code style="background:#232d3b;padding:.15rem .4rem;border-radius:6px;">{tid_esc}</code> · опубликован: <b>{pub_esc}</b></p>
     </header>
     {viability_html}
+    <div class="live-note">{partial_note}</div>
+    <div class="report-actions">
+      <button type="button" class="report-btn" onclick="startTenderCompare(false)">Продолжить поиск цен</button>
+      <button type="button" class="report-btn secondary" onclick="startTenderCompare(true)">Начать поиск заново</button>
+      <button type="button" class="report-btn secondary" onclick="location.reload()">Обновить страницу</button>
+      <span class="report-status" id="liveStatus">Если Алиса сейчас работает, таблица будет периодически обновляться.</span>
+    </div>
     <div class="deck" id="cardsDeck">
       <article class="card card--compare active" data-panel="panel-compare">
         <div class="card__head">Сравнение</div>
@@ -893,7 +1022,126 @@ def _render_html(
       </div>
     </section>
   </div>
+  <button type="button" class="site-log-fab" id="siteLogFab" onclick="toggleSiteLog()" title="Логи и сообщения выполнения">🧾</button>
+  <aside class="site-log-panel" id="siteLogPanel" hidden>
+    <div class="site-log-head">
+      <span>🧾 Логи выполнения</span>
+      <button type="button" class="site-log-close" onclick="toggleSiteLog(false)">закрыть</button>
+    </div>
+    <div class="site-log-feed" id="siteLogFeed">
+      <div class="site-log-empty">Пока событий нет. Когда Алиса работает по этому тендеру, сообщения появятся здесь.</div>
+    </div>
+  </aside>
   <script>
+    const TENDER_ID = {tid_js};
+    let siteLogOpen = false;
+    let siteLogLastKey = "";
+
+    function toggleSiteLog(force) {{
+      const panel = document.getElementById("siteLogPanel");
+      const fab = document.getElementById("siteLogFab");
+      if (!panel) return;
+      siteLogOpen = typeof force === "boolean" ? force : panel.hidden;
+      panel.hidden = !siteLogOpen;
+      if (siteLogOpen && fab) fab.classList.remove("has-new");
+      const feed = document.getElementById("siteLogFeed");
+      if (siteLogOpen && feed) feed.scrollTop = feed.scrollHeight;
+    }}
+
+    function renderSiteLog(events) {{
+      const feed = document.getElementById("siteLogFeed");
+      const fab = document.getElementById("siteLogFab");
+      if (!feed) return;
+      const list = Array.isArray(events) ? events.filter((ev) => !ev.tender_id || ev.tender_id === TENDER_ID).slice(-90) : [];
+      const last = list.length ? JSON.stringify(list[list.length - 1]) : "";
+      if (last && last !== siteLogLastKey && !siteLogOpen && fab) fab.classList.add("has-new");
+      siteLogLastKey = last;
+      feed.replaceChildren();
+      if (!list.length) {{
+        const empty = document.createElement("div");
+        empty.className = "site-log-empty";
+        empty.textContent = "Пока событий нет. Когда Алиса работает по этому тендеру, сообщения появятся здесь.";
+        feed.appendChild(empty);
+        return;
+      }}
+      for (const ev of list) {{
+        const kind = String(ev.kind || "");
+        const msg = document.createElement("div");
+        msg.className = "site-log-msg" + (kind ? " is-" + kind : "");
+        const meta = document.createElement("div");
+        meta.className = "site-log-meta";
+        meta.textContent = String(ev.ts || "сейчас").replace("T", " ");
+        const text = document.createElement("div");
+        text.className = "site-log-text";
+        const icon = kind === "done" ? "✅" : (kind === "error" || kind === "warn") ? "⚠️" : kind === "begin" ? "🔎" : "🧾";
+        const rawText = String(ev.text || "");
+        text.textContent = rawText.startsWith(icon) ? rawText : (icon + " " + rawText);
+        msg.appendChild(meta);
+        msg.appendChild(text);
+        feed.appendChild(msg);
+      }}
+      if (siteLogOpen) feed.scrollTop = feed.scrollHeight;
+    }}
+
+    async function startTenderCompare(resetAlice) {{
+      const ok = confirm(
+        resetAlice
+          ? "Начать поиск цен заново для этого тендера?\\n\\nСохранённый прогресс Алисы будет отброшен."
+          : "Продолжить поиск цен для этого тендера?\\n\\nУже сохранённые строки Алисы будут использованы."
+      );
+      if (!ok) return;
+      const status = document.getElementById("liveStatus");
+      if (status) status.textContent = "Отправляю задачу на сервер…";
+      try {{
+        const r = await fetch(resetAlice ? "/api/generate-merge-site-one-rerun-alice" : "/api/generate-merge-site-one", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json", "Accept": "application/json" }},
+          body: JSON.stringify({{ tender_id: TENDER_ID }}),
+        }});
+        const data = await r.json().catch(() => ({{}}));
+        if (!r.ok || !data.ok) {{
+          alert(data.message || ("Не удалось запустить задачу, HTTP " + r.status));
+          if (status) status.textContent = data.message || "Запуск не выполнен.";
+          return;
+        }}
+        if (status) status.textContent = "Задача запущена. Таблица будет обновляться по мере сохранения строк.";
+      }} catch (e) {{
+        alert("Ошибка запроса: " + e);
+        if (status) status.textContent = "Ошибка запроса к серверу.";
+      }}
+    }}
+
+    (function autoRefreshWhileAliceRuns() {{
+      let lastDone = null;
+      let lastReloadAt = Date.now();
+      async function tick() {{
+        const status = document.getElementById("liveStatus");
+        try {{
+          const r = await fetch("/api/merge-site-status", {{ cache: "no-store" }});
+          if (!r.ok) return;
+          const st = await r.json();
+          renderSiteLog(st.chat_events || []);
+          if (!st.running || st.current_tid !== TENDER_ID) return;
+          const done = Number(st.alice_done || 0);
+          const total = Number(st.alice_total || 0);
+          if (status && total > 0) {{
+            status.textContent = "Алиса работает: " + done + "/" + total + ". Страница автообновляется, чтобы показать новые строки.";
+          }}
+          if (lastDone === null) {{
+            lastDone = done;
+            return;
+          }}
+          if (done > lastDone && Date.now() - lastReloadAt > 12000) {{
+            lastReloadAt = Date.now();
+            location.reload();
+          }}
+          lastDone = Math.max(lastDone, done);
+        }} catch (e) {{}}
+      }}
+      setInterval(tick, 3000);
+      tick();
+    }})();
+
     (function() {{
       const cards = Array.from(document.querySelectorAll(".deck .card"));
       const panels = Array.from(document.querySelectorAll(".panel"));
@@ -930,11 +1178,18 @@ def write_tender_report_site(tender_id: str) -> Path | None:
         traceback.print_exc(file=sys.stderr)
     summary = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
     if not summary.is_file():
-        return None
-    try:
-        df = pd.read_excel(summary)
-    except Exception:
-        return None
+        est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+        if not est_path.is_file():
+            return None
+        try:
+            df = pd.read_excel(est_path)
+        except Exception:
+            return None
+    else:
+        try:
+            df = pd.read_excel(summary)
+        except Exception:
+            return None
     if COL_NAME not in df.columns:
         return None
     df = recalc_estimate_qty_price_from_unit(df)

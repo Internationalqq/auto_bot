@@ -72,10 +72,14 @@ merge_site_state: dict = {
     "total": 0,
     "done": 0,
     "current_tid": "",
+    "alice_done": 0,
+    "alice_total": 0,
+    "last_alice_chat_done": 0,
     "started_at": None,
     "ended_at": None,
     "error_ids": [],
     "log_lines": [],
+    "chat_events": [],
     "last_ended_at": None,
     "last_summary": "",
     "last_reason_counts": {},
@@ -114,6 +118,78 @@ def _tg_flush_spool() -> None:
         flush_spooled_messages(cfg[0])
     except Exception:
         pass
+
+
+def _merge_chat_add(kind: str, text: str, *, tender_id: str = "", seq: int = 0, total: int = 0) -> None:
+    event = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "source": "web",
+        "kind": kind,
+        "text": (text or "").strip()[:700],
+        "tender_id": (tender_id or "").strip(),
+        "seq": int(seq or 0),
+        "total": int(total or 0),
+    }
+    if not event["text"]:
+        return
+    with merge_site_lock:
+        events = list(merge_site_state.get("chat_events") or [])
+        events.append(event)
+        merge_site_state["chat_events"] = events[-120:]
+
+
+def _alice_web_events_path(tender_id: str) -> Path:
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", (tender_id or "unknown").strip())[:80] or "unknown"
+    return REPO_ROOT / "data" / "logs" / f"alice_web_events_{safe}.jsonl"
+
+
+def _read_alice_web_events(tender_id: str, *, limit: int = 80) -> list[dict]:
+    path = _alice_web_events_path(tender_id)
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-limit:]
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        kind = str(ev.get("kind") or "")
+        seq = int(ev.get("seq") or 0)
+        total = int(ev.get("total") or 0)
+        work = str(ev.get("work_name") or "").strip()
+        detail = str(ev.get("detail") or "").strip()
+        tid = str(ev.get("tender_id") or tender_id or "").strip()
+        if kind == "begin":
+            text = f"Работа {seq} из {total} началась" + (f": {work}" if work else "")
+        elif kind == "done":
+            text = f"✅ {seq}/{total} · готово."
+        elif kind == "warn":
+            text = f"⚠️ {seq}/{total} · пустой ответ" + (f": {work}" if work else "")
+        elif kind == "error":
+            text = f"⚠️ {seq}/{total} · ошибка" + (f": {detail}" if detail else "")
+        else:
+            text = str(ev.get("text") or "").strip()
+        if not text:
+            continue
+        out.append(
+            {
+                "ts": str(ev.get("ts") or ""),
+                "source": "alice",
+                "kind": kind,
+                "text": text[:700],
+                "tender_id": tid,
+                "seq": seq,
+                "total": total,
+            }
+        )
+    return out
 
 
 def eis_notice_url(tender_id: str, stored_url: str | None) -> str:
@@ -309,6 +385,50 @@ INDEX_TEMPLATE = """
       box-shadow: var(--shadow);
     }
     .region-title { font-size: 13px; font-weight: 700; color: #d2defa; margin: 0 0 9px 0; padding-bottom: 6px; border-bottom: 1px solid #243356; }
+    .tender-filter-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin: 4px 0 14px;
+      padding: 10px 12px;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: rgba(8, 12, 24, 0.42);
+      color: #b8c7ea;
+      font-size: 12px;
+    }
+    .tender-filter-row label { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+    .tender-filter-row select {
+      min-width: 230px;
+      max-width: 100%;
+      background: #0b1223;
+      border: 1px solid var(--border-soft);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      outline: none;
+    }
+    .tender-filter-row select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(75, 101, 187, 0.2);
+    }
+    .tender-filter-row a { color: #87bbff; text-decoration: none; }
+    .tender-filter-row a:hover { text-decoration: underline; color: #b8d4ff; }
+    .tender-group { margin-top: 14px; }
+    .tender-group:first-of-type { margin-top: 8px; }
+    .tender-group-title {
+      margin: 0 0 10px;
+      padding: 0 0 7px;
+      border-bottom: 1px solid #243356;
+      color: #d2defa;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      line-height: 1.3;
+    }
+    .tender-group-body { margin-top: 0; }
     .tender-grid-main { display: grid; grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: 9px; }
     .tender-cell { display: flex; flex-direction: column; gap: 5px; position: relative; min-width: 0; }
     .tender-card {
@@ -325,6 +445,7 @@ INDEX_TEMPLATE = """
       overflow: hidden;
     }
     .tender-card:hover { transform: translateY(-2px); border-color: #607dce; box-shadow: 0 8px 20px rgba(0,0,0,.28); }
+    .tender-card[data-href] { cursor: pointer; }
     .tender-card.no-data { border-left: 3px solid var(--danger); }
     .tender-card-link {
       display: block;
@@ -546,6 +667,50 @@ INDEX_TEMPLATE = """
     .merge-bar-wrap { height: 12px; background: #0f1324; border-radius: 8px; overflow: hidden; margin-top: 10px; border: 1px solid #2b365e; }
     .merge-bar-fill { height: 100%; background: linear-gradient(90deg, #3d5290, #5ecf8a); transition: width 0.35s ease; border-radius: 8px; }
     .merge-logs { margin-top: 8px; max-height: 140px; overflow: auto; border: 1px solid #2b365e; border-radius: 8px; background: #0f1324; padding: 8px; font-family: Consolas, monospace; font-size: 11px; white-space: pre-wrap; }
+    .site-chat-fab {
+      position: fixed; right: 18px; bottom: 18px; z-index: 50;
+      width: 54px; height: 54px; border-radius: 999px;
+      border: 1px solid rgba(109, 183, 255, 0.62);
+      background: linear-gradient(180deg, #397ed1, #285da4);
+      color: #fff; cursor: pointer; box-shadow: 0 14px 32px rgba(0,0,0,.38);
+      display: flex; align-items: center; justify-content: center; font-size: 23px;
+    }
+    .site-chat-fab.has-new::after {
+      content: ""; position: absolute; right: 7px; top: 7px;
+      width: 10px; height: 10px; border-radius: 999px; background: #5ecf8a;
+      box-shadow: 0 0 0 3px rgba(94,207,138,.22);
+    }
+    .site-chat-panel {
+      position: fixed; right: 18px; bottom: 84px; z-index: 49;
+      width: min(390px, calc(100vw - 28px)); max-height: min(560px, calc(100vh - 120px));
+      border: 1px solid rgba(109, 183, 255, 0.42);
+      border-radius: 15px; overflow: hidden;
+      background: linear-gradient(180deg, #121a30, #0e1528);
+      box-shadow: 0 18px 46px rgba(0,0,0,.46);
+    }
+    .site-chat-panel[hidden] { display: none !important; }
+    .site-chat-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 11px 12px; border-bottom: 1px solid var(--border-soft);
+      color: #e4edff; font-size: 13px; font-weight: 750;
+    }
+    .site-chat-close {
+      border: 1px solid #3a4677; background: rgba(15,19,36,.85);
+      color: #c8d8f8; border-radius: 8px; cursor: pointer; padding: 4px 8px;
+    }
+    .site-chat-feed {
+      max-height: 430px; overflow: auto; padding: 10px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .site-chat-empty { color: var(--muted-soft); font-size: 12px; line-height: 1.45; padding: 4px 2px 8px; }
+    .site-chat-msg {
+      border: 1px solid rgba(109, 183, 255, 0.13); border-radius: 11px;
+      background: rgba(8, 12, 24, 0.48); padding: 8px 9px;
+    }
+    .site-chat-msg.is-done { border-color: rgba(94,207,138,.32); }
+    .site-chat-msg.is-error, .site-chat-msg.is-warn { border-color: rgba(255,201,204,.28); }
+    .site-chat-meta { color: #7d8fbb; font-size: 10px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+    .site-chat-text { color: #edf3ff; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
     .cov-banner { padding: 13px 16px; border-radius: 12px; margin-bottom: 16px; font-size: 13px; line-height: 1.5; }
     .cov-warn { background: rgba(90, 26, 34, 0.45); border: 1px solid #a04048; color: #ffc9cc; }
     .cov-partial { background: rgba(77, 53, 30, 0.45); border: 1px solid #8a623d; color: #ffd7a8; }
@@ -783,14 +948,33 @@ INDEX_TEMPLATE = """
     <section class="tenders-section" aria-labelledby="tendersTitle">
       <h2 class="section-title" id="tendersTitle">Список тендеров</h2>
       <p class="section-lead">В каждой карточке показан один рекомендуемый следующий шаг. Повторные и служебные операции находятся в «Дополнительных действиях».</p>
+      <form class="tender-filter-row" method="get" action="/">
+        {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
+        <input type="hidden" name="sort" value="{{ sort_mode }}">
+        <label>
+          Регион
+          <select name="region" onchange="this.form.submit()">
+            <option value="" {% if not selected_region %}selected{% endif %}>Все регионы</option>
+            {% for region in region_options %}
+            <option value="{{ region }}" {% if selected_region == region %}selected{% endif %}>{{ region }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% if selected_region %}
+        <a href="/?sort={{ sort_mode }}{% if show_all %}&all=1{% endif %}">сбросить регион</a>
+        {% endif %}
+      </form>
       <p class="section-lead" style="margin-top:-4px;">
         Показано <strong>{{ visible_count }}</strong> из <strong>{{ tender_count }}</strong> тендеров
+        {% if selected_region %}
+        · регион: <strong>{{ selected_region }}</strong>
+        {% endif %}
         {% if show_all %}
         · все этапы
-        · <a href="/?sort={{ sort_mode }}" style="color:#87bbff;">показать только «Подача заявок»</a>
+        · <a href="/?sort={{ sort_mode }}{% if selected_region %}&region={{ selected_region|urlencode }}{% endif %}" style="color:#87bbff;">показать только «Подача заявок»</a>
         {% else %}
         · только этап «Подача заявок»
-        · <a href="/?all=1&sort={{ sort_mode }}" style="color:#87bbff;">показать все этапы</a>
+        · <a href="/?all=1&sort={{ sort_mode }}{% if selected_region %}&region={{ selected_region|urlencode }}{% endif %}" style="color:#87bbff;">показать все этапы</a>
         {% endif %}
       </p>
 
@@ -801,7 +985,7 @@ INDEX_TEMPLATE = """
           <div class="tender-grid-main">
         {% for t in group.tenders %}
           <div class="tender-cell">
-          <div class="tender-card{% if not t.has_estimate %} no-data{% endif %}">
+          <div class="tender-card{% if not t.has_estimate %} no-data{% endif %}" data-href="/merge-report/{{ t.tender_id }}/">
             {% if t.has_merge_report %}
             <a class="tender-card-link" href="/merge-report/{{ t.tender_id }}/">
               <div class="title">{{ t.display_title }}</div>
@@ -854,7 +1038,7 @@ INDEX_TEMPLATE = """
             </div>
 
             <div class="tender-status-row">
-              {% if t.has_merge_report %}
+              {% if t.has_svodka %}
               <span class="tag tag-merge">&#1050;&#1072;&#1088;&#1090;&#1086;&#1095;&#1082;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;</span>
               {% elif t.has_alice_partial %}
               <span class="tag tag-merge">&#1045;&#1089;&#1090;&#1100; &#1095;&#1072;&#1089;&#1090;&#1080;&#1095;&#1085;&#1099;&#1077; &#1094;&#1077;&#1085;&#1099;</span>
@@ -868,12 +1052,15 @@ INDEX_TEMPLATE = """
             </div>
 
             <div class="tender-actions">
-              {% if t.has_merge_report %}
+              {% if t.has_svodka %}
               <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть сравнение цен</a>
-              <p class="tender-next">Готово: цены заказчика уже сопоставлены с рынком.</p>
+              <p class="tender-next">Готово или частично готово: сохранённые строки Алисы будут вверху таблицы.</p>
+              {% elif t.has_alice_partial %}
+              <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть частичные цены</a>
+              <p class="tender-next">Есть сохранённый прогресс Алисы. Можно открыть карточку и продолжить поиск.</p>
               {% elif t.has_estimate %}
-              <button type="button" class="tender-act tender-act--primary tender-act--main tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')">Найти рыночные цены</button>
-              <p class="tender-next">Смета готова. Следующий шаг найдёт цены и соберёт сравнение.</p>
+              <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Открыть карточку тендера</a>
+              <p class="tender-next">Смета готова. В карточке можно запустить поиск цен и смотреть сохранённые строки.</p>
               {% else %}
               <button type="button" class="tender-act tender-act--primary tender-act--main tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')">Скачать документы и подготовить сравнение</button>
               <p class="tender-next">Смета не извлечена. Программа попробует скачать документы повторно.</p>
@@ -1051,7 +1238,25 @@ INDEX_TEMPLATE = """
       <textarea id="nmckJsonOut" readonly hidden style="width:100%;min-height:220px;margin-top:10px;font-family:Consolas,monospace;font-size:11px;line-height:1.35;background:#0b1223;border:1px solid var(--border-soft);color:var(--text);border-radius:8px;padding:10px;box-sizing:border-box;resize:vertical;"></textarea>
     </section>
   </div>
+  <button type="button" class="site-chat-fab" id="siteChatFab" onclick="toggleSiteChat()" title="Логи и сообщения выполнения">🧾</button>
+  <aside class="site-chat-panel" id="siteChatPanel" hidden>
+    <div class="site-chat-head">
+      <span>🧾 Логи выполнения</span>
+      <button type="button" class="site-chat-close" onclick="toggleSiteChat(false)">закрыть</button>
+    </div>
+    <div class="site-chat-feed" id="siteChatFeed">
+      <div class="site-chat-empty">Пока событий нет. Когда запустится Алиса, здесь появятся сообщения как в Telegram.</div>
+    </div>
+  </aside>
   <script>
+    document.addEventListener("click", function(e) {
+      const card = e.target && e.target.closest ? e.target.closest(".tender-card[data-href]") : null;
+      if (!card) return;
+      if (e.target.closest("a, button, summary, details, input, select, textarea, label")) return;
+      const href = card.getAttribute("data-href");
+      if (href) window.location.href = href;
+    });
+
     (function bindRebuildSelect() {
       const sel = document.getElementById("rebuildTenderSelect");
       if (!sel) return;
@@ -1728,6 +1933,57 @@ INDEX_TEMPLATE = """
       return { result: resultEl, issue: issueEl, next: nextEl };
     }
 
+    let siteChatOpen = false;
+    let siteChatLastKey = "";
+
+    function toggleSiteChat(force) {
+      const panel = document.getElementById("siteChatPanel");
+      const fab = document.getElementById("siteChatFab");
+      if (!panel) return;
+      siteChatOpen = typeof force === "boolean" ? force : panel.hidden;
+      panel.hidden = !siteChatOpen;
+      if (siteChatOpen && fab) fab.classList.remove("has-new");
+      const feed = document.getElementById("siteChatFeed");
+      if (siteChatOpen && feed) feed.scrollTop = feed.scrollHeight;
+    }
+
+    function renderSiteChat(events) {
+      const feed = document.getElementById("siteChatFeed");
+      const fab = document.getElementById("siteChatFab");
+      if (!feed) return;
+      const list = Array.isArray(events) ? events.slice(-90) : [];
+      const last = list.length ? JSON.stringify(list[list.length - 1]) : "";
+      if (last && last !== siteChatLastKey && !siteChatOpen && fab) fab.classList.add("has-new");
+      siteChatLastKey = last;
+      feed.replaceChildren();
+      if (!list.length) {
+        const empty = document.createElement("div");
+        empty.className = "site-chat-empty";
+        empty.textContent = "Пока событий нет. Когда запустится Алиса, здесь появятся сообщения как в Telegram.";
+        feed.appendChild(empty);
+        return;
+      }
+      for (const ev of list) {
+        const msg = document.createElement("div");
+        const kind = String(ev.kind || "");
+        msg.className = "site-chat-msg" + (kind ? " is-" + kind : "");
+        const meta = document.createElement("div");
+        meta.className = "site-chat-meta";
+        const ts = String(ev.ts || "").replace("T", " ");
+        const tid = ev.tender_id ? " · " + ev.tender_id : "";
+        meta.textContent = (ts || "сейчас") + tid;
+        const text = document.createElement("div");
+        text.className = "site-chat-text";
+        const icon = kind === "done" ? "✅" : (kind === "error" || kind === "warn") ? "⚠️" : kind === "begin" ? "🔎" : "🧾";
+        const rawText = String(ev.text || "");
+        text.textContent = rawText.startsWith(icon) ? rawText : (icon + " " + rawText);
+        msg.appendChild(meta);
+        msg.appendChild(text);
+        feed.appendChild(msg);
+      }
+      if (siteChatOpen) feed.scrollTop = feed.scrollHeight;
+    }
+
     async function refreshStatus() {
       let pr = { running: false };
       let mr = { running: false };
@@ -1844,17 +2100,30 @@ INDEX_TEMPLATE = """
         const ptext = document.getElementById("mergePercentText");
         const det = document.getElementById("mergeSiteDetail");
         const mlogs = document.getElementById("mergeSiteLogs");
+        const aliceDone = Number(mr.alice_done || 0);
+        const aliceTotal = Number(mr.alice_total || 0);
+        const aliceLeft = Number(mr.alice_left || Math.max(0, aliceTotal - aliceDone));
         if (fill) fill.style.width = Math.min(100, Math.max(0, pct)) + "%";
         if (ptext) {
-          ptext.textContent = pct + "% · " + (mr.done ?? 0) + " / " + (mr.total ?? 0) + (mr.current_tid ? " · сейчас: " + mr.current_tid : "");
+          let text = pct + "% · тендеры " + (mr.done ?? 0) + " / " + (mr.total ?? 0);
+          if (aliceTotal > 0) text += " · Алиса " + aliceDone + " / " + aliceTotal;
+          if (mr.current_tid) text += " · сейчас: " + mr.current_tid;
+          ptext.textContent = text;
         }
         if (det) {
-          det.textContent = mergeRun ? "Ищем рыночные цены и собираем страницы сравнения…" : "";
+          if (mergeRun && aliceTotal > 0 && aliceDone < aliceTotal) {
+            det.textContent = "Алиса ищет цены по строкам сметы: обработано " + aliceDone + " из " + aliceTotal + ", осталось " + aliceLeft + ".";
+          } else if (mergeRun && aliceTotal > 0 && aliceDone >= aliceTotal) {
+            det.textContent = "Алиса обработала строки сметы, собираем страницу сравнения…";
+          } else {
+            det.textContent = mergeRun ? "Ищем рыночные цены и собираем страницы сравнения…" : "";
+          }
         }
         if (mlogs) {
           mlogs.textContent = (mr.log_tail && mr.log_tail.length ? mr.log_tail.join("\\n") : "");
           mlogs.scrollTop = mlogs.scrollHeight;
         }
+        renderSiteChat(mr.chat_events || []);
 
         const mis = document.getElementById("mergeIdleSummary");
         const mreason = document.getElementById("mergeMissingReason");
@@ -1955,7 +2224,7 @@ def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
     которые реально идут в alice_market_scraper.py
     (без явных дублей и без слишком коротких названий).
     """
-    from autobot.market_analytics import COL_DUP, COL_NAME, extract_ruble_amounts
+    from autobot.market_analytics import COL_DUP, COL_NAME
 
     tid = (tid or "").strip()
     if not tid:
@@ -2003,14 +2272,10 @@ def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
         name = str(row.get(COL_NAME, "") or "").strip()
         if not name:
             continue
-        strict = str(row.get("Цены за ед. (рынок, руб)", "") or "").strip()
-        has_strict = strict and strict.casefold() not in ("nan", "none", "—", "-", "н/д", "нет")
-        if has_strict:
-            done += 1
-            continue
-        reply = str(row.get("Ответ Алисы", "") or "").strip()
-        if reply and extract_ruble_amounts(reply):
-            done += 1
+        # Частичный файл Алисы содержит только уже пройденные строки.
+        # Для прогресса считаем строку обработанной даже если цена не найдена
+        # или ответ был пустым/ошибочным — Telegram считает этот шаг так же.
+        done += 1
     return min(done, total), total
 
 def _alice_output_path_for_tender(tid: str) -> Path:
@@ -2056,7 +2321,7 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
                 "has_report": has_report,
                 "has_display_data": has_display_data,
                 "has_estimate": estimate_rows > 0,
-                "has_merge_report": merge_html_exists or svodka_exists or alice_partial_exists,
+                "has_merge_report": merge_html_exists or svodka_exists or alice_partial_exists or estimate_rows > 0,
                 "has_svodka": svodka_exists,
                 "has_alice_partial": alice_partial_exists,
                 "report_file": report_file,
@@ -2247,8 +2512,14 @@ def index():
     sort_mode = (request.args.get("sort", "") or "publish_desc").strip().lower()
     if sort_mode not in ("publish_desc", "publish_asc"):
         sort_mode = "publish_desc"
+    region_options = sorted({str(x.get("region") or "Без региона") for x in sidebar_items})
+    selected_region = (request.args.get("region", "") or "").strip()
+    if selected_region not in region_options:
+        selected_region = ""
     only_submission = not show_all  # True = только «Подача заявок» (режим по умолчанию)
     visible_items = [x for x in sidebar_items if (x.get("stage_open") if only_submission else True)]
+    if selected_region:
+        visible_items = [x for x in visible_items if str(x.get("region") or "Без региона") == selected_region]
     newest_first = sort_mode == "publish_desc"
     visible_items.sort(
         key=lambda x: (
@@ -2281,6 +2552,8 @@ def index():
         show_all=show_all,
         sort_mode=sort_mode,
         visible_count=visible_count,
+        region_options=region_options,
+        selected_region=selected_region,
     )
 
 
@@ -2788,9 +3061,13 @@ def _run_merge_site_all_worker(
             merge_site_state["total"] = len(ids)
             merge_site_state["done"] = 0
             merge_site_state["current_tid"] = ""
+            merge_site_state["alice_done"] = 0
+            merge_site_state["alice_total"] = 0
+            merge_site_state["last_alice_chat_done"] = 0
             merge_site_state["started_at"] = datetime.now().isoformat(timespec="seconds")
             merge_site_state["ended_at"] = None
             merge_site_state["error_ids"] = []
+            merge_site_state["chat_events"] = []
             mode = "только отсутствующие/ошибки" if only_missing else "все сметы"
             merge_site_state["log_lines"] = [f"Режим: {mode}. К обработке: {len(ids)}"]
             if not ids:
@@ -2804,12 +3081,17 @@ def _run_merge_site_all_worker(
                 merge_site_state["last_reason_counts"] = reason_counts
                 return
 
+        _merge_chat_add("start", f"Старт подготовки сравнений. Режим: {mode}. К обработке: {len(ids)}")
         for i, tid in enumerate(ids):
             pref = f"📊 <b>{i + 1}/{len(ids)}</b> · <code>{tid}</code>"
             with merge_site_lock:
                 merge_site_state["current_tid"] = tid
+                merge_site_state["alice_done"] = 0
+                merge_site_state["alice_total"] = 0
+                merge_site_state["last_alice_chat_done"] = 0
                 merge_site_state["log_lines"].append(f"[{i + 1}/{len(ids)}] {tid}…")
                 merge_site_state["log_lines"] = merge_site_state["log_lines"][-cap:]
+            _merge_chat_add("tender", f"📊 {i + 1}/{len(ids)} · тендер {tid}: старт", tender_id=tid)
             _tg_send(f"{pref}\n🟡 Старт")
             try:
                 est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
@@ -2857,6 +3139,7 @@ def _run_merge_site_all_worker(
                 except Exception:
                     _cnt = 0
                 if _cnt > 0:
+                    _merge_chat_add("estimate", f"Смета: {_cnt} позиций. Запускаю Алису…", tender_id=tid)
                     _tg_send(f"{pref}\n🟡 Смета: <b>{_cnt}</b> поз.")
                     _tg_flush_spool()
                     # «Запускаю Алису» — до тяжёлых проверок и до subprocess, иначе при spool сообщение
@@ -2876,10 +3159,15 @@ def _run_merge_site_all_worker(
 
                 done_before, total_works = _alice_progress_for_tender(tid)
                 rem_before = max(0, total_works - done_before)
+                with merge_site_lock:
+                    merge_site_state["alice_done"] = int(done_before)
+                    merge_site_state["alice_total"] = int(total_works)
                 if total_works > 0:
                     if rem_before > 0:
+                        _merge_chat_add("alice", f"Алиса: обработано строк сметы {done_before}/{total_works}, осталось {rem_before}", tender_id=tid, seq=done_before, total=total_works)
                         _tg_send(f"{pref}\n🟡 Алиса: обработано строк сметы <b>{done_before}/{total_works}</b>…")
                     else:
+                        _merge_chat_add("alice", f"Алиса уже обработала строки сметы: {done_before}/{total_works}", tender_id=tid, seq=done_before, total=total_works)
                         _tg_send(f"{pref}\n🟢 Алиса уже обработала строки сметы: <b>{done_before}/{total_works}</b>")
                     _tg_flush_spool()
                 _tg_flush_spool()
@@ -2894,24 +3182,33 @@ def _run_merge_site_all_worker(
                         else:
                             merge_site_state["log_lines"].append(f"  → Алиса код {alice_code}")
                     if alice_code == 124:
+                        _merge_chat_add("error", "⚠️ Алиса зависла и остановлена по таймауту", tender_id=tid)
                         _tg_send(f"{pref}\n⚠️ Алиса зависла и остановлена по таймауту")
                     else:
+                        _merge_chat_add("error", f"⚠️ Алиса завершилась с кодом {alice_code}", tender_id=tid)
                         _tg_send(f"{pref}\n⚠️ Алиса код <code>{alice_code}</code>")
                     errors.append(tid)
                     continue
 
                 done_after, total_after = _alice_progress_for_tender(tid)
                 rem_after = max(0, total_after - done_after)
+                with merge_site_lock:
+                    merge_site_state["alice_done"] = int(done_after)
+                    merge_site_state["alice_total"] = int(total_after)
                 if total_after > 0:
                     if rem_after > 0:
+                        _merge_chat_add("alice", f"Алиса: обработано строк сметы {done_after}/{total_after}, осталось {rem_after}", tender_id=tid, seq=done_after, total=total_after)
                         _tg_send(f"{pref}\n🟡 Алиса: обработано строк сметы <b>{done_after}/{total_after}</b>, осталось <b>{rem_after}</b>")
                     else:
+                        _merge_chat_add("alice", f"🟢 Алиса обработала строки сметы: {done_after}/{total_after}", tender_id=tid, seq=done_after, total=total_after)
                         _tg_send(f"{pref}\n🟢 Алиса: строки сметы обработаны <b>{done_after}/{total_after}</b>")
 
                 out = merge_estimate_and_alice(tid)
+                _merge_chat_add("merge", "Собираю СВОДКА_РЫНОК и страницу сравнения…", tender_id=tid)
                 _tg_send(f"{pref}\n🟡 Merge…")
                 if not out or not out.is_file():
                     reason_counts["merge_failed"] += 1
+                    _merge_chat_add("error", f"⚠️ Не собрался СВОДКА_РЫНОК_{tid}.xlsx", tender_id=tid)
                     with merge_site_lock:
                         merge_site_state["log_lines"].append("  → merge не собрал СВОДКА_РЫНОК")
                     _tg_send(f"{pref}\n⚠️ Нет <code>СВОДКА_РЫНОК_{tid}.xlsx</code>")
@@ -2921,6 +3218,7 @@ def _run_merge_site_all_worker(
                 if p and p.is_file():
                     ok_html += 1
                     ok_full += 1
+                    _merge_chat_add("done", f"✅ Тендер {tid}: сравнение готово", tender_id=tid)
                     site_url = get_report_site_public_base()
                     link = f"{site_url}/merge-report/{tid}/" if site_url else ""
                     with merge_site_lock:
@@ -2958,12 +3256,18 @@ def _run_merge_site_all_worker(
                 errors.append(tid)
             with merge_site_lock:
                 merge_site_state["done"] = i + 1
+                merge_site_state["alice_done"] = 0
+                merge_site_state["alice_total"] = 0
+                merge_site_state["last_alice_chat_done"] = 0
                 merge_site_state["log_lines"] = merge_site_state["log_lines"][-cap:]
 
         ended = datetime.now().isoformat(timespec="seconds")
         with merge_site_lock:
             merge_site_state["done"] = len(ids)
             merge_site_state["current_tid"] = ""
+            merge_site_state["alice_done"] = 0
+            merge_site_state["alice_total"] = 0
+            merge_site_state["last_alice_chat_done"] = 0
             merge_site_state["running"] = False
             merge_site_state["ended_at"] = ended
             merge_site_state["error_ids"] = errors
@@ -2988,6 +3292,9 @@ def _run_merge_site_all_worker(
             if merge_site_state["running"]:
                 merge_site_state["running"] = False
                 merge_site_state["current_tid"] = ""
+                merge_site_state["alice_done"] = 0
+                merge_site_state["alice_total"] = 0
+                merge_site_state["last_alice_chat_done"] = 0
                 t = datetime.now().isoformat(timespec="seconds")
                 merge_site_state["ended_at"] = t
                 if not merge_site_state.get("last_ended_at"):
@@ -3028,7 +3335,7 @@ def merge_report_site(tender_id: str):
         tender_id=tid,
         svodka_count=n,
         has_svodka_for_tid=has_svodka,
-    ), 404
+    )
 
 
 @app.route("/nmck-preview/<preview_id>/")
@@ -3388,22 +3695,70 @@ def api_merge_site_status():
     with merge_site_lock:
         total = int(merge_site_state["total"] or 0)
         done = int(merge_site_state["done"] or 0)
-        if merge_site_state["running"] and total > 0:
-            pct = int(min(100, max(0, round(100.0 * done / total))))
-        elif not merge_site_state["running"] and total > 0 and done >= total:
-            pct = 100
-        else:
-            pct = 0 if total == 0 else int(min(100, max(0, round(100.0 * done / total))))
+        running = bool(merge_site_state["running"])
+        current_tid = merge_site_state.get("current_tid") or ""
+        alice_done = int(merge_site_state.get("alice_done") or 0)
+        alice_total = int(merge_site_state.get("alice_total") or 0)
+
+    if running and current_tid:
+        live_alice_done, live_alice_total = _alice_progress_for_tender(current_tid)
+        if live_alice_total > 0:
+            if live_alice_total == alice_total:
+                alice_done = max(alice_done, int(live_alice_done))
+            else:
+                alice_done = int(live_alice_done)
+            alice_total = int(live_alice_total)
+            with merge_site_lock:
+                if merge_site_state.get("current_tid") == current_tid:
+                    merge_site_state["alice_done"] = alice_done
+                    merge_site_state["alice_total"] = alice_total
+
+    alice_percent = int(min(100, max(0, round(100.0 * alice_done / alice_total)))) if alice_total > 0 else 0
+    current_fraction = (alice_done / alice_total) if (running and alice_total > 0) else 0.0
+    if running and total > 0:
+        pct = int(min(99, max(0, round(100.0 * (done + current_fraction) / total))))
+        if alice_done > 0 and done < total:
+            pct = max(1, pct)
+    elif not running and total > 0 and done >= total:
+        pct = 100
+    else:
+        pct = 0 if total == 0 else int(min(100, max(0, round(100.0 * done / total))))
+
+    alice_events = _read_alice_web_events(current_tid) if current_tid else []
+    alice_event_max_seq = max((int(e.get("seq") or 0) for e in alice_events), default=0)
+    if running and current_tid and alice_total > 0 and alice_done > 0 and alice_done > alice_event_max_seq:
+        should_add_fallback = False
+        with merge_site_lock:
+            last_chat_done = int(merge_site_state.get("last_alice_chat_done") or 0)
+            if alice_done > last_chat_done:
+                merge_site_state["last_alice_chat_done"] = alice_done
+                should_add_fallback = True
+        if should_add_fallback:
+            _merge_chat_add("done", f"✅ {alice_done}/{alice_total} · готово.", tender_id=current_tid, seq=alice_done, total=alice_total)
+            if alice_done < alice_total:
+                _merge_chat_add("begin", f"Работа {alice_done + 1} из {alice_total} началась.", tender_id=current_tid, seq=alice_done + 1, total=alice_total)
+
+    with merge_site_lock:
+        web_events = list(merge_site_state.get("chat_events") or [])
+        chat_events = sorted(
+            web_events + alice_events,
+            key=lambda e: (str(e.get("ts") or ""), str(e.get("source") or ""), int(e.get("seq") or 0)),
+        )[-140:]
         payload = {
             "running": bool(merge_site_state["running"]),
             "total": total,
             "done": done,
             "percent": pct,
             "current_tid": merge_site_state.get("current_tid") or "",
+            "alice_done": alice_done,
+            "alice_total": alice_total,
+            "alice_left": max(0, alice_total - alice_done),
+            "alice_percent": alice_percent,
             "started_at": merge_site_state.get("started_at"),
             "ended_at": merge_site_state.get("ended_at"),
             "error_ids": list(merge_site_state.get("error_ids") or []),
             "log_tail": (merge_site_state.get("log_lines") or [])[-60:],
+            "chat_events": chat_events,
             "last_ended_at": merge_site_state.get("last_ended_at"),
             "last_summary": merge_site_state.get("last_summary") or "",
             "last_reason_counts": merge_site_state.get("last_reason_counts") or {},
