@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.runtime/
 data/alice_playwright_profile/
 *.pyo
 *.pyd
@@ -32,6 +33,7 @@ data/downloads/
 data/extracted/
 data/reports/
 data/reports_site/
+data/nmck_previews/
 data/tenders.json
 data/last_new_tender_ids.txt
 data/logs/

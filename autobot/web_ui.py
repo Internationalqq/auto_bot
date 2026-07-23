@@ -3,7 +3,9 @@ from __future__ import annotations
 from autobot.paths import REPO_ROOT
 import json
 import os
+import re
 import subprocess
+import uuid
 import sys
 import traceback
 import threading
@@ -49,6 +51,7 @@ except ModuleNotFoundError as e:
     raise
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 26 * 1024 * 1024  # загрузка Excel обоснования НМЦК
 
 # Совпадает с NEEDED_STAGE в main.py — единственная стадия, которую подсвечиваем зелёным.
 STAGE_SUBMISSION = "Подача заявок"
@@ -133,7 +136,8 @@ INDEX_TEMPLATE = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Тендеры</title>
+  <title>Помощник по госзакупкам</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='8' y='10' width='34' height='44' rx='8' fill='%23121a30' stroke='%236db7ff' stroke-width='3'/%3E%3Cpath d='M18 22h14M18 30h14M18 38h10' stroke='%239fd2ff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='45' cy='42' r='10' fill='none' stroke='%235ecf8a' stroke-width='4'/%3E%3Cpath d='M52 49l6 6' stroke='%235ecf8a' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
   <style>
     :root {
       --bg: #0b1020;
@@ -144,18 +148,37 @@ INDEX_TEMPLATE = """
       --text: #e8ecf1;
       --muted: #9fb0d6;
       --muted-soft: #8a9bc4;
-      --accent: #4b65bb;
-      --accent-2: #3d5290;
+      --accent: #397ed1;
+      --accent-2: #285da4;
+      --accent-bright: #6db7ff;
       --ok: #5ecf8a;
       --danger: #a04048;
-      --shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      --shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
     }
     html, body { min-height: 100%; margin: 0; box-sizing: border-box; }
     *, *::before, *::after { box-sizing: inherit; }
-    body { font-family: Segoe UI, Arial, sans-serif; background: radial-gradient(1200px 700px at 20% -200px, #1c2b56 0%, var(--bg) 45%); color: var(--text); }
-    .page { max-width: 960px; margin: 0 auto; padding: 22px 18px 40px; }
-    h1 { margin: 0 0 6px 0; font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em; }
-    .sub { color: var(--muted); font-size: 13px; margin: 0 0 18px 0; line-height: 1.45; max-width: 52ch; }
+    body { font-family: "Segoe UI", Arial, sans-serif; background: radial-gradient(1200px 700px at 20% -200px, #1c2b56 0%, var(--bg) 45%); color: var(--text); }
+    .page { max-width: 960px; margin: 0 auto; padding: 22px 18px 40px; display: flex; flex-direction: column; }
+    .page > .hero-title, .page > h1, .page > .sub { order: 0; }
+    .page > .action-hub { order: 1; }
+    .page > #reportCoverageBanner { order: 2; }
+    .page > .tenders-section { order: 3; }
+    .page > .help-section { order: 4; }
+    .page > .tool-section { order: 5; }
+    .hero-title { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .hero-mark {
+      width: 42px; height: 42px; flex: 0 0 42px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(57, 126, 209, 0.22), rgba(40, 93, 164, 0.3));
+      border: 1px solid rgba(109, 183, 255, 0.35);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 24px rgba(0, 0, 0, 0.18);
+    }
+    .hero-mark svg { width: 26px; height: 26px; display: block; }
+    h1 { margin: 0 0 6px 0; font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+    .section-title { font-size: 1.1rem; font-weight: 700; color: #e0eaff; margin: 0 0 7px 0; letter-spacing: -0.01em; }
+    .section-lead { color: var(--muted); font-size: 13px; margin: 0 0 12px 0; line-height: 1.45; max-width: 72ch; }
+    .sub { color: var(--muted); font-size: 13px; margin: 0 0 18px 0; line-height: 1.45; max-width: 62ch; }
     .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; line-height: 1.4; }
     .controls, .filters {
       border: 1px solid var(--border);
@@ -194,7 +217,7 @@ INDEX_TEMPLATE = """
     .filters a:hover { text-decoration: underline; color: #b8d4ff; }
     .btn {
       border:1px solid var(--accent);
-      background: linear-gradient(180deg, #334b93, #2a3f82);
+      background: linear-gradient(180deg, #397ed1, #285da4);
       color:#ecf2ff;
       border-radius:8px;
       padding:7px 11px;
@@ -291,13 +314,13 @@ INDEX_TEMPLATE = """
     .tender-card {
       display: flex;
       flex-direction: column;
-      padding: 10px 38px 9px 11px;
+      padding: 10px 11px;
       border-radius: 10px;
       border: 1px solid #2a3962;
       background: linear-gradient(145deg, #1a2442, #141d34);
       color: var(--text);
       transition: transform .15s ease, border-color .15s, box-shadow .15s;
-      min-height: 96px;
+      min-height: 0;
       min-width: 0;
       overflow: hidden;
     }
@@ -310,7 +333,7 @@ INDEX_TEMPLATE = """
       color: inherit;
     }
     .tender-card-link--more { flex: 1 1 auto; margin-top: 2px; }
-    .tender-card .title { font-size: 13px; line-height: 1.3; max-height: 3.9em; overflow: hidden; word-break: break-word; }
+    .tender-card .title { font-size: 13px; font-weight: 650; line-height: 1.3; max-height: 3.9em; overflow: hidden; word-break: break-word; }
     .tender-card-row {
       display: flex;
       align-items: center;
@@ -327,12 +350,43 @@ INDEX_TEMPLATE = """
     }
     .tender-card-sub:hover .tid { color: #c8d8f8; }
     .tender-card .tid { font-size: 11px; color: var(--muted); margin-top: 0; word-break: break-word; line-height: 1.35; }
+    .tender-card-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .tender-meta-item {
+      min-width: 0;
+      padding: 8px 9px;
+      border-radius: 10px;
+      background: rgba(10, 18, 34, 0.52);
+      border: 1px solid rgba(109, 183, 255, 0.12);
+    }
+    .tender-meta-item--wide { grid-column: 1 / -1; }
+    .tender-meta-label {
+      display: block;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #7d8fbb;
+      margin-bottom: 4px;
+    }
+    .tender-meta-value {
+      display: block;
+      font-size: 12px;
+      color: #edf3ff;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .tender-meta-value--mono { font-variant-numeric: tabular-nums; color: #d9e7ff; }
     .tender-card-pub {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 6px 10px;
-      margin-top: 8px;
+      margin-top: 10px;
     }
     .tender-card-pub-label {
       font-size: 9px;
@@ -354,22 +408,51 @@ INDEX_TEMPLATE = """
       line-height: 1.2;
       box-shadow: 0 0 0 1px rgba(0,0,0,.12) inset;
     }
-    .tender-card-tags-row {
+    .tender-status-row {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 6px 8px;
-      margin-top: 8px;
+      margin-top: 10px;
       min-width: 0;
     }
-    .tender-card-tags-hit {
-      flex: 1 1 auto;
-      min-width: 0;
-      text-decoration: none;
-      color: inherit;
+    .tender-status-row .eis-in-card { margin-left: auto; }
+    .tender-progress {
+      margin-top: 10px;
+      padding: 9px 10px;
+      border-radius: 10px;
+      background: rgba(10, 18, 34, 0.58);
+      border: 1px solid rgba(109, 183, 255, 0.16);
     }
-    .tender-card .tags { margin-top: 0; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-    .tender-card-tags-row .eis-in-card { margin-left: auto; }
+    .tender-progress-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      color: #b7c8ea;
+      margin-bottom: 7px;
+    }
+    .tender-progress-label { font-weight: 700; letter-spacing: 0.02em; }
+    .tender-progress-value { color: #ecf2ff; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .tender-progress-track {
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+    .tender-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4b7dff, #5ecf8a);
+    }
+    .tender-progress-note {
+      margin-top: 7px;
+      font-size: 11px;
+      color: #92a6d2;
+      line-height: 1.35;
+    }
     .eis-in-card {
       display: inline-flex;
       align-items: center;
@@ -385,7 +468,7 @@ INDEX_TEMPLATE = """
       white-space: nowrap;
     }
     .eis-in-card:hover { background: rgba(75, 101, 187, 0.35); color: #fff; border-color: rgba(140, 175, 255, 0.55); }
-    .tag { font-size: 10px; padding: 2px 6px; border-radius: 999px; font-weight: 700; letter-spacing: .1px; }
+    .tag { font-size: 11px; padding: 4px 8px; border-radius: 999px; font-weight: 700; letter-spacing: .1px; }
     .tag-ok { background: #1e4d35; color: #9df0b8; }
     .tag-nodata { background: #5a1a22; color: #ffc9cc; border: 1px solid #a04048; }
     .tag-stage-open { background: #1e4d35; color: #9df0b8; border: 1px solid #3d8a67; }
@@ -404,115 +487,515 @@ INDEX_TEMPLATE = """
       width: 100%; text-align: left; background: transparent; color: #e8ecf1; border: none; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 12px;
     }
     .tender-menu button:hover { background: rgba(255,255,255,.08); }
-    .parse-progress-panel { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #1a2238; border: 1px solid #3d5290; }
+    .parse-progress-panel {
+      margin-top: 18px; padding: 18px 20px; border-radius: 15px;
+      background: linear-gradient(135deg, rgba(34, 57, 101, 0.96), rgba(18, 29, 53, 0.98));
+      border: 1px solid rgba(109, 183, 255, 0.58);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+    }
     .parse-progress-panel[hidden] { display: none !important; }
-    .parse-progress-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; color: #c8d8f8; }
-    .parse-pulse { width: 10px; height: 10px; border-radius: 50%; background: #5ecf8a; flex-shrink: 0; animation: parsePulse 1.2s ease-in-out infinite; box-shadow: 0 0 8px #5ecf8a; }
+    .parse-progress-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 16px; color: #e4edff; }
+    .parse-pulse { width: 12px; height: 12px; border-radius: 50%; background: #5ecf8a; flex-shrink: 0; animation: parsePulse 1.2s ease-in-out infinite; box-shadow: 0 0 12px #5ecf8a; }
     @keyframes parsePulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.55; transform: scale(0.92); } }
-    .parse-progress-time { font-size: 13px; color: #9df0b8; font-variant-numeric: tabular-nums; }
-    .parse-progress-hint { font-size: 11px; color: #9fb0d6; margin-top: 6px; line-height: 1.35; }
-    .parse-status-line { margin-top: 6px; font-size: 11px; color: #8a9bc4; word-break: break-all; }
+    .parse-progress-time { margin-top: 9px; font-size: 14px; color: #9df0b8; font-variant-numeric: tabular-nums; }
+    .parse-progress-hint { font-size: 12px; color: #b4c4e5; margin-top: 8px; line-height: 1.45; }
+    .parse-status-line { margin-top: 8px; font-size: 12px; color: #9aabd0; word-break: break-all; }
+    .parse-summary {
+      margin-top: 14px;
+      padding: 14px 15px;
+      border-radius: 12px;
+      background: rgba(9, 16, 31, 0.42);
+      border: 1px solid rgba(109, 183, 255, 0.2);
+    }
+    .parse-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .parse-summary-item {
+      padding: 11px 12px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.05);
+      min-width: 0;
+    }
+    .parse-summary-label {
+      font-size: 11px;
+      color: var(--muted-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .parse-summary-value { font-size: 14px; color: #ecf2ff; line-height: 1.4; word-break: break-word; }
+    .parse-summary-value.ok { color: #9df0b8; }
+    .parse-summary-value.warn { color: #ffd7a8; }
+    .parse-summary-value.bad { color: #ffc9cc; }
+    details.compact-details {
+      margin-top: 12px;
+      border: 1px solid rgba(109, 183, 255, 0.18);
+      border-radius: 10px;
+      background: rgba(9, 16, 31, 0.24);
+    }
+    details.compact-details > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 10px 12px;
+      color: #b8c7ea;
+      font-size: 13px;
+      user-select: none;
+    }
+    details.compact-details > summary::-webkit-details-marker { display: none; }
+    details.compact-details .logs { margin: 0 10px 10px; }
+    details.compact-details .parse-status-line { margin: 0 10px 8px; }
     .merge-bar-wrap { height: 12px; background: #0f1324; border-radius: 8px; overflow: hidden; margin-top: 10px; border: 1px solid #2b365e; }
     .merge-bar-fill { height: 100%; background: linear-gradient(90deg, #3d5290, #5ecf8a); transition: width 0.35s ease; border-radius: 8px; }
     .merge-logs { margin-top: 8px; max-height: 140px; overflow: auto; border: 1px solid #2b365e; border-radius: 8px; background: #0f1324; padding: 8px; font-family: Consolas, monospace; font-size: 11px; white-space: pre-wrap; }
-    .cov-banner { padding: 9px 12px; border-radius: 10px; margin-bottom: 10px; font-size: 12px; line-height: 1.45; }
+    .cov-banner { padding: 13px 16px; border-radius: 12px; margin-bottom: 16px; font-size: 13px; line-height: 1.5; }
     .cov-warn { background: rgba(90, 26, 34, 0.45); border: 1px solid #a04048; color: #ffc9cc; }
     .cov-partial { background: rgba(77, 53, 30, 0.45); border: 1px solid #8a623d; color: #ffd7a8; }
     .cov-ok { background: rgba(30, 77, 53, 0.35); border: 1px solid #3d8a67; color: #9df0b8; }
+    .workflow-strip {
+      display: none; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+      margin-bottom: 20px; padding: 13px 15px; border-radius: 12px;
+      background: rgba(10, 14, 28, 0.55); border: 1px solid var(--border-soft);
+      font-size: 13px; color: #c4d2ef;
+    }
+    .wf-step { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .wf-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 999px;
+      background: linear-gradient(180deg, #397ed1, #285da4); color: #ecf2ff;
+      font-size: 12px; font-weight: 800;
+    }
+    .wf-arrow { color: #607dce; font-weight: 700; }
+    .action-hub, .tenders-section, .tool-section {
+      margin-bottom: 14px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: linear-gradient(180deg, var(--panel), var(--panel-soft));
+      box-shadow: var(--shadow);
+    }
+    .action-hub {
+      position: relative;
+      overflow: hidden;
+      border-color: rgba(109, 183, 255, 0.48);
+      background:
+        linear-gradient(135deg, rgba(25, 42, 77, 0.98), rgba(13, 23, 44, 0.99));
+    }
+    .action-hub::before {
+      content: ""; position: absolute; inset: 0 auto auto 0; width: 100%; height: 3px;
+      background: linear-gradient(90deg, var(--accent-bright), var(--ok), transparent 78%);
+    }
+    .action-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 10px; }
+    .action-card {
+      grid-column: span 6;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      background: linear-gradient(145deg, rgba(18, 29, 53, 0.92), rgba(10, 17, 33, 0.9));
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+    }
+    .action-card:nth-child(1) { border-top: 3px solid var(--accent-bright); }
+    .action-card:nth-child(2) { border-top: 3px solid var(--ok); }
+    .action-card--wide { grid-column: span 8; }
+    .action-card:last-child { grid-column: span 4; }
+    .action-card-title { margin: 0 0 7px 0; font-size: 14px; font-weight: 700; color: #e2ebff; line-height: 1.35; }
+    .action-card-desc { margin: 0 0 10px 0; font-size: 12px; color: #9fb0d6; line-height: 1.45; }
+    .action-card .btn-row { margin-top: 0; }
+    .action-card .opts { margin-top: 10px; }
+    .action-card > .btn.btn-lg { width: 100%; }
+    .action-card .btn-row .btn-lg { flex: 1 1 260px; }
+    .tender-actions {
+      display: flex; flex-direction: column; gap: 7px;
+      margin-top: 12px; padding-top: 12px;
+      border-top: 1px solid rgba(42, 57, 98, 0.65);
+    }
+    .tender-act {
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid #3a4677; background: rgba(15, 19, 36, 0.85);
+      color: #c8d8f8; border-radius: 9px; padding: 8px 10px;
+      font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none;
+      line-height: 1.25; text-align: center;
+    }
+    .tender-act:hover { background: rgba(75, 101, 187, 0.35); color: #fff; border-color: rgba(140, 175, 255, 0.55); }
+    .tender-act:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+    .tender-act--primary { border-color: var(--accent); background: linear-gradient(180deg, #334b93, #2a3f82); color: #ecf2ff; }
+    .tender-act--main { width: 100%; min-height: 43px; font-size: 13px; padding: 10px 12px; }
+    .tender-next {
+      margin: 0; font-size: 12px; color: var(--muted-soft); line-height: 1.45;
+    }
+    details.tender-more {
+      border: 1px solid rgba(58, 70, 119, 0.72);
+      border-radius: 8px;
+      background: rgba(10, 14, 28, 0.38);
+    }
+    details.tender-more > summary {
+      list-style: none; cursor: pointer; padding: 7px 9px;
+      color: #a8b8e6; font-size: 12px; font-weight: 600; user-select: none;
+    }
+    details.tender-more > summary::-webkit-details-marker { display: none; }
+    details.tender-more > summary::after { content: " +"; color: #7891cc; }
+    details.tender-more[open] > summary::after { content: " -"; }
+    details.tender-more[open] > summary {
+      border-bottom: 1px solid rgba(58, 70, 119, 0.55); color: #d2defa;
+    }
+    .tender-more-actions {
+      display: grid; grid-template-columns: 1fr; gap: 5px; padding: 7px;
+    }
+    .tender-more-actions .tender-act { width: 100%; justify-content: flex-start; text-align: left; }
+    .tender-card-link--disabled { cursor: default; }
+    .tag-merge { background: #2a3a6e; color: #b8d4ff; border: 1px solid #4a67b8; }
+    .tag-nomerge { background: #3a3048; color: #d0c4e8; border: 1px solid #5a4a72; }
+    .help-section { display: none; }
+    .help-section .section-title { color: #e8f0ff; margin-bottom: 8px; }
+    .help-steps { margin: 0 0 14px 0; padding-left: 22px; color: #c8d8f8; font-size: 14px; line-height: 1.6; }
+    .help-steps li { margin-bottom: 6px; }
+    .help-steps strong { color: #fff; }
+    details.help-glossary {
+      border: 1px solid var(--border-soft); border-radius: 10px;
+      background: rgba(8, 12, 24, 0.5); font-size: 12px; color: #b8c7ea;
+    }
+    details.help-glossary > summary {
+      cursor: pointer; padding: 10px 12px; font-weight: 600; color: #a8c4ff;
+      list-style: none;
+    }
+    details.help-glossary > summary::-webkit-details-marker { display: none; }
+    details.help-glossary[open] > summary { border-bottom: 1px solid var(--border-soft); }
+    .glossary-grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; padding: 10px 12px 12px; line-height: 1.45; }
+    .glossary-term { font-weight: 700; color: #d2defa; }
+    .btn-effect {
+      margin: 8px 0 0 0; padding: 8px 10px; border-radius: 8px;
+      background: rgba(15, 22, 44, 0.85); border: 1px dashed #3a4677;
+      font-size: 11px; color: #9fb0d6; line-height: 1.45;
+    }
+    .btn-effect strong { color: #c8e0ff; font-weight: 600; }
+    .card-legend {
+      margin: 0 0 12px 0; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--border-soft); background: rgba(8, 12, 24, 0.45);
+      font-size: 11px; color: #9fb0d6; line-height: 1.5;
+    }
+    .card-legend strong { color: #d2defa; }
+    .tool-section--optional { border-style: dashed; opacity: 0.95; }
+    .optional-badge {
+      display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #ffd7a8; background: rgba(77, 53, 30, 0.5);
+      border: 1px solid #8a623d; border-radius: 999px; padding: 2px 8px; margin-left: 8px;
+    }
+    details.action-options {
+      margin-top: 13px;
+      border: 1px solid var(--border-soft);
+      border-radius: 9px;
+      background: rgba(8, 12, 24, 0.42);
+    }
+    details.action-options > summary {
+      list-style: none; cursor: pointer; padding: 11px 13px;
+      font-size: 12px; font-weight: 600; color: #a8b8e6; user-select: none;
+    }
+    details.action-options > summary::-webkit-details-marker { display: none; }
+    details.action-options > summary::before { content: "Показать: "; color: #7891cc; }
+    details.action-options[open] > summary {
+      border-bottom: 1px solid var(--border-soft); color: #d2defa;
+    }
+    details.action-options .opts,
+    details.action-options .rebuild-row { margin: 0; padding: 10px; }
     @media (max-width: 980px) {
+      .action-grid { grid-template-columns: 1fr; }
+      .action-card, .action-card--wide, .action-card:last-child { grid-column: 1 / -1; }
       .opts { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 720px) {
-      .page { padding: 12px 10px 24px; }
+      .page { padding: 22px 12px 32px; }
+      .hero-title { gap: 10px; }
+      .hero-mark { width: 46px; height: 46px; flex-basis: 46px; border-radius: 14px; }
+      .hero-mark svg { width: 28px; height: 28px; }
+      h1 { font-size: 2rem; }
+      .action-hub, .tenders-section, .tool-section { padding: 15px; border-radius: 14px; }
+      .action-card { padding: 15px; }
+      .parse-summary-grid { grid-template-columns: 1fr; }
       .opts { grid-template-columns: 1fr; }
       .tender-grid-main { grid-template-columns: 1fr; }
       .btn-row .btn { width: 100%; }
+      .link-row, .rebuild-row { align-items: stretch; flex-direction: column; }
+      .link-row input, .rebuild-row select { width: 100%; min-width: 0; }
     }
   </style>
 </head>
 <body>
   <div class="page">
-    <h1>Тендеры</h1>
-    <p class="sub">Откройте карточку — сводка <strong>смета и рынок (Алиса)</strong>. Две кнопки ниже закрывают типичный сценарий; остальное спрятано в «Дополнительно».</p>
+    <div class="hero-title">
+      <span class="hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="10" y="9" width="30" height="42" rx="8" fill="#121a30" stroke="#6db7ff" stroke-width="3"/>
+          <path d="M19 22H31" stroke="#9fd2ff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M19 30H31" stroke="#9fd2ff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M19 38H27" stroke="#9fd2ff" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="45" cy="42" r="10" stroke="#5ecf8a" stroke-width="4"/>
+          <path d="M52 49L58 55" stroke="#5ecf8a" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <h1>Помощник по госзакупкам</h1>
+    </div>
+    <p class="sub" style="max-width:none;">Программа ищет закупки на <strong>zakupki.gov.ru</strong>, вытаскивает из документов <strong>смету</strong> (список работ и цен), через <strong>Алису</strong> (нейросеть Яндекса) находит <strong>рыночные цены</strong> и показывает, где заказчик завысил или занизил.</p>
+
+    <section class="help-section" aria-labelledby="helpTitle">
+      <h2 class="section-title" id="helpTitle">Как пользоваться — три шага</h2>
+      <ol class="help-steps">
+        <li><strong>Шаг 1.</strong> Нажмите «Найти новые закупки» — программа скачает документы и извлечёт сметы.</li>
+        <li><strong>Шаг 2.</strong> Нажмите «Подготовить недостающие сравнения» — Алиса найдёт рыночные цены. <strong>Это долгий этап</strong>, он может идти часами.</li>
+        <li><strong>Шаг 3.</strong> В готовой карточке нажмите «Посмотреть сравнение цен».</li>
+      </ol>
+      <details class="help-glossary">
+        <summary>Словарь: что значат непонятные слова</summary>
+        <div class="glossary-grid">
+          <div class="glossary-term">Тендер</div>
+          <div>Государственная закупка: кто дешевле выполнит работы — тот выиграет контракт.</div>
+          <div class="glossary-term">ЕИС</div>
+          <div>Официальный портал <strong>zakupki.gov.ru</strong>. «Скачать с ЕИС» = скачать с этого сайта.</div>
+          <div class="glossary-term">Смета</div>
+          <div>Таблица из документов: какие работы, объёмы и цены заложил заказчик.</div>
+          <div class="glossary-term">Алиса</div>
+          <div>Нейросеть Яндекса — ищет рыночные цены на каждую позицию сметы.</div>
+          <div class="glossary-term">Сравнение цен</div>
+          <div>Готовая страница: цена заказчика рядом с найденными рыночными ценами. Это главный результат работы.</div>
+          <div class="glossary-term">НМЦК</div>
+          <div>Максимальная цена контракта — сколько заказчик готов заплатить. Блок внизу страницы — <strong>отдельный инструмент</strong>, к шагам 1–3 не относится.</div>
+          <div class="glossary-term">Telegram</div>
+          <div>Кнопка на карточке шлёт краткий вывод «выгодно / невыгодно» в ваш чат (если настроен бот).</div>
+        </div>
+      </details>
+    </section>
 
     <div id="reportCoverageBanner" class="cov-banner stat-strip {% if coverage.tender_count == 0 %}cov-warn{% elif coverage.tenders_missing_merge_html > 0 %}{% if coverage.merge_html_among_tenders == 0 and coverage.svodka_xlsx_count == 0 %}cov-warn{% else %}cov-partial{% endif %}{% else %}cov-ok{% endif %}">
       {% if coverage.tender_count == 0 %}
-      В базе пока нет тендеров — нажмите «Обновить из ЕИС».
+      Закупок в базе пока нет. Нажмите «Найти новые закупки» в верхней панели.
       {% else %}
-      Сводок <strong>смета + Алиса</strong> на сайте: <strong>{{ coverage.merge_html_among_tenders }}</strong> / {{ coverage.tender_count }}
+      {% if coverage.merge_html_among_tenders >= coverage.tender_count %}
+      Все {{ coverage.tender_count }} закупок имеют готовую страницу сравнения «смета vs рынок».
+      {% else %}
+      В базе <strong>{{ coverage.tender_count }}</strong> закупок · готовых страниц сравнения: <strong>{{ coverage.merge_html_among_tenders }}</strong>
       {% if coverage.tenders_missing_merge_html > 0 %}
-      · не готово: <strong>{{ coverage.tenders_missing_merge_html }}</strong> (кнопка «Сводки для всех»).
+      · ещё <strong>{{ coverage.tenders_missing_merge_html }}</strong> ждут шага 2 («Подготовить недостающие сравнения»)
+      {% if coverage.missing_no_svodka > 0 and coverage.missing_no_estimate == 0 %}
+      — у {{ coverage.missing_no_svodka }} смета уже есть, но Алиса ещё не прогонялась
+      {% endif %}
+      {% endif %}
       {% endif %}
       {% endif %}
     </div>
 
-    <form class="filters" method="get" action="/">
-      <label>
-        <input type="checkbox" name="all" value="1" {% if show_all %}checked{% endif %} onchange="this.form.submit()"/>
-        <span>Все этапы</span>
-      </label>
-      <label>
-        <span>Сортировка:</span>
-        <select name="sort" onchange="this.form.submit()">
-          <option value="publish_desc" {% if sort_mode == "publish_desc" %}selected{% endif %}>по дате публикации: новые сверху</option>
-          <option value="publish_asc" {% if sort_mode == "publish_asc" %}selected{% endif %}>по дате публикации: старые сверху</option>
-        </select>
-      </label>
-      <span class="muted">{{ visible_count }} из {{ tender_count }}</span>
-      {% if show_all %}
-      <a class="eis-below" href="/?sort={{ sort_mode }}">Только подача заявок</a>
-      {% endif %}
-    </form>
+    <section class="tenders-section" aria-labelledby="tendersTitle">
+      <h2 class="section-title" id="tendersTitle">Список тендеров</h2>
+      <p class="section-lead">В каждой карточке показан один рекомендуемый следующий шаг. Повторные и служебные операции находятся в «Дополнительных действиях».</p>
+      <p class="section-lead" style="margin-top:-4px;">
+        Показано <strong>{{ visible_count }}</strong> из <strong>{{ tender_count }}</strong> тендеров
+        {% if show_all %}
+        · все этапы
+        · <a href="/?sort={{ sort_mode }}" style="color:#87bbff;">показать только «Подача заявок»</a>
+        {% else %}
+        · только этап «Подача заявок»
+        · <a href="/?all=1&sort={{ sort_mode }}" style="color:#87bbff;">показать все этапы</a>
+        {% endif %}
+      </p>
 
-    <div class="controls">
-      <div class="action-bar">
-        <button class="btn btn-lg" type="button" id="startBtn" onclick="startParsing()">Обновить из ЕИС</button>
-        <button class="btn btn-lg secondary" type="button" id="genMergeSiteBtn" onclick="generateMergeSiteAll()">Сводки для всех</button>
-      </div>
-      <p class="controls-hint">Первая кнопка — поиск и новые карточки. Вторая — Алиса, merge и HTML для сводок по сметам из <code>data/reports</code>.</p>
+      {% for group in grouped %}
+      <div class="tender-group">
+        <div class="tender-group-title">{{ group.title }}</div>
+        <div class="tender-group-body">
+          <div class="tender-grid-main">
+        {% for t in group.tenders %}
+          <div class="tender-cell">
+          <div class="tender-card{% if not t.has_estimate %} no-data{% endif %}">
+            {% if t.has_merge_report %}
+            <a class="tender-card-link" href="/merge-report/{{ t.tender_id }}/">
+              <div class="title">{{ t.display_title }}</div>
+            </a>
+            {% else %}
+            <div class="tender-card-link tender-card-link--disabled">
+              <div class="title">{{ t.display_title }}</div>
+            </div>
+            {% endif %}
 
-      <details class="advanced">
-        <summary>Дополнительно: по ссылке, один тендер, настройки поиска…</summary>
-        <div class="advanced-body">
-          <div class="opts">
-            <label>Страниц поиска (регион × ключ)
-              <input type="number" id="optMaxPages" min="1" max="20" value="2" />
-            </label>
-            <label>Макс. тендеров за прогон
-              <input type="number" id="optMaxTenders" min="1" max="50" value="15" />
-            </label>
-            <label style="grid-column: 1 / -1;">Не старше (дней)
-              <input type="number" id="optDaysBack" min="1" max="365" value="60" />
-            </label>
-          </div>
-          <div class="link-row">
-            <span>Ссылка или ID:</span>
-            <input id="tenderLinkInput" type="text" placeholder="Ссылка на извещение или 19-значный номер" />
-            <button class="btn secondary" type="button" id="runByLinkBtn" onclick="runByTenderLink()">Запустить по ссылке</button>
-          </div>
-          <div class="rebuild-row">
-            <span>Пересобрать смету (Excel+HTML) для:</span>
-            <select id="rebuildTenderSelect" {% if not rebuild_options %}disabled{% endif %}>
-              {% for o in rebuild_options %}
-              <option value="{{ o.tender_id }}">{{ o.tender_id }} — {{ o.display_title }}</option>
-              {% endfor %}
-              {% if not rebuild_options %}
-              <option value="">— нет тендеров —</option>
+            <div class="tender-card-meta">
+              <div class="tender-meta-item tender-meta-item--wide">
+                <span class="tender-meta-label">&#1058;&#1077;&#1085;&#1076;&#1077;&#1088;</span>
+                <span class="tender-meta-value tender-meta-value--mono">{{ t.tender_id }}</span>
+              </div>
+              <div class="tender-meta-item">
+                <span class="tender-meta-label">&#1057;&#1084;&#1077;&#1090;&#1072;</span>
+                <span class="tender-meta-value">{% if t.has_estimate %}{{ t.estimate_rows }} &#1089;&#1090;&#1088;&#1086;&#1082;{% else %}&#1077;&#1097;&#1105; &#1085;&#1077; &#1089;&#1086;&#1073;&#1088;&#1072;&#1085;&#1072;{% endif %}</span>
+              </div>
+              <div class="tender-meta-item">
+                <span class="tender-meta-label">&#1069;&#1090;&#1072;&#1087;</span>
+                <span class="tender-meta-value">{{ t.stage_display }}</span>
+              </div>
+            </div>
+
+            {% if t.alice_progress_total > 0 %}
+            <div class="tender-progress">
+              <div class="tender-progress-head">
+                <span class="tender-progress-label">&#1055;&#1086;&#1080;&#1089;&#1082; &#1094;&#1077;&#1085;</span>
+                <span class="tender-progress-value">{{ t.alice_progress_done }}/{{ t.alice_progress_total }}</span>
+              </div>
+              <div class="tender-progress-track">
+                <div class="tender-progress-fill" style="width: {{ t.alice_progress_percent }}%;"></div>
+              </div>
+              <div class="tender-progress-note">
+                {% if t.alice_progress_done >= t.alice_progress_total %}
+                &#1042;&#1089;&#1077; &#1089;&#1090;&#1088;&#1086;&#1082;&#1080; &#1089;&#1084;&#1077;&#1090;&#1099; &#1086;&#1073;&#1088;&#1072;&#1073;&#1086;&#1090;&#1072;&#1085;&#1099;.
+                {% elif t.has_alice_partial %}
+                &#1054;&#1073;&#1088;&#1072;&#1073;&#1086;&#1090;&#1072;&#1085;&#1086; {{ t.alice_progress_done }} &#1080;&#1079; {{ t.alice_progress_total }}, &#1086;&#1089;&#1090;&#1072;&#1083;&#1086;&#1089;&#1100; {{ t.alice_progress_left }}.
+                {% else %}
+                &#1057;&#1084;&#1077;&#1090;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;. &#1055;&#1086;&#1080;&#1089;&#1082; &#1094;&#1077;&#1085; &#1077;&#1097;&#1105; &#1085;&#1077; &#1079;&#1072;&#1087;&#1091;&#1089;&#1082;&#1072;&#1083;&#1089;&#1103;.
+                {% endif %}
+              </div>
+            </div>
+            {% endif %}
+
+            <div class="tender-card-pub">
+              <span class="tender-card-pub-label">&#1055;&#1091;&#1073;&#1083;&#1080;&#1082;&#1072;&#1094;&#1080;&#1103;</span>
+              <span class="tender-card-pub-date">{{ t.publish_date or "&#1044;&#1072;&#1090;&#1072; &#1085;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;&#1072;" }}</span>
+            </div>
+
+            <div class="tender-status-row">
+              {% if t.has_merge_report %}
+              <span class="tag tag-merge">&#1050;&#1072;&#1088;&#1090;&#1086;&#1095;&#1082;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;</span>
+              {% elif t.has_alice_partial %}
+              <span class="tag tag-merge">&#1045;&#1089;&#1090;&#1100; &#1095;&#1072;&#1089;&#1090;&#1080;&#1095;&#1085;&#1099;&#1077; &#1094;&#1077;&#1085;&#1099;</span>
+              {% elif t.has_estimate %}
+              <span class="tag tag-ok">&#1057;&#1084;&#1077;&#1090;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;</span>
+              {% else %}
+              <span class="tag tag-nodata">&#1053;&#1077;&#1090; &#1089;&#1084;&#1077;&#1090;&#1099;</span>
               {% endif %}
-            </select>
-          </div>
-          <div class="btn-row">
-            <button class="btn secondary" type="button" id="rebuildBtn" onclick="rebuildReport()">Пересобрать смету</button>
-            <button class="btn secondary" type="button" id="rebuildAllBtn" onclick="rebuildAllReports()" {% if tender_count < 1 %}disabled title="Нет тендеров в базе"{% endif %}>Все сметы заново</button>
-            <button class="btn secondary" type="button" id="genMergeMissingBtn" onclick="generateMergeSiteMissing()">Досбор без сводки</button>
-            <a class="link-refresh" href="#" onclick="location.reload(); return false;">Обновить страницу</a>
+              <span class="tag {% if t.stage_open %}tag-stage-open{% else %}tag-stage-closed{% endif %}">{{ t.stage_display }}</span>
+              <a class="eis-in-card" href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer">&#1045;&#1048;&#1057;</a>
+            </div>
+
+            <div class="tender-actions">
+              {% if t.has_merge_report %}
+              <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть сравнение цен</a>
+              <p class="tender-next">Готово: цены заказчика уже сопоставлены с рынком.</p>
+              {% elif t.has_estimate %}
+              <button type="button" class="tender-act tender-act--primary tender-act--main tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')">Найти рыночные цены</button>
+              <p class="tender-next">Смета готова. Следующий шаг найдёт цены и соберёт сравнение.</p>
+              {% else %}
+              <button type="button" class="tender-act tender-act--primary tender-act--main tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')">Скачать документы и подготовить сравнение</button>
+              <p class="tender-next">Смета не извлечена. Программа попробует скачать документы повторно.</p>
+              {% endif %}
+              <details class="tender-more">
+                <summary>Дополнительные действия</summary>
+                <div class="tender-more-actions">
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')" title="Продолжить поиск недостающих рыночных цен и заново собрать страницу сравнения.">Продолжить или обновить поиск цен</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rerunAliceForTender('{{ t.tender_id }}')" title="Удалить прогресс поиска цен и опросить Алису по всем позициям заново.">Начать поиск цен заново</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rebuildReportForTender('{{ t.tender_id }}')" title="Повторно прочитать уже скачанные документы. Поиск рыночных цен не запускается.">Повторно извлечь смету из файлов</button>
+                  {% if t.has_svodka %}
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runViabilityOnly('{{ t.tender_id }}')" title="Обновить вывод о выгодности и отправить его в настроенный Telegram-чат.">Отправить вывод в Telegram</button>
+                  {% endif %}
+                </div>
+              </details>
+            </div>
           </div>
         </div>
-      </details>
-      <div id="mergeSitePanel" class="parse-progress-panel" hidden>
+        {% endfor %}
+      </div>
+      </div>
+    {% endfor %}
+    {% if not grouped %}
+    {% if tender_count == 0 %}
+    <p class="sub" style="margin:0;">База пуста — нажмите «Найти новые закупки» в верхней панели.</p>
+    {% elif not show_all %}
+    <p class="sub" style="margin:0;">Нет закупок на этапе «Подача заявок». Включите «Показать все этапы» выше или скачайте новые тендеры.</p>
+    {% else %}
+    <p class="sub" style="margin:0;">Нет данных для отображения.</p>
+    {% endif %}
+    {% endif %}
+
+    {% if tender_count %}
+    <p class="meta" style="margin:12px 0 0;">В базе {{ tender_count }} тендеров · сметы с таблицей позиций: {{ display_report_count }} / {{ report_count }} · <span style="color:#d89090;">красная полоска слева</span> — в смете нет извлечённых работ.</p>
+    {% endif %}
+    </section>
+
+    <section class="action-hub controls" aria-labelledby="actionHubTitle">
+      <h2 class="section-title" id="actionHubTitle">Главное</h2>
+      <p class="section-lead">Сначала нажмите «Найти новые закупки». Если поиск не сработает, ниже появится короткое объяснение причины и следующий шаг.</p>
+
+      <div class="workflow-strip" aria-hidden="true">
+        <div class="wf-step"><span class="wf-num">1</span> Найти закупки</div>
+        <span class="wf-arrow">→</span>
+        <div class="wf-step"><span class="wf-num">2</span> Сравнить цены</div>
+        <span class="wf-arrow">→</span>
+        <div class="wf-step"><span class="wf-num">3</span> Посмотреть результат</div>
+      </div>
+
+      <div class="action-grid">
+        <article class="action-card">
+          <h3 class="action-card-title">Шаг 1. Найти новые закупки</h3>
+          <p class="action-card-desc">Ищет закупки по вашим регионам и ключевым словам, скачивает архивы документов, распаковывает их и извлекает смету в Excel. Результат попадает в список выше.</p>
+          <button class="btn btn-lg" type="button" id="startBtn" onclick="startParsing()">Найти новые закупки</button>
+          <details class="action-options">
+            <summary>параметры поиска</summary>
+            <div class="opts">
+              <label title="Сколько страниц результатов просматривать на каждую пару регион × ключевое слово">Страниц результатов
+                <input type="number" id="optMaxPages" min="1" max="20" value="2" />
+              </label>
+              <label title="Максимум новых тендеров за один запуск">Закупок за запуск
+                <input type="number" id="optMaxTenders" min="1" max="50" value="15" />
+              </label>
+              <label title="Не брать закупки старше указанного числа дней">Опубликованы за последние, дней
+                <input type="number" id="optDaysBack" min="1" max="365" value="60" />
+              </label>
+            </div>
+          </details>
+        </article>
+
+        <article class="action-card">
+          <h3 class="action-card-title">Шаг 2. Сравнить цены заказчика с рынком</h3>
+          <p class="action-card-desc">Алиса ищет рыночные цены для позиций сметы, а программа собирает готовую страницу сравнения. <strong>Долго</strong> — обработка нескольких закупок может занять часы.</p>
+          <div class="btn-row">
+            <button class="btn btn-lg" type="button" id="genMergeMissingBtn" onclick="generateMergeSiteMissing()">Подготовить недостающие сравнения</button>
+            <button class="btn secondary" type="button" id="genMergeSiteBtn" onclick="generateMergeSiteAll()">Обновить сравнения для всех</button>
+          </div>
+          <p class="btn-effect"><strong>Рекомендуется первая кнопка:</strong> она пропускает уже готовые результаты. Вторая повторно обрабатывает все доступные сметы.</p>
+        </article>
+
+        <article class="action-card action-card--wide">
+          <h3 class="action-card-title">Проверить одну закупку по ссылке</h3>
+          <p class="action-card-desc">Вставьте ссылку с zakupki.gov.ru или номер закупки. Программа скачает документы, извлечёт смету, найдёт рыночные цены и подготовит сравнение.</p>
+          <div class="link-row">
+            <span>Ссылка или номер:</span>
+            <input id="tenderLinkInput" type="text" placeholder="https://zakupki.gov.ru/... или 19-значный номер" />
+            <button class="btn" type="button" id="runByLinkBtn" onclick="runByTenderLink()">Проверить эту закупку</button>
+          </div>
+          <div id="quickTenderCheck" class="meta" style="margin-top:6px;display:none;">
+            Последний запуск: <a id="quickTenderReportLink" href="#" target="_blank" rel="noopener noreferrer">открыть сводку</a>
+            · <a id="quickTenderEisLink" href="#" target="_blank" rel="noopener noreferrer">карточка на ЕИС</a>
+          </div>
+          <details class="action-options">
+            <summary>повторное извлечение сметы из уже скачанных файлов</summary>
+            <div class="rebuild-row">
+              <span>Выберите закупку:</span>
+              <select id="rebuildTenderSelect" {% if not rebuild_options %}disabled{% endif %}>
+                {% for o in rebuild_options %}
+                <option value="{{ o.tender_id }}">{{ o.tender_id }} — {{ o.display_title }}</option>
+                {% endfor %}
+                {% if not rebuild_options %}
+                <option value="">— нет тендеров —</option>
+                {% endif %}
+              </select>
+              <button class="btn secondary" type="button" id="rebuildBtn" onclick="rebuildReport()">Извлечь смету повторно</button>
+              <button class="btn secondary" type="button" id="rebuildAllBtn" onclick="rebuildAllReports()" {% if tender_count < 1 %}disabled title="Нет тендеров в базе"{% endif %}>Повторить для всех</button>
+            </div>
+          </details>
+        </article>
+
+        <article class="action-card">
+          <h3 class="action-card-title">Уведомления в браузере</h3>
+          <p class="action-card-desc">Всплывающее окно, когда закончится поиск закупок или появится новое сравнение цен. Это не Telegram — уведомление работает только в этом браузере.</p>
+          <button class="btn secondary" type="button" id="enablePushBtn" onclick="enableWebPush()">Включить уведомления</button>
+          <a class="link-refresh" href="#" onclick="location.reload(); return false;" style="display:inline-block;margin-top:10px;">Обновить страницу (F5)</a>
+        </article>
+      </div>
+
+      <div id="mergeSitePanel" class="parse-progress-panel" role="status" aria-live="polite" hidden>
         <div class="parse-progress-head">
           <span class="parse-pulse" aria-hidden="true"></span>
-          <strong id="mergeSiteLabel">Сводки для всех</strong>
+          <strong id="mergeSiteLabel">Подготавливаем сравнения цен</strong>
         </div>
         <div class="merge-bar-wrap"><div id="mergeBarFill" class="merge-bar-fill" style="width:0%"></div></div>
         <div class="parse-progress-time" id="mergePercentText">0%</div>
@@ -521,7 +1004,7 @@ INDEX_TEMPLATE = """
       </div>
       <div id="mergeIdleSummary" class="meta" style="margin-top:4px;"></div>
       <div id="mergeMissingReason" class="meta" style="margin-top:4px;"></div>
-      <div id="parseProgressPanel" class="parse-progress-panel" hidden>
+      <div id="parseProgressPanel" class="parse-progress-panel" role="status" aria-live="polite" hidden>
         <div class="parse-progress-head">
           <span class="parse-pulse" aria-hidden="true"></span>
           <strong id="parseProgressLabel">Выполняется…</strong>
@@ -529,112 +1012,46 @@ INDEX_TEMPLATE = """
         <div class="parse-bar-wrap"><div id="parseBarFill" class="parse-bar-fill"></div></div>
         <div class="parse-progress-time" id="parseProgressTime">Прошло: 0 с</div>
         <div class="status" id="parseStatus"></div>
-        <div class="parse-status-line" id="parseCommandLine"></div>
-        <div id="parseProgressLogCount" class="parse-progress-hint" style="margin-top:4px;color:#b8c7ea;"></div>
-        <div class="parse-progress-hint">Лог по мере выполнения.</div>
-        <div class="logs" id="parseLogs"></div>
-      </div>
-    </div>
-
-    {% for region_name, items in grouped %}
-    <section class="region-block">
-      <h2 class="region-title">{{ region_name }}</h2>
-      <div class="tender-grid-main">
-        {% for t in items %}
-        <div class="tender-cell">
-          <div class="tender-menu-wrap">
-            <button type="button" class="tender-menu-btn" onclick="event.stopPropagation();event.preventDefault();">⋯</button>
-            <div class="tender-menu">
-              <button type="button" onclick="event.stopPropagation();event.preventDefault();runFullForTender('{{ t.tender_id }}');">Сводка с Алисой</button>
-              <button type="button" onclick="event.stopPropagation();event.preventDefault();rerunAliceForTender('{{ t.tender_id }}');">Алиса заново</button>
-              <button type="button" onclick="event.stopPropagation();event.preventDefault();runViabilityOnly('{{ t.tender_id }}');">Анализ в Telegram</button>
+        <div class="parse-summary">
+          <div class="parse-summary-grid">
+            <div class="parse-summary-item">
+              <div class="parse-summary-label">Итог</div>
+              <div class="parse-summary-value" id="parseResultMain">Ждём запуск</div>
             </div>
-          </div>
-          <div class="tender-card{% if not t.has_display_data %} no-data{% endif %}">
-            <a class="tender-card-link" href="/merge-report/{{ t.tender_id }}/">
-              <div class="title">{{ t.display_title }}</div>
-            </a>
-            <div class="tender-card-row">
-              <a class="tender-card-sub" href="/merge-report/{{ t.tender_id }}/">
-                <span class="tid">№ {{ t.tender_id }} · {{ t.estimate_rows }} поз.</span>
-              </a>
+            <div class="parse-summary-item">
+              <div class="parse-summary-label">Причина</div>
+              <div class="parse-summary-value" id="parseResultIssue">Пока нет</div>
             </div>
-            <a class="tender-card-link tender-card-link--more" href="/merge-report/{{ t.tender_id }}/">
-              <div class="tender-card-pub">
-                <span class="tender-card-pub-label">Публикация</span>
-                <span class="tender-card-pub-date">{{ t.publish_date or "—" }}</span>
-              </div>
-            </a>
-            <div class="tender-card-tags-row">
-              <a class="tender-card-tags-hit" href="/merge-report/{{ t.tender_id }}/">
-                <div class="tags">
-                  {% if t.has_display_data %}<span class="tag tag-ok">смета</span>{% else %}<span class="tag tag-nodata">нет сметы</span>{% endif %}
-                  <span class="tag {% if t.stage_open %}tag-stage-open{% else %}tag-stage-closed{% endif %}">{{ t.stage_display }}</span>
-                </div>
-              </a>
-              {% if t.eis_url %}
-              <a class="eis-in-card" href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer" title="Карточка на zakupki.gov.ru">ЕИС ↗</a>
-              {% endif %}
+            <div class="parse-summary-item">
+              <div class="parse-summary-label">Что делать</div>
+              <div class="parse-summary-value" id="parseResultNext">Нажать кнопку поиска</div>
             </div>
           </div>
         </div>
-        {% endfor %}
+        <div id="parseProgressLogCount" class="parse-progress-hint" style="margin-top:8px;color:#b8c7ea;"></div>
+        <details class="compact-details">
+          <summary>Технические подробности</summary>
+          <div class="parse-status-line" id="parseCommandLine"></div>
+          <div class="logs" id="parseLogs"></div>
+        </details>
       </div>
     </section>
-    {% endfor %}
-    {% if not grouped %}
-    {% if tender_count == 0 %}
-    <p class="sub">База пуста — нажмите «Обновить из ЕИС».</p>
-    {% elif not show_all %}
-    <p class="sub">Нет закупок на этапе «Подача заявок». Включите «Все этапы» вверху, чтобы увидеть остальные.</p>
-    {% else %}
-    <p class="sub">Нет данных для отображения.</p>
-    {% endif %}
-    {% endif %}
 
-    {% if tender_count %}
-    <footer class="page-footer">В базе {{ tender_count }} · отчёты сметы с таблицей: {{ display_report_count }} / {{ report_count }} · <span style="color:#d89090;">красная метка</span> — в HTML нет блоков работ.</footer>
-    {% endif %}
+    <section class="tool-section region-block" id="nmckParseBlock" aria-labelledby="nmckParseTitle">
+      <h2 class="section-title" id="nmckParseTitle">Дополнительно: обоснование НМЦК (Приложение №2)</h2>
+      <p class="action-card-desc">Загрузите Excel «Приложение №2 к извещению (Обоснование НМЦК)» — получите таблицу и JSON с позициями, количествами, коммерческими предложениями и НМЦК.</p>
+      <div class="btn-row" style="margin-top:0;">
+        <input type="file" id="nmckFileInput" accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="max-width:100%;font-size:12px;color:#b8c7ea;" />
+        <button type="button" class="btn secondary" id="nmckParseBtn" onclick="parseNmckJustification()">Разобрать Excel в таблицу и JSON</button>
+        <a class="btn secondary" id="nmckPreviewLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Открыть таблицу</a>
+        <button type="button" class="btn secondary" id="nmckCopyBtn" onclick="copyNmckJson()" disabled>Скопировать JSON</button>
+        <button type="button" class="btn secondary" id="nmckDownloadBtn" onclick="downloadNmckJson()" disabled>Скачать JSON-файл</button>
+      </div>
+      <p class="status" id="nmckParseStatus" style="margin-top:8px;"></p>
+      <textarea id="nmckJsonOut" readonly hidden style="width:100%;min-height:220px;margin-top:10px;font-family:Consolas,monospace;font-size:11px;line-height:1.35;background:#0b1223;border:1px solid var(--border-soft);color:var(--text);border-radius:8px;padding:10px;box-sizing:border-box;resize:vertical;"></textarea>
+    </section>
   </div>
   <script>
-    (function setupTenderMenus() {
-      const wraps = Array.from(document.querySelectorAll(".tender-menu-wrap"));
-      wraps.forEach((wrap) => {
-        let hideTimer = null;
-        const openMenu = () => {
-          if (hideTimer) {
-            clearTimeout(hideTimer);
-            hideTimer = null;
-          }
-          wrap.classList.add("menu-open");
-        };
-        const delayedClose = () => {
-          if (hideTimer) clearTimeout(hideTimer);
-          hideTimer = setTimeout(() => {
-            wrap.classList.remove("menu-open");
-            hideTimer = null;
-          }, 1000);
-        };
-        wrap.addEventListener("mouseenter", openMenu);
-        wrap.addEventListener("mouseleave", delayedClose);
-        const btn = wrap.querySelector(".tender-menu-btn");
-        if (btn) {
-          btn.addEventListener("click", function(ev) {
-            ev.preventDefault();
-            ev.stopPropagation();
-            if (wrap.classList.contains("menu-open")) {
-              delayedClose();
-            } else {
-              openMenu();
-            }
-          });
-        }
-      });
-      document.addEventListener("click", () => {
-        wraps.forEach((w) => w.classList.remove("menu-open"));
-      });
-    })();
-
     (function bindRebuildSelect() {
       const sel = document.getElementById("rebuildTenderSelect");
       if (!sel) return;
@@ -643,14 +1060,101 @@ INDEX_TEMPLATE = """
       });
     })();
 
+    let lastNmckJson = "";
+    async function parseNmckJustification() {
+      const inp = document.getElementById("nmckFileInput");
+      const st = document.getElementById("nmckParseStatus");
+      const ta = document.getElementById("nmckJsonOut");
+      const copyB = document.getElementById("nmckCopyBtn");
+      const dlB = document.getElementById("nmckDownloadBtn");
+      const prevA = document.getElementById("nmckPreviewLink");
+      const f = inp && inp.files && inp.files[0];
+      if (!f) { alert("Выберите файл Excel (.xlsx)"); return; }
+      if (st) st.textContent = "Загрузка и разбор…";
+      lastNmckJson = "";
+      if (copyB) copyB.disabled = true;
+      if (dlB) dlB.disabled = true;
+      if (prevA) { prevA.hidden = true; prevA.href = "#"; }
+      if (ta) { ta.hidden = true; ta.value = ""; }
+      const fd = new FormData();
+      fd.append("file", f);
+      try {
+        const r = await fetch("/api/parse-nmck-justification", { method: "POST", body: fd });
+        let data = {};
+        try { data = await r.json(); } catch (e) {}
+        if (!r.ok || !data.ok) {
+          if (st) st.textContent = (data && data.message) ? data.message : ("Ошибка " + r.status);
+          return;
+        }
+        const pack = { columns: data.columns, rows: data.rows, meta: data.meta };
+        lastNmckJson = JSON.stringify(pack, null, 2);
+        const m = data.meta || {};
+        if (st) {
+          st.textContent = "Готово: " + (m.row_count != null ? m.row_count : "?") + " поз., колонок "
+            + (m.column_count != null ? m.column_count : "?") + ", лист «" + (m.sheet || "") + "»";
+        }
+        if (data.preview_url && prevA) {
+          prevA.href = data.preview_url;
+          prevA.hidden = false;
+        }
+        if (ta) { ta.value = lastNmckJson; ta.hidden = false; }
+        if (copyB) copyB.disabled = false;
+        if (dlB) dlB.disabled = false;
+      } catch (e) {
+        if (st) st.textContent = "Запрос не выполнен (сеть или сервер).";
+      }
+    }
+    function copyNmckJson() {
+      if (!lastNmckJson) return;
+      navigator.clipboard.writeText(lastNmckJson).then(function() {
+        const st = document.getElementById("nmckParseStatus");
+        if (st) st.textContent += " · JSON в буфере обмена";
+      }).catch(function() { alert("Не удалось скопировать"); });
+    }
+    function downloadNmckJson() {
+      if (!lastNmckJson) return;
+      const blob = new Blob([lastNmckJson], { type: "application/json;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "nmck_prilozhenie_2.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
     function getRebuildTenderId() {
       const s = document.getElementById("rebuildTenderSelect");
       return s && s.value ? String(s.value).trim() : "";
     }
+    function setQuickTenderLinks(tid) {
+      const t = String(tid || "").trim();
+      const box = document.getElementById("quickTenderCheck");
+      const rep = document.getElementById("quickTenderReportLink");
+      const eis = document.getElementById("quickTenderEisLink");
+      if (!box || !rep || !eis) return;
+      if (!t) {
+        box.style.display = "none";
+        return;
+      }
+      rep.href = "/merge-report/" + encodeURIComponent(t) + "/";
+      eis.href = "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=" + encodeURIComponent(t);
+      rep.textContent = "сводка " + t;
+      box.style.display = "";
+      try { localStorage.setItem("lastTenderCheckId", t); } catch (e) {}
+    }
+    try {
+      const lastTid = localStorage.getItem("lastTenderCheckId") || "";
+      if (lastTid) setQuickTenderLinks(lastTid);
+    } catch (e) {}
     const TENDER_COUNT = {{ tender_count }};
 
     let parseRunning = false;
     let parseStartMs = null;
+    let parsePendingUntil = 0;
+    let parseAutoReloadArmed = false;
+    let notifyState = {
+      enabled: localStorage.getItem("webPushEnabled") === "1",
+      prev: null,
+    };
 
     function formatElapsed(sec) {
       const s = Math.max(0, Math.floor(sec));
@@ -670,6 +1174,57 @@ INDEX_TEMPLATE = """
 
     setInterval(updateParseElapsed, 1000);
 
+    function showParseLaunchFeedback() {
+      parseRunning = true;
+      parseStartMs = Date.now();
+      parsePendingUntil = Date.now() + 8000;
+      parseAutoReloadArmed = true;
+      const panel = document.getElementById("parseProgressPanel");
+      const label = document.getElementById("parseProgressLabel");
+      const bar = document.getElementById("parseBarFill");
+      const time = document.getElementById("parseProgressTime");
+      const status = document.getElementById("parseStatus");
+      const logs = document.getElementById("parseLogs");
+      const logCount = document.getElementById("parseProgressLogCount");
+      const cmd = document.getElementById("parseCommandLine");
+      if (panel) panel.hidden = false;
+      if (label) label.textContent = "Запускаем поиск новых закупок…";
+      if (bar) {
+        bar.classList.add("running");
+        bar.style.width = "65%";
+      }
+      if (time) time.textContent = "Прошло: 0 с";
+      if (status) status.textContent = "Статус: передаём задачу серверу";
+      if (logs) logs.textContent = "Ожидаем первые сообщения от программы…";
+      if (logCount) logCount.textContent = "Поиск запускается.";
+      if (cmd) cmd.textContent = "";
+      applyToolbarDisabled(true, false);
+      window.setTimeout(function() {
+        if (panel) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 80);
+    }
+
+    function showParseLaunchError(message) {
+      parseRunning = false;
+      parseStartMs = null;
+      parsePendingUntil = 0;
+      parseAutoReloadArmed = false;
+      const panel = document.getElementById("parseProgressPanel");
+      const label = document.getElementById("parseProgressLabel");
+      const bar = document.getElementById("parseBarFill");
+      const time = document.getElementById("parseProgressTime");
+      const status = document.getElementById("parseStatus");
+      if (panel) panel.hidden = false;
+      if (label) label.textContent = "Поиск не запустился";
+      if (bar) {
+        bar.classList.remove("running");
+        bar.style.width = "100%";
+      }
+      if (time) time.textContent = "";
+      if (status) status.textContent = message || "Сервер не смог запустить поиск.";
+      applyToolbarDisabled(false, !!window.__mergeRunLive);
+    }
+
     function applyToolbarDisabled(parseRun, mergeRun) {
       const busy = parseRun || mergeRun;
       const startBtn = document.getElementById("startBtn");
@@ -678,16 +1233,98 @@ INDEX_TEMPLATE = """
       const genBtn = document.getElementById("genMergeSiteBtn");
       const genMissingBtn = document.getElementById("genMergeMissingBtn");
       const runByLinkBtn = document.getElementById("runByLinkBtn");
-      if (startBtn) startBtn.disabled = busy;
+      if (startBtn) {
+        startBtn.disabled = busy;
+        startBtn.textContent = parseRun ? "Ищем закупки…" : "Найти новые закупки";
+      }
       if (rebuildBtn) rebuildBtn.disabled = busy || !getRebuildTenderId();
       if (rebuildAllBtn) rebuildAllBtn.disabled = busy || TENDER_COUNT < 1;
       if (genBtn) genBtn.disabled = busy;
       if (genMissingBtn) genMissingBtn.disabled = busy;
       if (runByLinkBtn) runByLinkBtn.disabled = busy;
+      document.querySelectorAll(".tender-act-btn").forEach(function(btn) {
+        btn.disabled = busy;
+      });
+    }
+
+    function updatePushButtonUi() {
+      const b = document.getElementById("enablePushBtn");
+      if (!b) return;
+      if (!("Notification" in window)) {
+        b.textContent = "Браузер не поддерживает уведомления";
+        b.disabled = true;
+        return;
+      }
+      const perm = Notification.permission;
+      if (notifyState.enabled && perm === "granted") {
+        b.textContent = "Уведомления включены";
+        b.disabled = true;
+        return;
+      }
+      b.textContent = "Включить уведомления";
+      b.disabled = false;
+    }
+
+    async function enableWebPush() {
+      if (!("Notification" in window)) {
+        alert("Браузер не поддерживает уведомления.");
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        alert("Разрешение на уведомления не выдано.");
+        updatePushButtonUi();
+        return;
+      }
+      notifyState.enabled = true;
+      localStorage.setItem("webPushEnabled", "1");
+      updatePushButtonUi();
+      new Notification("AutoBot", { body: "Уведомления в браузере включены." });
+    }
+
+    function safeNotify(title, body) {
+      if (!notifyState.enabled) return;
+      if (!("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+      try {
+        new Notification(title, { body });
+      } catch (e) {}
+    }
+
+    function handlePushDiff(nextState) {
+      const prev = notifyState.prev;
+      notifyState.prev = nextState;
+      if (!prev) return;
+
+      if (prev.parse_running && !nextState.parse_running) {
+        const ok = nextState.parse_exit_code === 0;
+        safeNotify(
+          ok ? "Поиск закупок завершён" : "Поиск закупок завершён с ошибкой",
+          ok ? "Обновите страницу, чтобы увидеть результат." : "Откройте ход работы на странице."
+        );
+      }
+
+      if (prev.merge_running && !nextState.merge_running) {
+        safeNotify("Сравнения цен готовы", nextState.merge_last_summary || "Обработка завершена.");
+      }
+
+      if ((nextState.coverage_merge_html || 0) > (prev.coverage_merge_html || 0)) {
+        const delta = (nextState.coverage_merge_html || 0) - (prev.coverage_merge_html || 0);
+        safeNotify("Появились новые сравнения цен", "Готово новых страниц: " + delta);
+      }
+    }
+
+    async function refreshPushState() {
+      try {
+        const r = await fetch("/api/push-state");
+        if (!r.ok) return;
+        const st = await r.json();
+        handlePushDiff(st);
+      } catch (e) {}
     }
 
     async function startParsing() {
-      applyToolbarDisabled(true, false);
+      showParseLaunchFeedback();
       try {
         const body = {
           max_pages: parseInt(document.getElementById("optMaxPages").value, 10) || 2,
@@ -700,20 +1337,24 @@ INDEX_TEMPLATE = """
           body: JSON.stringify(body),
         });
         const data = await r.json();
-        if (!data.ok) {
-          alert(data.message || "Не удалось запустить парсинг");
-          refreshStatus();
+        if (!r.ok || !data.ok) {
+          const message = data.message || "Не удалось запустить поиск закупок";
+          showParseLaunchError(message);
+          alert(message);
+          return;
         }
+        window.setTimeout(refreshStatus, 200);
       } catch (e) {
-        alert("Ошибка запуска парсинга");
-        refreshStatus();
+        const message = "Не удалось запустить поиск закупок. Проверьте, работает ли сервер.";
+        showParseLaunchError(message);
+        alert(message);
       }
     }
 
     async function rebuildReport() {
       const tid = getRebuildTenderId();
-      if (!tid) { alert("Выберите тендер в списке (блок «Дополнительно»)"); return; }
-      if (!confirm("Пересобрать Excel и HTML из уже скачанных файлов в data/downloads/" + tid + " ?")) return;
+      if (!tid) { alert("Выберите закупку."); return; }
+      if (!confirm("Повторно извлечь смету для закупки " + tid + " из уже скачанных документов?\\n\\nРыночные цены обновляться не будут.")) return;
       applyToolbarDisabled(true, false);
       try {
         const r = await fetch("/api/rebuild-report", {
@@ -723,27 +1364,49 @@ INDEX_TEMPLATE = """
         });
         const data = await r.json();
         if (!data.ok) {
-          alert(data.message || "Не удалось запустить пересборку");
+          alert(data.message || "Не удалось запустить повторное извлечение сметы");
           refreshStatus();
         }
       } catch (e) {
-        alert("Ошибка запроса пересборки");
+        alert("Не удалось отправить запрос на повторное извлечение сметы.");
+        refreshStatus();
+      }
+    }
+
+    async function rebuildReportForTender(tid) {
+      const t = String(tid || "").trim();
+      if (!t) return;
+      if (!confirm("Повторно извлечь смету для закупки " + t + " из уже скачанных документов?\\n\\nРыночные цены обновляться не будут.")) return;
+      applyToolbarDisabled(true, false);
+      try {
+        const r = await fetch("/api/rebuild-report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tender_id: t }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          alert(data.message || "Не удалось запустить повторное извлечение сметы");
+          refreshStatus();
+        }
+      } catch (e) {
+        alert("Не удалось отправить запрос на повторное извлечение сметы.");
         refreshStatus();
       }
     }
 
     async function rebuildAllReports() {
-      if (TENDER_COUNT < 1) { alert("В tenders.json нет тендеров"); return; }
+      if (TENDER_COUNT < 1) { alert("В списке пока нет закупок."); return; }
       if (!confirm(
-        "Пересобрать отчёты (Excel + HTML) для всех " + TENDER_COUNT + " тендеров из tenders.json?\\n\\n"
-        + "По очереди запустится main.py --from-downloaded-tender-id для каждого номера. Это может занять много времени."
+        "Повторно извлечь сметы для всех " + TENDER_COUNT + " закупок?\\n\\n"
+        + "Программа перечитает уже скачанные документы. Рыночные цены обновляться не будут."
       )) return;
       applyToolbarDisabled(true, false);
       try {
         const r = await fetch("/api/rebuild-all-reports", { method: "POST" });
         const data = await r.json();
         if (!data.ok) {
-          alert(data.message || "Не удалось запустить пересборку всех отчётов");
+          alert(data.message || "Не удалось запустить повторное извлечение смет");
           refreshStatus();
         }
       } catch (e) {
@@ -753,7 +1416,7 @@ INDEX_TEMPLATE = """
     }
 
     async function generateMergeSiteAll() {
-      if (!confirm("Запустить «Сводки для всех»? (Алиса, merge, HTML по сметам — может занять долго.)")) return;
+      if (!confirm("Обновить сравнения цен для всех закупок со сметой?\\n\\nАлиса повторно проверит цены. Процесс может занять несколько часов.")) return;
       try {
         const r = await fetch("/api/generate-merge-site-all", {
           method: "POST",
@@ -779,7 +1442,7 @@ INDEX_TEMPLATE = """
     }
 
     async function generateMergeSiteMissing() {
-      if (!confirm("Сделать только те тендеры, где нет /merge-report/<id>/ или прошлый прогон дал ошибку?")) return;
+      if (!confirm("Подготовить сравнения только там, где результата ещё нет или прошлая обработка завершилась с ошибкой?\\n\\nУже готовые страницы будут пропущены.")) return;
       try {
         const r = await fetch("/api/generate-merge-site-missing", {
           method: "POST",
@@ -807,7 +1470,8 @@ INDEX_TEMPLATE = """
     async function runFullForTender(tid) {
       const t = String(tid || "").trim();
       if (!t) return;
-      if (!confirm("Сделать полный отчёт для тендера " + t + " (Алиса → merge → HTML)?")) return;
+      if (!confirm("Подготовить сравнение цен для закупки " + t + "?\\n\\nПрограмма проверит документы, найдёт рыночные цены и соберёт готовую страницу.")) return;
+      setQuickTenderLinks(t);
       try {
         const r = await fetch("/api/generate-merge-site-one", {
           method: "POST",
@@ -828,7 +1492,8 @@ INDEX_TEMPLATE = """
     async function rerunAliceForTender(tid) {
       const t = String(tid || "").trim();
       if (!t) return;
-      if (!confirm("Пересобрать Алису с нуля для тендера " + t + " (без resume), затем merge + HTML?")) return;
+      if (!confirm("Начать поиск рыночных цен для закупки " + t + " заново?\\n\\nСохранённый прогресс Алисы будет отброшен.")) return;
+      setQuickTenderLinks(t);
       try {
         const r = await fetch("/api/generate-merge-site-one-rerun-alice", {
           method: "POST",
@@ -849,7 +1514,7 @@ INDEX_TEMPLATE = """
     async function runViabilityOnly(tid) {
       const t = String(tid || "").trim();
       if (!t) return;
-      if (!confirm("Пересобрать «Оценку по сравнению» и страницу отчёта для " + t + "? Нужна готовая сводка СВОДКА_РЫНОК (после merge).")) return;
+      if (!confirm("Обновить вывод о выгодности закупки " + t + " и отправить его в Telegram?")) return;
       try {
         const r = await fetch("/api/tender-viability-refresh", {
           method: "POST",
@@ -878,8 +1543,8 @@ INDEX_TEMPLATE = """
     async function runByTenderLink() {
       const inp = document.getElementById("tenderLinkInput");
       const raw = inp && inp.value ? String(inp.value).trim() : "";
-      if (!raw) { alert("Вставьте ссылку на тендер или номер тендера."); return; }
-      if (!confirm("Запустить анализ по этой ссылке/ID (Алиса → merge → HTML)?")) return;
+      if (!raw) { alert("Вставьте ссылку на закупку с zakupki.gov.ru или её номер."); return; }
+      if (!confirm("Проверить эту закупку?\\n\\nПрограмма скачает документы, извлечёт смету и найдёт рыночные цены.")) return;
       try {
         const r = await fetch("/api/generate-merge-site-by-link", {
           method: "POST",
@@ -891,6 +1556,7 @@ INDEX_TEMPLATE = """
           alert(data.message || ("Запрос отклонён (HTTP " + r.status + ")"));
         } else if (inp) {
           inp.value = "";
+          setQuickTenderLinks(data.tender_id || "");
         }
       } catch (e) {
         alert("Сеть или сервер недоступен: " + e);
@@ -916,18 +1582,150 @@ INDEX_TEMPLATE = """
         let cls = "cov-banner stat-strip cov-ok";
         if (nt === 0) {
           el.className = "cov-banner stat-strip cov-warn";
-          el.innerHTML = "В базе нет тендеров — «Обновить из ЕИС».";
+          el.innerHTML = "В списке пока нет закупок. Нажмите «Найти новые закупки».";
           return;
         }
         if (miss > 0) cls = mh === 0 && sx === 0 ? "cov-banner stat-strip cov-warn" : "cov-banner stat-strip cov-partial";
         el.className = cls;
-        let html = "Сводок <strong>смета + Алиса</strong>: <strong>" + mh + "</strong> / " + nt;
+        let html = "Готовых сравнений цен: <strong>" + mh + "</strong> из " + nt;
         if (miss > 0) {
-          html += " · не готово: <strong>" + miss + "</strong>";
-          html += "<br/><span style=\\"opacity:.85;font-size:11px\\">Подсказка: без сметы " + rs_no_est + ", без сводки " + rs_no_svodka + ", без HTML " + rs_no_html + ".</span>";
+          html += " · ждут обработки: <strong>" + miss + "</strong>";
+          html += "<br/><span style=\\"opacity:.85;font-size:11px\\">Из них: без извлечённой сметы — " + rs_no_est + ", без найденных рыночных цен — " + rs_no_svodka + ", страница результата не собрана — " + rs_no_html + ".</span>";
         }
         el.innerHTML = html;
       } catch (e) {}
+    }
+
+    function parseProgressView(pr, parsePending) {
+      const lines = Array.isArray(pr.log_tail) ? pr.log_tail : [];
+      const isTenderSearch = String(pr.task || "").includes("поиск новых закупок")
+        || lines.some(function(line) { return line === "Поиск тендеров..."; });
+      if (parsePending) {
+        return { title: "Запускаем поиск новых закупок…", detail: "Передаём задачу серверу", percent: 5, indeterminate: true };
+      }
+      if (!pr.running) {
+        if (pr.exit_code === 0) {
+          return {
+            title: isTenderSearch ? "Поиск закупок завершён" : "Задание завершено",
+            detail: isTenderSearch ? "Готово. Обновите страницу, чтобы увидеть новые закупки." : "Готово.",
+            percent: 100,
+            indeterminate: false,
+          };
+        }
+        if (pr.exit_code !== null && pr.exit_code !== undefined) {
+          return { title: isTenderSearch ? "Поиск завершён с ошибкой" : "Задание завершено с ошибкой", detail: "Подробности — в журнале ниже.", percent: 100, indeterminate: false };
+        }
+        return { title: "Ожидание", detail: "", percent: 0, indeterminate: false };
+      }
+
+      let searchChecks = 0;
+      let tenderStep = null;
+      let filtersDone = false;
+      let finalReport = false;
+      for (const line of lines) {
+        if (line.startsWith("- ") && line.includes(" найдено")) searchChecks += 1;
+        if (line.startsWith("Итого после фильтров:")) filtersDone = true;
+        if (line.startsWith("Готово. Общий отчет по сметам:")) finalReport = true;
+        const match = line.match(/^\[([0-9]+)\/([0-9]+)\] ([0-9]+):/);
+        if (match) tenderStep = { current: Number(match[1]), total: Number(match[2]), id: match[3] };
+      }
+
+      if (finalReport) {
+        return { title: "Завершаем поиск", detail: "Сохраняем итоговый отчёт и список закупок", percent: 98, indeterminate: false };
+      }
+      if (tenderStep && tenderStep.total > 0) {
+        const completedBefore = Math.max(0, tenderStep.current - 1);
+        const percent = 48 + Math.round((completedBefore / tenderStep.total) * 47);
+        return {
+          title: "Скачиваем документы и извлекаем сметы",
+          detail: "Закупка " + tenderStep.current + " из " + tenderStep.total + " · № " + tenderStep.id,
+          percent: percent,
+          indeterminate: false,
+        };
+      }
+      if (filtersDone) {
+        return { title: "Формируем список закупок", detail: "Поиск завершён, применяем фильтры и проверяем ранее найденные закупки", percent: 45, indeterminate: true };
+      }
+      if (searchChecks > 0 || lines.some(function(line) { return line === "Поиск тендеров..."; })) {
+        return {
+          title: "Ищем закупки на zakupki.gov.ru",
+          detail: searchChecks > 0 ? "Проверено поисковых направлений: " + searchChecks : "Получаем первые результаты…",
+          percent: Math.min(40, 10 + searchChecks * 5),
+          indeterminate: true,
+        };
+      }
+      return { title: pr.task ? "Сейчас: " + pr.task : "Подготавливаем поиск…", detail: "Процесс запущен, ожидаем первые сообщения", percent: 7, indeterminate: true };
+    }
+
+    function parseOutcomeSummary(pr, parsePending) {
+      const lines = Array.isArray(pr.log_tail) ? pr.log_tail : [];
+      const joined = lines.join("\\n");
+      const foundMatch = joined.match(/Итого после фильтров:\s*([0-9]+)/);
+      const addedMatch = joined.match(/Добавлено в систему:\s*([0-9]+)/);
+      const resultEl = { text: "Поиск ещё не завершён", cls: "" };
+      const issueEl = { text: "Идёт выполнение", cls: "" };
+      const nextEl = { text: "Дождаться окончания", cls: "" };
+
+      if (parsePending) {
+        return {
+          result: { text: "Запускаем поиск", cls: "" },
+          issue: { text: "Сервер принимает задачу", cls: "" },
+          next: { text: "Подождать несколько секунд", cls: "" },
+        };
+      }
+      if (pr.running) {
+        return {
+          result: { text: "Идёт поиск закупок", cls: "" },
+          issue: { text: "Программа проверяет ЕИС и документы", cls: "" },
+          next: { text: "Можно просто оставить вкладку открытой", cls: "" },
+        };
+      }
+
+      if (joined.includes("ERR_CERT_AUTHORITY_INVALID")) {
+        resultEl.text = "Новых закупок не получено";
+        resultEl.cls = "bad";
+        issueEl.text = "Сайт zakupki.gov.ru отклонён из-за проблемы с сертификатом";
+        issueEl.cls = "bad";
+        nextEl.text = "Проверить сертификаты/антивирус/VPN и повторить поиск";
+        nextEl.cls = "warn";
+      } else if (joined.includes("ERR_NETWORK_ACCESS_DENIED")) {
+        resultEl.text = "Новых закупок не получено";
+        resultEl.cls = "bad";
+        issueEl.text = "Нет доступа к zakupki.gov.ru из браузера Playwright";
+        issueEl.cls = "bad";
+        nextEl.text = "Проверить VPN, прокси, фаервол или блокировку сети";
+        nextEl.cls = "warn";
+      } else if (pr.exit_code === 0) {
+        const found = foundMatch ? Number(foundMatch[1]) : null;
+        const added = addedMatch ? Number(addedMatch[1]) : null;
+        if (found === null) {
+          resultEl.text = "Поиск завершён";
+          resultEl.cls = "ok";
+          issueEl.text = added !== null ? ("Добавлено в базу: " + added) : "Итог поиска сохранён";
+          issueEl.cls = "ok";
+          nextEl.text = "Проверить список закупок ниже";
+        } else if (found === 0) {
+          resultEl.text = "Подходящих закупок не найдено";
+          resultEl.cls = "warn";
+          issueEl.text = "По текущим регионам и ключевым словам результат пустой";
+          issueEl.cls = "warn";
+          nextEl.text = "Расширить параметры поиска или проверить доступ к ЕИС";
+        } else {
+          resultEl.text = "Поиск завершён";
+          resultEl.cls = "ok";
+          issueEl.text = "Найдено: " + found + (added !== null ? " · новых в базе: " + added : "");
+          issueEl.cls = "ok";
+          nextEl.text = "Проверить список закупок ниже";
+        }
+      } else if (pr.exit_code !== null && pr.exit_code !== undefined) {
+        resultEl.text = "Поиск завершился с ошибкой";
+        resultEl.cls = "bad";
+        issueEl.text = "Подробности скрыты в технических деталях";
+        issueEl.cls = "warn";
+        nextEl.text = "Открыть детали и посмотреть последнюю ошибку";
+      }
+
+      return { result: resultEl, issue: issueEl, next: nextEl };
     }
 
     async function refreshStatus() {
@@ -942,11 +1740,13 @@ INDEX_TEMPLATE = """
         if (rm.ok) mr = await rm.json();
       } catch (e) {}
       try {
-        parseRunning = !!pr.running;
+        if (pr.running) parsePendingUntil = 0;
+        const parsePending = !pr.running && Date.now() < parsePendingUntil;
+        parseRunning = !!pr.running || parsePending;
         if (pr.running && pr.started_at) {
           const ms = Date.parse(pr.started_at);
           parseStartMs = Number.isNaN(ms) ? null : ms;
-        } else {
+        } else if (!parsePending) {
           parseStartMs = null;
         }
 
@@ -957,56 +1757,66 @@ INDEX_TEMPLATE = """
           || pr.exit_code !== null && pr.exit_code !== undefined
         );
         const panel = document.getElementById("parseProgressPanel");
-        if (panel) panel.hidden = !(pr.running || hasParseHistory);
+        if (panel) panel.hidden = !(parseRunning || hasParseHistory);
 
+        const progressView = parseProgressView(pr, parsePending);
         const label = document.getElementById("parseProgressLabel");
-        if (label) {
-          if (pr.running) {
-            label.textContent = pr.task ? "Сейчас: " + pr.task : "Сейчас: выполняется задание…";
-          } else if (pr.exit_code !== null && pr.exit_code !== undefined) {
-            label.textContent = pr.exit_code === 0 ? "Завершено успешно" : "Завершено с ошибкой";
-          } else {
-            label.textContent = "Ожидание";
-          }
-        }
+        if (label) label.textContent = progressView.title;
 
         const lc = document.getElementById("parseProgressLogCount");
-        if (lc && (pr.running || hasParseHistory)) {
+        if (lc && (parseRunning || hasParseHistory)) {
           const n = pr.log_lines_count ?? 0;
-          lc.textContent = pr.running
+          lc.textContent = parsePending
+            ? "Поиск запускается."
+            : pr.running
             ? "Строк в логе: " + n + " (растёт, пока идёт вывод)."
             : "Строк в логе: " + n + ".";
         } else if (lc) lc.textContent = "";
 
         const bar = document.getElementById("parseBarFill");
         if (bar) {
-          if (pr.running) {
+          if (parseRunning && progressView.indeterminate) {
             bar.classList.add("running");
-            bar.style.width = "65%";
           } else {
             bar.classList.remove("running");
-            bar.style.width = (pr.exit_code === 0 ? "100%" : "100%");
           }
+          bar.style.width = Math.min(100, Math.max(0, progressView.percent)) + "%";
         }
 
         const status = document.getElementById("parseStatus");
         const logs = document.getElementById("parseLogs");
         const cmdLine = document.getElementById("parseCommandLine");
-        let st = pr.running ? "идёт выполнение" : "ожидание";
+        const summary = parseOutcomeSummary(pr, parsePending);
+        const resultMain = document.getElementById("parseResultMain");
+        const resultIssue = document.getElementById("parseResultIssue");
+        const resultNext = document.getElementById("parseResultNext");
+        let st = progressView.detail || (parsePending ? "запускается" : pr.running ? "идёт выполнение" : "ожидание");
         if (!pr.running && pr.exit_code !== null && pr.exit_code !== undefined) {
-          st += " | код выхода: " + pr.exit_code;
+          st += " · код выхода: " + pr.exit_code;
         }
-        if (pr.ended_at && !pr.running) st += " | завершено: " + pr.ended_at;
-        status.textContent = "Статус: " + st + (pr.task && pr.running ? " («" + pr.task + "»)" : "");
+        if (pr.ended_at && !pr.running) st += " · завершено: " + pr.ended_at;
+        status.textContent = st;
+        if (resultMain) {
+          resultMain.textContent = summary.result.text;
+          resultMain.className = "parse-summary-value" + (summary.result.cls ? " " + summary.result.cls : "");
+        }
+        if (resultIssue) {
+          resultIssue.textContent = summary.issue.text;
+          resultIssue.className = "parse-summary-value" + (summary.issue.cls ? " " + summary.issue.cls : "");
+        }
+        if (resultNext) {
+          resultNext.textContent = summary.next.text;
+          resultNext.className = "parse-summary-value" + (summary.next.cls ? " " + summary.next.cls : "");
+        }
         if (cmdLine) {
-          cmdLine.textContent = pr.running && pr.command ? "Команда: " + pr.command : (pr.command && !pr.running ? "Последняя команда: " + pr.command : "");
+          cmdLine.textContent = pr.running && pr.command ? "Команда: " + pr.command : "";
         }
-        if (logs) {
+        if (logs && (!parsePending || pr.log_tail && pr.log_tail.length)) {
           logs.textContent = (pr.log_tail && pr.log_tail.length ? pr.log_tail.join("\\n") : "");
           logs.scrollTop = logs.scrollHeight;
         }
 
-        if (pr.running) {
+        if (parseRunning) {
           updateParseElapsed();
         } else {
           const endLine = document.getElementById("parseProgressTime");
@@ -1039,7 +1849,7 @@ INDEX_TEMPLATE = """
           ptext.textContent = pct + "% · " + (mr.done ?? 0) + " / " + (mr.total ?? 0) + (mr.current_tid ? " · сейчас: " + mr.current_tid : "");
         }
         if (det) {
-          det.textContent = mergeRun ? "Алиса → сводка → страница отчёта…" : "";
+          det.textContent = mergeRun ? "Ищем рыночные цены и собираем страницы сравнения…" : "";
         }
         if (mlogs) {
           mlogs.textContent = (mr.log_tail && mr.log_tail.length ? mr.log_tail.join("\\n") : "");
@@ -1057,15 +1867,21 @@ INDEX_TEMPLATE = """
         }
         if (mreason) {
           const reasons = mr.last_reason_counts || {};
-          const txt = "Ошибки/пропуски: без сметы " + (reasons.no_estimate || 0)
-            + ", Алиса " + (reasons.alice_failed || 0)
-            + ", merge " + (reasons.merge_failed || 0)
-            + ", HTML " + (reasons.html_failed || 0);
+          const txt = "Не удалось обработать: без сметы " + (reasons.no_estimate || 0)
+            + ", ошибка поиска цен " + (reasons.alice_failed || 0)
+            + ", ошибка объединения данных " + (reasons.merge_failed || 0)
+            + ", ошибка страницы результата " + (reasons.html_failed || 0);
           mreason.textContent = !mergeRun && mr.last_ended_at ? txt : "";
         }
 
         window.__mergeRunLive = mergeRun;
-        applyToolbarDisabled(!!pr.running, mergeRun);
+        applyToolbarDisabled(parseRunning, mergeRun);
+        if (parseAutoReloadArmed && !pr.running && pr.exit_code === 0 && !mergeRun) {
+          parseAutoReloadArmed = false;
+          window.setTimeout(function() {
+            location.reload();
+          }, 900);
+        }
         if (typeof window._wasMergeRun === "undefined") window._wasMergeRun = false;
         if (window._wasMergeRun && !mergeRun) refreshCoverage();
         window._wasMergeRun = mergeRun;
@@ -1074,8 +1890,11 @@ INDEX_TEMPLATE = """
 
     setInterval(refreshStatus, 2000);
     setInterval(refreshCoverage, 5000);
+    setInterval(refreshPushState, 5000);
     refreshStatus();
     refreshCoverage();
+    refreshPushState();
+    updatePushButtonUi();
   </script>
 </body>
 </html>
@@ -1132,11 +1951,11 @@ def _estimate_rows_by_tender_id() -> dict[str, int]:
 
 def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
     """
-    Прогресс Алисы по тендеру: (готово, всего) по уникальным работам сметы.
-    Логика "готово" совпадает с merge: есть строгие цены или из ответа извлекаются суммы.
+    Прогресс Алисы по строкам сметы: (готово, всего) для тех же строк,
+    которые реально идут в alice_market_scraper.py
+    (без явных дублей и без слишком коротких названий).
     """
-    from autobot.market_analytics import COL_NAME, extract_ruble_amounts
-    from autobot.merge_estimate_alice import _norm_key
+    from autobot.market_analytics import COL_DUP, COL_NAME, extract_ruble_amounts
 
     tid = (tid or "").strip()
     if not tid:
@@ -1150,8 +1969,15 @@ def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
         return 0, 0
     if COL_NAME not in est.columns:
         return 0, 0
-    total_keys = {_norm_key(x) for x in est[COL_NAME].fillna("").astype(str).tolist() if _norm_key(x)}
-    total = len(total_keys)
+
+    total = 0
+    for _, row in est.iterrows():
+        if COL_DUP in est.columns and str(row.get(COL_DUP, "")).strip() == "Да":
+            continue
+        name = str(row.get(COL_NAME, "") or "").strip()
+        if len(name) < 8:
+            continue
+        total += 1
     if total <= 0:
         return 0, 0
 
@@ -1166,27 +1992,30 @@ def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
     if COL_NAME not in ali.columns:
         return 0, total
 
-    # Совместимость со старыми файлами Алисы.
     ren: dict[str, str] = {}
     if "Цены за ед. (рынок, руб)" not in ali.columns and "Цены (строго, руб)" in ali.columns:
         ren["Цены (строго, руб)"] = "Цены за ед. (рынок, руб)"
     if ren:
         ali = ali.rename(columns=ren)
 
-    done: set[str] = set()
+    done = 0
     for _, row in ali.iterrows():
-        k = _norm_key(str(row.get(COL_NAME, "") or ""))
-        if not k or k not in total_keys:
+        name = str(row.get(COL_NAME, "") or "").strip()
+        if not name:
             continue
         strict = str(row.get("Цены за ед. (рынок, руб)", "") or "").strip()
         has_strict = strict and strict.casefold() not in ("nan", "none", "—", "-", "н/д", "нет")
         if has_strict:
-            done.add(k)
+            done += 1
             continue
         reply = str(row.get("Ответ Алисы", "") or "").strip()
         if reply and extract_ruble_amounts(reply):
-            done.add(k)
-    return len(done), total
+            done += 1
+    return min(done, total), total
+
+def _alice_output_path_for_tender(tid: str) -> Path:
+    est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    return REPORTS_DIR / f"АЛИСА_РЫНОК_{est_path.stem}.xlsx"
 
 
 def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
@@ -1194,9 +2023,12 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
     Все тендеры из tenders.json + признаки: есть файл отчёта и есть ли в нём блоки позиций
     (иначе внутри отчёта только «Нет данных для отображения»).
     """
+    from autobot.merge_estimate_alice import OUT_PREFIX
+
     meta = load_tender_metadata()
     reports_map = _html_reports_by_tender_id()
     rows_map = _estimate_rows_by_tender_id()
+    merge_root = REPO_ROOT / "data" / "reports_site"
     items: list[dict] = []
     for tid, tmeta in meta.items():
         report_file = reports_map.get(tid, "")
@@ -1205,6 +2037,13 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
             report_file = ""
         rp = REPORTS_DIR / report_file if report_file else None
         has_display_data = bool(rp) and _smet_report_html_has_position_groups(rp)
+        estimate_rows = int(rows_map.get(tid, 0))
+        alice_partial_exists = _alice_output_path_for_tender(tid).is_file()
+        merge_html_exists = (merge_root / tid / "index.html").is_file()
+        svodka_exists = (REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx").is_file()
+        alice_done, alice_total = _alice_progress_for_tender(tid) if estimate_rows > 0 else (0, 0)
+        alice_left = max(0, alice_total - alice_done)
+        alice_pct = int(min(100, max(0, round(100.0 * alice_done / alice_total)))) if alice_total > 0 else 0
         stage_raw = (tmeta.get("stage") or "").strip()
         stage_open = stage_raw == STAGE_SUBMISSION
         stage_display = stage_raw if stage_raw else "—"
@@ -1216,10 +2055,18 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
                 "eis_url": eis_notice_url(tid, tmeta.get("url")),
                 "has_report": has_report,
                 "has_display_data": has_display_data,
+                "has_estimate": estimate_rows > 0,
+                "has_merge_report": merge_html_exists or svodka_exists or alice_partial_exists,
+                "has_svodka": svodka_exists,
+                "has_alice_partial": alice_partial_exists,
                 "report_file": report_file,
                 "stage_open": stage_open,
                 "stage_display": stage_display,
-                "estimate_rows": int(rows_map.get(tid, 0)),
+                "estimate_rows": estimate_rows,
+                "alice_progress_done": alice_done,
+                "alice_progress_total": alice_total,
+                "alice_progress_left": alice_left,
+                "alice_progress_percent": alice_pct,
                 "publish_date": (tmeta.get("publish_date") or "").strip(),
             }
         )
@@ -1227,7 +2074,6 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
     n_reports = sum(1 for x in items if x["has_report"])
     n_with_data = sum(1 for x in items if x["has_display_data"])
     return items, len(items), n_reports, n_with_data
-
 
 def _publish_date_sort_key(raw: str, *, newest_first: bool) -> tuple[int, float]:
     """
@@ -1253,6 +2099,147 @@ def _publish_date_sort_key(raw: str, *, newest_first: bool) -> tuple[int, float]
         return 1, 0.0
 
 
+SIMPLE_INDEX_TEMPLATE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Тендеры</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#0f1724; color:#e8eefc; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    .top { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom: 18px; }
+    .card { background:#182235; border:1px solid #2a3852; border-radius:16px; padding:18px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+    .muted { color:#9fb0d0; }
+    .stats { display:flex; flex-wrap:wrap; gap:12px; }
+    .stat { min-width:140px; }
+    .stat b { display:block; font-size:22px; margin-top:4px; }
+    .group { margin-top: 18px; }
+    .group h2 { margin:0 0 10px; font-size:18px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:14px; }
+    .tender h3 { margin:0 0 10px; font-size:16px; line-height:1.35; }
+    .meta { display:grid; gap:6px; margin-bottom:12px; font-size:14px; }
+    .progress { margin: 12px 0; }
+    .progress-row { display:flex; justify-content:space-between; gap:8px; font-size:13px; margin-bottom:6px; }
+    .track { width:100%; height:10px; background:#0d1420; border-radius:999px; overflow:hidden; border:1px solid #2d3a52; }
+    .fill { height:100%; background:linear-gradient(90deg, #4f8cff, #63d1ff); }
+    .tags { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 14px; }
+    .tag { font-size:12px; padding:5px 9px; border-radius:999px; background:#23314a; border:1px solid #32445f; }
+    .tag.ok { background:#183725; border-color:#2b6842; color:#b8f0ca; }
+    .tag.warn { background:#3b2e13; border-color:#7b5f17; color:#ffe08a; }
+    .tag.bad { background:#3a1f24; border-color:#74404a; color:#ffb8c2; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .btn { border:0; border-radius:10px; padding:10px 14px; cursor:pointer; font-size:14px; background:#305baf; color:#fff; }
+    .btn.secondary { background:#26364f; color:#dce7ff; }
+    .btn[disabled] { opacity:.55; cursor:not-allowed; }
+    a.btn { text-decoration:none; display:inline-block; }
+    .empty { padding:18px; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1 style="margin:0 0 8px;">Тендеры</h1>
+        <div class="muted">Список закупок, прогресс по поиску цен и быстрые действия.</div>
+      </div>
+      <div class="card stats">
+        <div class="stat"><span class="muted">Всего тендеров</span><b>{{ tender_count }}</b></div>
+        <div class="stat"><span class="muted">В показе</span><b>{{ visible_count }}</b></div>
+        <div class="stat"><span class="muted">Карточек</span><b>{{ display_report_count }}/{{ report_count }}</b></div>
+      </div>
+    </div>
+
+    {% if grouped %}
+      {% for region, items in grouped %}
+      <section class="group">
+        <h2>{{ region }}</h2>
+        <div class="grid">
+          {% for t in items %}
+          <article class="card tender">
+            <h3>{{ t.display_title }}</h3>
+            <div class="meta">
+              <div><span class="muted">Тендер:</span> <code>{{ t.tender_id }}</code></div>
+              <div><span class="muted">Публикация:</span> {{ t.publish_date or "не указана" }}</div>
+              <div><span class="muted">Этап:</span> {{ t.stage_display }}</div>
+              <div><span class="muted">Смета:</span> {% if t.has_estimate %}{{ t.estimate_rows }} строк{% else %}ещё не собрана{% endif %}</div>
+            </div>
+
+            {% if t.alice_progress_total > 0 %}
+            <div class="progress">
+              <div class="progress-row">
+                <span>Поиск цен</span>
+                <span>{{ t.alice_progress_done }}/{{ t.alice_progress_total }}</span>
+              </div>
+              <div class="track"><div class="fill" style="width: {{ t.alice_progress_percent }}%;"></div></div>
+            </div>
+            {% endif %}
+
+            <div class="tags">
+              {% if t.has_merge_report %}
+              <span class="tag ok">Карточка готова</span>
+              {% elif t.has_alice_partial %}
+              <span class="tag warn">Есть частичные цены</span>
+              {% elif t.has_estimate %}
+              <span class="tag ok">Смета готова</span>
+              {% else %}
+              <span class="tag bad">Нет сметы</span>
+              {% endif %}
+              <span class="tag">{{ t.stage_display }}</span>
+            </div>
+
+            <div class="actions">
+              {% if t.has_merge_report %}
+              <a class="btn" href="/merge-report/{{ t.tender_id }}/">Открыть карточку</a>
+              {% endif %}
+              {% if t.has_estimate %}
+              <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one', '{{ t.tender_id }}', 'Запускаю поиск цен…')">Запустить поиск цен</button>
+              <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one-rerun-alice', '{{ t.tender_id }}', 'Перезапускаю поиск…')">Перезапустить</button>
+              <button class="btn secondary" type="button" onclick="runAction('/api/rebuild-report', '{{ t.tender_id }}', 'Пересобираю карточку…')">Пересобрать карточку</button>
+              {% else %}
+              <button class="btn secondary" type="button" disabled>Сначала нужна смета</button>
+              {% endif %}
+              <a class="btn secondary" href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer">ЕИС</a>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+    {% else %}
+      <div class="card empty">
+        <div>Сейчас список пуст.</div>
+        <div class="muted" style="margin-top:8px;">Либо ещё нет тендеров, либо включён фильтр, который всё скрывает.</div>
+      </div>
+    {% endif %}
+  </div>
+
+  <script>
+    async function runAction(url, tenderId, startMessage) {
+      try {
+        const body = tenderId ? { tender_id: tenderId } : {};
+        if (startMessage) alert(startMessage);
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || data.message || ("HTTP " + resp.status));
+        alert(data.message || "Команда отправлена.");
+        location.reload();
+      } catch (err) {
+        alert("Ошибка: " + (err.message || err));
+      }
+    }
+  </script>
+</body>
+</html>
+"""
+
+
 @app.route("/")
 def index():
     sidebar_items, tender_count, report_count, display_report_count = collect_sidebar_tenders()
@@ -1275,7 +2262,10 @@ def index():
     for r in visible_items:
         grouped_map.setdefault(r["region"], []).append(r)
 
-    grouped = sorted(grouped_map.items(), key=lambda x: x[0])
+    grouped = [
+        {"title": region, "tenders": items}
+        for region, items in sorted(grouped_map.items(), key=lambda x: x[0])
+    ]
     rebuild_options = [
         {"tender_id": x["tender_id"], "display_title": x["display_title"]} for x in sidebar_items
     ]
@@ -1303,6 +2293,99 @@ def report_file(filename: str):
 
 
 MERGE_REPORTS_SITE_DIR = REPO_ROOT / "data" / "reports_site"
+NMCK_PREVIEW_DIR = REPO_ROOT / "data" / "nmck_previews"
+
+
+NMCK_PREVIEW_PAGE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{{ title|e }} — таблица НМЦК</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a30;
+      --border: #27355d;
+      --text: #e8ecf1;
+      --muted: #9fb0d6;
+      --accent: #4b65bb;
+    }
+    html, body { margin: 0; min-height: 100%; background: radial-gradient(1200px 700px at 20% -200px, #1c2b56 0%, var(--bg) 45%); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
+    .page { max-width: 100%; padding: 18px 16px 32px; box-sizing: border-box; }
+    .head { max-width: 1400px; margin: 0 auto 14px; }
+    h1 { font-size: 1.2rem; font-weight: 700; margin: 0 0 6px 0; letter-spacing: -0.02em; line-height: 1.35; word-break: break-word; }
+    .sub { font-size: 13px; color: var(--muted); margin: 0 0 12px 0; }
+    a.back { color: #87bbff; font-size: 13px; text-decoration: none; }
+    a.back:hover { text-decoration: underline; }
+    .table-shell {
+      max-width: 1400px;
+      margin: 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: linear-gradient(180deg, var(--panel), #10172b);
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+    }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    th, td {
+      border: 1px solid #223154;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.35;
+    }
+    th {
+      background: #1a2442;
+      color: #d2defa;
+      font-weight: 600;
+      max-width: 28em;
+      word-break: break-word;
+    }
+    tbody tr:nth-child(even) { background: rgba(10, 14, 28, 0.35); }
+    tbody tr:hover { background: rgba(75, 101, 187, 0.12); }
+    td { word-break: break-word; max-width: 36em; }
+    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; max-width: none; }
+    .foot { max-width: 1400px; margin: 14px auto 0; font-size: 11px; color: #8a9bc4; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="head">
+      <p style="margin:0 0 8px 0;"><a class="back" href="/">← На главную</a></p>
+      <h1>{{ title|e }}</h1>
+      <p class="sub">{{ subtitle|e }}</p>
+    </div>
+    <div class="table-shell">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              {% for col in columns %}
+              <th>{{ col }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              {% for col in columns %}
+              {% set v = row.get(col) %}
+              <td class="{% if v is number %}num{% endif %}">{{ v if v is not none else '' }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="foot">Колонки и строки как в загруженном Excel (обоснование НМЦК).</p>
+  </div>
+</body>
+</html>
+"""
 
 
 MISSING_MERGE_PAGE = """
@@ -1311,7 +2394,7 @@ MISSING_MERGE_PAGE = """
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Нет веб-сводки</title>
+  <title>Сравнение цен ещё не готово</title>
   <style>
     body { font-family: Segoe UI, sans-serif; background:#0f1220; color:#e8ecf1; margin:0; padding:24px; line-height:1.5; }
     a { color:#7eb8ff; }
@@ -1327,12 +2410,14 @@ MISSING_MERGE_PAGE = """
 </head>
 <body>
   <div class="box">
-    <h1>Веб-отчёт не найден (404)</h1>
-    <p>Тендер <strong>№ {{ tender_id }}</strong>. Страница строится из <code>data/reports_site/{{ tender_id }}/index.html</code> после генерации.</p>
-    <p class="hint">Файлов <code>СВОДКА_РЫНОК_*.xlsx</code> в <code>data/reports/</code>: <strong>{{ svodka_count }}</strong>.
-    {% if not has_svodka_for_tid %}<strong>Для этого номера нет</strong> <code>СВОДКА_РЫНОК_{{ tender_id }}.xlsx</code> — кнопка ниже не создаст страницу именно для него, пока не будет merge с Алисой.{% elif svodka_count == 0 %}Нужен сначала пайплайн с Алисой и merge (Excel сводка).{% endif %}</p>
-    <p><a href="/">← На главную</a> · <a id="retryLink" href="#">Обновить эту страницу</a></p>
-    <button type="button" class="btn" id="genBtn">Алиса + сводка для всех</button>
+    <h1>Сравнение цен ещё не готово</h1>
+    <p>Закупка <strong>№ {{ tender_id }}</strong>. Чтобы увидеть результат, программе нужно извлечь смету, найти рыночные цены и собрать страницу сравнения.</p>
+    <p class="hint">
+    {% if not has_svodka_for_tid %}Для этой закупки рыночные цены ещё не найдены. Нажмите первую кнопку ниже.{% else %}Рыночные цены уже найдены, осталось обновить страницу результата.{% endif %}
+    </p>
+    <p><a href="/">← На главную</a> · <a id="retryLink" href="#">Обновить страницу</a></p>
+    <button type="button" class="btn" id="genOneBtn">Подготовить сравнение для этой закупки</button>
+    <button type="button" class="btn" id="genBtn" style="background:#283247;border-color:#4a567e;">Подготовить сравнения для всех</button>
     <div id="panel" style="margin-top:16px;display:none;">
       <div class="merge-bar-wrap"><div id="bar" class="merge-bar-fill" style="width:0%"></div></div>
       <p id="pct" style="margin:8px 0 0;font-size:14px;">0%</p>
@@ -1359,9 +2444,10 @@ MISSING_MERGE_PAGE = """
         document.getElementById("bar").style.width = Math.min(100, Math.max(0, pct)) + "%";
         document.getElementById("pct").textContent = pct + "% · " + (m.done||0) + " / " + (m.total||0) + (m.current_tid ? " · " + m.current_tid : "");
         document.getElementById("logs").textContent = (m.log_tail||[]).join("\\n");
-        if (!run && m.last_ended_at) idle.textContent = "Последний прогон (Алиса + сводка): " + m.last_ended_at + " — " + (m.last_summary||"");
+        if (!run && m.last_ended_at) idle.textContent = "Последняя обработка: " + m.last_ended_at + " — " + (m.last_summary||"");
         else if (run) idle.textContent = "";
         document.getElementById("genBtn").disabled = run;
+        document.getElementById("genOneBtn").disabled = run;
         if (prevRun && !run && m.total > 0) {
           try {
             const chk = await fetch("/merge-report/" + encodeURIComponent(REQUESTED_TID) + "/?t=" + Date.now(), { method: "GET", cache: "no-store" });
@@ -1374,6 +2460,18 @@ MISSING_MERGE_PAGE = """
     document.getElementById("genBtn").addEventListener("click", async function() {
       try {
         const r = await fetch("/api/generate-merge-site-all", { method: "POST", headers: { "Content-Type": "application/json" } });
+        const d = await r.json();
+        if (!d.ok) alert(d.message || "Ошибка");
+      } catch (e) { alert("Сеть"); }
+      tick();
+    });
+    document.getElementById("genOneBtn").addEventListener("click", async function() {
+      try {
+        const r = await fetch("/api/generate-merge-site-one", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ tender_id: REQUESTED_TID }),
+        });
         const d = await r.json();
         if (!d.ok) alert(d.message || "Ошибка");
       } catch (e) { alert("Сеть"); }
@@ -1539,8 +2637,16 @@ def _run_alice_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[i
         cmd.append("--headed")
     if force_no_resume or _truthy_env("ALICE_NO_RESUME"):
         cmd.append("--no-resume")
-    r = subprocess.run(cmd, cwd=str(REPO_ROOT))
-    return int(r.returncode), " ".join(cmd)
+    timeout_raw = (os.environ.get("ALICE_TIMEOUT_SEC") or "1800").strip() or "1800"
+    try:
+        timeout_sec = max(60, int(timeout_raw))
+    except ValueError:
+        timeout_sec = 1800
+    try:
+        r = subprocess.run(cmd, cwd=str(REPO_ROOT), timeout=timeout_sec)
+        return int(r.returncode), " ".join(cmd)
+    except subprocess.TimeoutExpired:
+        return 124, " ".join(cmd) + f" [timeout={timeout_sec}s]"
 
 
 def _run_main_fetch_for_tender(tid: str, tender_url: str) -> tuple[int, str, str]:
@@ -1694,7 +2800,7 @@ def _run_merge_site_all_worker(
                 merge_site_state["running"] = False
                 merge_site_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
                 merge_site_state["last_ended_at"] = merge_site_state["ended_at"]
-                merge_site_state["last_summary"] = "0 файлов сметы"
+                merge_site_state["last_summary"] = "Нет смет для обработки"
                 merge_site_state["last_reason_counts"] = reason_counts
                 return
 
@@ -1742,7 +2848,7 @@ def _run_merge_site_all_worker(
                         _tg_send(
                             f"{pref}\n⚠️ Нет <code>ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx</code>\n"
                             f"<code>{html_mod.escape(reason)}</code>\n<code>{html_mod.escape(diag)}</code>\n"
-                            "Нужна ссылка на тендер или парсинг."
+                            "Если ссылка уже была, обычно это временная недоступность ЕИС (таймаут/капча/блокировка); повторите позже."
                         )
                         errors.append(tid)
                         continue
@@ -1772,9 +2878,9 @@ def _run_merge_site_all_worker(
                 rem_before = max(0, total_works - done_before)
                 if total_works > 0:
                     if rem_before > 0:
-                        _tg_send(f"{pref}\n🟡 Алиса <b>{done_before}/{total_works}</b>…")
+                        _tg_send(f"{pref}\n🟡 Алиса: обработано строк сметы <b>{done_before}/{total_works}</b>…")
                     else:
-                        _tg_send(f"{pref}\n🟢 Алиса уже <b>{done_before}/{total_works}</b>")
+                        _tg_send(f"{pref}\n🟢 Алиса уже обработала строки сметы: <b>{done_before}/{total_works}</b>")
                     _tg_flush_spool()
                 _tg_flush_spool()
                 alice_code, alice_cmd = _run_alice_for_tender(tid, force_no_resume=force_alice_no_resume)
@@ -1783,8 +2889,14 @@ def _run_merge_site_all_worker(
                 if alice_code != 0:
                     reason_counts["alice_failed"] += 1
                     with merge_site_lock:
-                        merge_site_state["log_lines"].append(f"  → Алиса код {alice_code}")
-                    _tg_send(f"{pref}\n⚠️ Алиса код <code>{alice_code}</code>")
+                        if alice_code == 124:
+                            merge_site_state["log_lines"].append("  → Алиса зависла и остановлена по таймауту")
+                        else:
+                            merge_site_state["log_lines"].append(f"  → Алиса код {alice_code}")
+                    if alice_code == 124:
+                        _tg_send(f"{pref}\n⚠️ Алиса зависла и остановлена по таймауту")
+                    else:
+                        _tg_send(f"{pref}\n⚠️ Алиса код <code>{alice_code}</code>")
                     errors.append(tid)
                     continue
 
@@ -1792,9 +2904,9 @@ def _run_merge_site_all_worker(
                 rem_after = max(0, total_after - done_after)
                 if total_after > 0:
                     if rem_after > 0:
-                        _tg_send(f"{pref}\n🟡 Алиса <b>{done_after}/{total_after}</b> (−{rem_after})")
+                        _tg_send(f"{pref}\n🟡 Алиса: обработано строк сметы <b>{done_after}/{total_after}</b>, осталось <b>{rem_after}</b>")
                     else:
-                        _tg_send(f"{pref}\n🟢 Алиса <b>{done_after}/{total_after}</b>")
+                        _tg_send(f"{pref}\n🟢 Алиса: строки сметы обработаны <b>{done_after}/{total_after}</b>")
 
                 out = merge_estimate_and_alice(tid)
                 _tg_send(f"{pref}\n🟡 Merge…")
@@ -1857,8 +2969,8 @@ def _run_merge_site_all_worker(
             merge_site_state["error_ids"] = errors
             merge_site_state["last_ended_at"] = ended
             merge_site_state["last_summary"] = (
-                f"Полный прогон: {ok_full} из {len(ids)} "
-                f"(ошибок/пропусков: {len(errors)}, HTML: {ok_html})"
+                f"Готово сравнений: {ok_full} из {len(ids)} "
+                f"(не удалось обработать: {len(errors)})"
             )
             merge_site_state["last_reason_counts"] = reason_counts
             merge_site_state["log_lines"].append("--- Готово. Можно обновить страницу тендера. ---")
@@ -1896,15 +3008,14 @@ def merge_report_site(tender_id: str):
 
     svodka = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
     # Всегда пересобираем HTML из сводки — иначе остаётся старый index.html без карточек/скриптов.
-    if svodka.is_file():
-        try:
-            from autobot.report_merge_html import write_tender_report_site
+    try:
+        from autobot.report_merge_html import write_tender_report_site
 
-            out_path = write_tender_report_site(tid)
-            print(f"[merge-report] HTML ok tender={tid} -> {out_path}", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"[merge-report] HTML FAILED tender={tid}: {e}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
+        out_path = write_tender_report_site(tid)
+        print(f"[merge-report] HTML attempt tender={tid} -> {out_path}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[merge-report] HTML FAILED tender={tid}: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
     if target.is_file():
         resp = make_response(send_from_directory(folder, "index.html"))
         resp.headers["Cache-Control"] = "no-store, max-age=0"
@@ -1920,9 +3031,44 @@ def merge_report_site(tender_id: str):
     ), 404
 
 
+@app.route("/nmck-preview/<preview_id>/")
+def nmck_preview_table(preview_id: str):
+    """Таблица из последнего разбора Excel обоснования НМЦК (payload в data/nmck_previews/)."""
+    pid = (preview_id or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", pid):
+        abort(404)
+    path = NMCK_PREVIEW_DIR / pid / "payload.json"
+    if not path.is_file():
+        abort(404)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        abort(404)
+    columns = data.get("columns") or []
+    rows = data.get("rows") or []
+    meta = data.get("meta") or {}
+    title = (meta.get("filename") or "Обоснование НМЦК").strip() or "Обоснование НМЦК"
+    subtitle = (
+        f"{meta.get('row_count', '?')} поз. · лист «{meta.get('sheet', '')}» · "
+        f"{meta.get('column_count', '?')} колонок"
+    )
+    resp = make_response(
+        render_template_string(
+            NMCK_PREVIEW_PAGE,
+            title=title,
+            subtitle=subtitle,
+            columns=columns,
+            rows=rows,
+        )
+    )
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 def _parse_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 
 
@@ -1932,7 +3078,7 @@ def _cmd_display(cmd: list[str]) -> str:
 
 def _stream_main_py(cli_args: list[str], *, log_cap: int = 400) -> int:
     """Один запуск main.py; дописывает строки в parse_state['log_lines']. Возвращает код выхода."""
-    cmd = [sys.executable, str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
+    cmd = [sys.executable, "-u", str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1942,6 +3088,7 @@ def _stream_main_py(cli_args: list[str], *, log_cap: int = 400) -> int:
             text=True,
             errors="replace",
             env=_parse_env(),
+            bufsize=1,
         )
     except OSError as e:
         with parse_lock:
@@ -1960,7 +3107,7 @@ def _stream_main_py(cli_args: list[str], *, log_cap: int = 400) -> int:
 
 def _run_main_worker(cli_args: list[str], task: str) -> None:
     """Запуск main.py тем же Python, что и веб-сервер (не py.exe из PATH)."""
-    cmd = [sys.executable, str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
+    cmd = [sys.executable, "-u", str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
     cmd_display = _cmd_display(cmd)
     with parse_lock:
         parse_state["running"] = True
@@ -1970,18 +3117,26 @@ def _run_main_worker(cli_args: list[str], task: str) -> None:
         parse_state["ended_at"] = None
         parse_state["exit_code"] = None
         parse_state["log_lines"] = [f">>> {cmd_display}"]
-
-    exit_code = _stream_main_py(cli_args, log_cap=300)
-    with parse_lock:
-        parse_state["running"] = False
-        parse_state["task"] = ""
-        parse_state["command"] = ""
-        parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
-        parse_state["exit_code"] = exit_code
-        if exit_code == 0:
-            parse_state["log_lines"].append(
-                "--- Готово. Обновите страницу (F5), чтобы подтянуть список тендеров. ---"
-            )
+    exit_code = -1
+    try:
+        exit_code = _stream_main_py(cli_args, log_cap=300)
+    except Exception:
+        err = traceback.format_exc(limit=8)
+        with parse_lock:
+            parse_state["log_lines"].append("!!! Внутренняя ошибка фонового парсинга:")
+            parse_state["log_lines"].extend(err.rstrip().splitlines())
+            parse_state["log_lines"] = parse_state["log_lines"][-300:]
+    finally:
+        with parse_lock:
+            parse_state["running"] = False
+            parse_state["task"] = ""
+            parse_state["command"] = ""
+            parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
+            parse_state["exit_code"] = exit_code
+            if exit_code == 0:
+                parse_state["log_lines"].append(
+                    "--- Готово. Обновите страницу (F5), чтобы подтянуть список тендеров. ---"
+                )
 
 
 def _run_rebuild_all_worker() -> None:
@@ -2047,10 +3202,53 @@ def _run_rebuild_all_worker() -> None:
         parse_state["log_lines"] = parse_state["log_lines"][-cap:]
 
 
+def _nmck_upload_allowed(filename: str) -> bool:
+    fn = (filename or "").lower().strip()
+    return fn.endswith((".xlsx", ".xls", ".xlsm"))
+
+
+@app.route("/api/parse-nmck-justification", methods=["POST"])
+def api_parse_nmck_justification():
+    """Excel «Обоснование НМЦК» (приложение №2) → JSON (позиции и все колонки таблицы)."""
+    f = request.files.get("file")
+    if not f or not getattr(f, "filename", None):
+        return jsonify({"ok": False, "message": "Выберите файл в поле «Обоснование НМЦК»."}), 400
+    if not _nmck_upload_allowed(f.filename):
+        return jsonify({"ok": False, "message": "Нужен файл Excel: .xlsx, .xls или .xlsm."}), 400
+    try:
+        raw = f.read()
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"Не удалось прочитать файл: {e}"}), 400
+    if not raw:
+        return jsonify({"ok": False, "message": "Пустой файл."}), 400
+    try:
+        from autobot.nmck_justification_parse import parse_nmck_justification_excel
+
+        out = parse_nmck_justification_excel(raw, original_name=f.filename)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"Ошибка разбора Excel: {e}"}), 400
+    preview_id = uuid.uuid4().hex
+    folder = NMCK_PREVIEW_DIR / preview_id
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        payload = {"columns": out["columns"], "rows": out["rows"], "meta": out["meta"]}
+        (folder / "payload.json").write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        return jsonify({"ok": False, "message": f"Не удалось сохранить превью: {e}"}), 500
+    out["preview_id"] = preview_id
+    out["preview_url"] = f"/nmck-preview/{preview_id}/"
+    return jsonify({"ok": True, **out})
+
+
 @app.route("/api/start-parse", methods=["POST"])
 def api_start_parse():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Сначала дождитесь окончания прогона «Алиса + сводка»."}), 409
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания подготовки сравнений цен."}), 409
     with parse_lock:
         if parse_state["running"]:
             return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
@@ -2072,18 +3270,38 @@ def api_start_parse():
         "--days-back",
         str(days_back),
     ]
-    threading.Thread(
+    worker = threading.Thread(
         target=_run_main_worker,
-        kwargs={"cli_args": args, "task": "парсинг ЕИС"},
+        kwargs={"cli_args": args, "task": "поиск новых закупок"},
         daemon=True,
-    ).start()
+    )
+    with parse_lock:
+        if parse_state["running"]:
+            return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
+        parse_state["running"] = True
+        parse_state["task"] = "запуск поиска новых закупок"
+        parse_state["command"] = ""
+        parse_state["started_at"] = datetime.now().isoformat(timespec="seconds")
+        parse_state["ended_at"] = None
+        parse_state["exit_code"] = None
+        parse_state["log_lines"] = ["Подготавливаем запуск поиска…"]
+    try:
+        worker.start()
+    except RuntimeError as e:
+        with parse_lock:
+            parse_state["running"] = False
+            parse_state["task"] = ""
+            parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
+            parse_state["exit_code"] = -1
+            parse_state["log_lines"].append(f"Не удалось запустить фоновую задачу: {e}")
+        return jsonify({"ok": False, "message": "Не удалось запустить фоновую задачу поиска."}), 500
     return jsonify({"ok": True})
 
 
 @app.route("/api/rebuild-report", methods=["POST"])
 def api_rebuild_report():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Сначала дождитесь окончания прогона «Алиса + сводка»."}), 409
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания подготовки сравнений цен."}), 409
     with parse_lock:
         if parse_state["running"]:
             return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
@@ -2095,7 +3313,7 @@ def api_rebuild_report():
         return jsonify({"ok": False, "message": f"Не найден {_AUTOBOT_MAIN_FILE}"}), 500
     threading.Thread(
         target=_run_main_worker,
-        kwargs={"cli_args": ["--from-downloaded-tender-id", tid], "task": f"пересбор {tid}"},
+        kwargs={"cli_args": ["--from-downloaded-tender-id", tid], "task": f"повторное извлечение сметы {tid}"},
         daemon=True,
     ).start()
     return jsonify({"ok": True})
@@ -2104,7 +3322,7 @@ def api_rebuild_report():
 @app.route("/api/rebuild-all-reports", methods=["POST"])
 def api_rebuild_all_reports():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Сначала дождитесь окончания прогона «Алиса + сводка»."}), 409
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания подготовки сравнений цен."}), 409
     with parse_lock:
         if parse_state["running"]:
             return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
@@ -2198,13 +3416,37 @@ def api_reports_coverage():
     return jsonify(_compute_reports_coverage())
 
 
+@app.route("/api/push-state")
+def api_push_state():
+    cov = _compute_reports_coverage()
+    with parse_lock:
+        pr_running = bool(parse_state.get("running"))
+        pr_exit = parse_state.get("exit_code")
+        pr_end = parse_state.get("ended_at")
+    with merge_site_lock:
+        mr_running = bool(merge_site_state.get("running"))
+        mr_last_end = merge_site_state.get("last_ended_at")
+        mr_summary = str(merge_site_state.get("last_summary") or "")
+    return jsonify(
+        {
+            "parse_running": pr_running,
+            "parse_exit_code": pr_exit,
+            "parse_ended_at": pr_end,
+            "merge_running": mr_running,
+            "merge_last_ended_at": mr_last_end,
+            "merge_last_summary": mr_summary,
+            "coverage_merge_html": int(cov.get("merge_html_among_tenders", 0) or 0),
+        }
+    )
+
+
 @app.route("/api/generate-merge-site-all", methods=["POST"])
 def api_generate_merge_site_all():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Прогон «Алиса + сводка» уже выполняется."}), 409
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
     with parse_lock:
         if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания парсинга или пересбора (main.py)."}), 409
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     threading.Thread(target=_run_merge_site_all_worker, kwargs={"only_missing": False}, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -2212,10 +3454,10 @@ def api_generate_merge_site_all():
 @app.route("/api/generate-merge-site-missing", methods=["POST"])
 def api_generate_merge_site_missing():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Прогон «Алиса + сводка» уже выполняется."}), 409
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
     with parse_lock:
         if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания парсинга или пересбора (main.py)."}), 409
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     threading.Thread(target=_run_merge_site_all_worker, kwargs={"only_missing": True}, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -2223,10 +3465,10 @@ def api_generate_merge_site_missing():
 @app.route("/api/generate-merge-site-one", methods=["POST"])
 def api_generate_merge_site_one():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Прогон «Алиса + сводка» уже выполняется."}), 409
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
     with parse_lock:
         if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания парсинга или пересбора (main.py)."}), 409
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
@@ -2238,10 +3480,10 @@ def api_generate_merge_site_one():
 @app.route("/api/generate-merge-site-one-rerun-alice", methods=["POST"])
 def api_generate_merge_site_one_rerun_alice():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Прогон «Алиса + сводка» уже выполняется."}), 409
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
     with parse_lock:
         if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания парсинга или пересбора (main.py)."}), 409
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
@@ -2257,10 +3499,10 @@ def api_generate_merge_site_one_rerun_alice():
 @app.route("/api/generate-merge-site-by-link", methods=["POST"])
 def api_generate_merge_site_by_link():
     if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Прогон «Алиса + сводка» уже выполняется."}), 409
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
     with parse_lock:
         if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания парсинга или пересбора (main.py)."}), 409
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     raw = str(data.get("tender_link", "")).strip()
     tid = _extract_tender_id(raw)
@@ -2288,7 +3530,7 @@ def api_tender_viability_refresh():
         return jsonify(
             {
                 "ok": False,
-                "message": "Нет файла СВОДКА_РЫНОК для этого номера. Сначала «Сделать отчёт (Алиса + merge + HTML)» или merge_estimate_alice.",
+                "message": "Для этой закупки ещё нет готового сравнения цен. Сначала найдите рыночные цены.",
             }
         ), 400
     try:

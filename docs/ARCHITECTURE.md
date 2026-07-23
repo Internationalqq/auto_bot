@@ -33,7 +33,8 @@ py -3 tools/run_module.py autobot.merge_estimate_alice --tender-id <id>
 |--------|------|
 | `autobot.main` | Парсинг ЕИС, выгрузки, `ОТЧЕТ_ПО_СМЕТАМ_<id>.xlsx` |
 | `autobot.scheduled_pipeline` | Регламент: main → Алиса → merge → HTML → TG |
-| `autobot.web_ui` | Flask: список тендеров, API, `/merge-report/<id>/` |
+| `autobot.web_ui` | Flask: список тендеров, API, `/merge-report/<id>/`, НМЦК: загрузка → JSON + `/nmck-preview/<uuid>/` (таблица, `data/nmck_previews/`) |
+| `autobot.nmck_justification_parse` | Разбор «Приложение №2 (Обоснование НМЦК)».xlsx → `columns` / `rows` / `meta` (CLI и API) |
 | `autobot.alice_market_scraper` | Playwright → Алиса по строкам сметы, `АЛИСА_РЫНОК_*.xlsx` |
 | `autobot.merge_estimate_alice` | Склейка `ОТЧЕТ` + `АЛИСА` → `СВОДКА_РЫНОК_<id>.xlsx` |
 | `autobot.report_merge_html` | `СВОДКА` → `data/reports_site/<id>/index.html` |
@@ -96,12 +97,12 @@ flowchart LR
 
 **Парсинг и смета**
 
-- `autobot/main.py` — оркестратор ЕИС, вызовы загрузчиков/парсеров смет.  
+- `autobot/main.py` — оркестратор ЕИС, вызовы загрузчиков/парсеров смет (LSR-структура Excel + fallback по табличным Excel и PDF-строкам с суммами).  
 - `autobot/market_analytics.py` — колонки, нормализация сметы, извлечение сумм, пересчёты для merge/отчёта.
 
 **Рынок (Алиса)**
 
-- `autobot/alice_market_scraper.py` — запросы к Алисе, парсинг блоков `ЦЕНЫ_РУБ` / `ИСТОЧНИКИ`, колонки Excel.  
+- `autobot/alice_market_scraper.py` — запросы к Алисе, парсинг блоков `ЦЕНЫ_РУБ` / `ИСТОЧНИКИ`, колонки Excel (в т.ч. `Ответ Алисы (полный)`).
 - `autobot/text_contacts.py` — общее извлечение URL и телефонов.
 
 **Склейка и отчёт**

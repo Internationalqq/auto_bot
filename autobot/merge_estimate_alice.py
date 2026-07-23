@@ -47,6 +47,7 @@ def refresh_svodka_if_estimate_newer(tender_id: str) -> Path | None:
         return out_path if out_path.is_file() else None
     try:
         est_mtime = est_path.stat().st_mtime
+        alice_mtime = alice_path.stat().st_mtime
     except OSError:
         return out_path if out_path.is_file() else None
     sv_mtime = 0.0
@@ -55,7 +56,7 @@ def refresh_svodka_if_estimate_newer(tender_id: str) -> Path | None:
             sv_mtime = out_path.stat().st_mtime
         except OSError:
             sv_mtime = 0.0
-    if est_mtime <= sv_mtime + 1.0:
+    if max(est_mtime, alice_mtime) <= sv_mtime + 1.0:
         return out_path if out_path.is_file() else None
     return merge_estimate_and_alice(tid)
 
@@ -121,6 +122,7 @@ def merge_estimate_and_alice(tender_id: str) -> Path | None:
     ali_cols = [
         COL_NAME,
         "Ответ Алисы",
+        "Ответ Алисы (полный)",
         "Цены за ед. (рынок, руб)",
         "Медиана цена за ед. (рынок)",
         "Мин цена за ед. (рынок)",

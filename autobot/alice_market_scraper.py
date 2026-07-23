@@ -883,6 +883,63 @@ def _merge_alice_runs(prev: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([p_kept, n2], ignore_index=True).reindex(columns=cols)
 
 
+def _build_alice_output_row(m: dict, ans: str, err: str) -> dict:
+    prices = _extract_unit_prices_from_alice_reply(
+        ans,
+        m.get(COL_UNIT_PRICE),
+        m.get(COL_QTY),
+    )
+    bundle = _build_price_source_phone_bundle(
+        ans,
+        unit_price=m.get(COL_UNIT_PRICE),
+        qty=m.get(COL_QTY),
+    )
+    phones = _extract_phones(ans)
+    urls = _extract_urls(ans)
+    m2 = {
+        k: v
+        for k, v in m.items()
+        if k != "_id" and not str(k).startswith("_alice")
+    }
+    return {
+        **m2,
+        "РћС‚РІРµС‚ РђР»РёСЃС‹": ans,
+        "РћС‚РІРµС‚ РђР»РёСЃС‹ (РїРѕР»РЅС‹Р№)": ans,
+        "Р¦РµРЅС‹ Р·Р° РµРґ. (СЂС‹РЅРѕРє, СЂСѓР±)": _fmt_prices(prices),
+        "РњРµРґРёР°РЅР° С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": (round(float(statistics.median(prices)), 2) if prices else ""),
+        "РњРёРЅ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": (prices[0] if prices else ""),
+        "РњР°РєСЃ С†РµРЅР° Р·Р° РµРґ. (СЂС‹РЅРѕРє)": (prices[-1] if prices else ""),
+        "РўРµР»РµС„РѕРЅС‹ (СЃС‚СЂРѕРіРѕ)": "; ".join(phones[:10]),
+        "РЎСЃС‹Р»РєРё (СЃС‚СЂРѕРіРѕ)": "; ".join(urls[:10]),
+        "Р¦РµРЅР°-СЃР°Р№С‚-С‚РµР»РµС„РѕРЅ (json)": (json.dumps(bundle, ensure_ascii=False) if bundle else ""),
+        "РСЃС‚РѕС‡РЅРёРєРё (СЃСЃС‹Р»РєРё/С‚РµР»РµС„РѕРЅС‹)": (
+            (("; ".join(urls[:10])) + (" | " if urls and phones else "") + ("; ".join(phones[:10])))
+        ),
+        "РћС€РёР±РєР° / СЃС‚Р°С‚СѓСЃ": err or ("РѕРє" if ans else "РїСѓСЃС‚РѕР№ РѕС‚РІРµС‚"),
+    }
+
+
+def _persist_partial_alice_rows(
+    rows: list[dict],
+    *,
+    out_columns: list[str],
+    out_path: Path | None,
+    prev_alice_df: pd.DataFrame | None,
+    verbose: bool,
+) -> None:
+    if out_path is None or not rows:
+        return
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        cur = pd.DataFrame(rows, columns=out_columns)
+        if prev_alice_df is not None and not prev_alice_df.empty:
+            cur = _merge_alice_runs(prev_alice_df, cur)
+        cur.to_excel(out_path, index=False)
+    except Exception as e:
+        if verbose:
+            print(f"Partial save skipped: {e}", flush=True)
+
+
 def run_table(
     df: pd.DataFrame,
     region: str,
@@ -902,6 +959,7 @@ def run_table(
     resume: bool = True,
     prev_alice_df: pd.DataFrame | None = None,
     tender_id: str | None = None,
+    partial_out_path: Path | None = None,
 ) -> pd.DataFrame:
     out_columns = [
         COL_ITEM,
@@ -912,6 +970,7 @@ def run_table(
         "Регион в запросе",
         "Запрос Алисе",
         "Ответ Алисы",
+        "Ответ Алисы (полный)",
         "Цены за ед. (рынок, руб)",
         "Медиана цена за ед. (рынок)",
         "Мин цена за ед. (рынок)",
@@ -1014,8 +1073,8 @@ def run_table(
         ) from e
 
     user_data_dir.mkdir(parents=True, exist_ok=True)
-    results_map: dict[str, tuple[str, str, str]] = {}
     tg_prog = _AliceTgEphemeralProgress(tid_chat)
+    save_every = max(1, int((os.environ.get("ALICE_SAVE_EVERY") or "1").strip() or "1"))
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -1032,7 +1091,7 @@ def run_table(
 
         selectors = _input_selectors()
 
-        for idx, (label, prompt) in enumerate(batch):
+        for idx, (_, prompt) in enumerate(batch):
             if verbose:
                 short = (prompt[:100] + "…") if len(prompt) > 100 else prompt
                 print(f"[{idx + 1}/{len(batch)}] {short}", flush=True)
@@ -1071,7 +1130,15 @@ def run_table(
                             a2 = sanitize_alice_reply(g2, fu.strip())
                             if a2:
                                 ans = (ans + _TWO_STEP_SEP + a2).strip()
-            results_map[label] = (prompt, ans, err2)
+            rows.append(_build_alice_output_row(m_row, ans, err2))
+            if len(rows) % save_every == 0 or idx + 1 == len(batch):
+                _persist_partial_alice_rows(
+                    rows,
+                    out_columns=out_columns,
+                    out_path=partial_out_path,
+                    prev_alice_df=prev_norm,
+                    verbose=verbose,
+                )
             if err2:
                 tg_prog.finish_err(row_seq, row_total, row_name, err2)
             elif ans:
@@ -1084,6 +1151,8 @@ def run_table(
                 time.sleep(pause_sec)
 
         context.close()
+
+    return pd.DataFrame(rows, columns=out_columns)
 
     for m in meta:
         iid = str(m.get("_id", ""))
@@ -1109,6 +1178,7 @@ def run_table(
             {
                 **m2,
                 "Ответ Алисы": ans,
+                "Ответ Алисы (полный)": ans,
                 "Цены за ед. (рынок, руб)": _fmt_prices(prices),
                 "Медиана цена за ед. (рынок)": (round(float(statistics.median(prices)), 2) if prices else ""),
                 "Мин цена за ед. (рынок)": (prices[0] if prices else ""),
@@ -1267,6 +1337,7 @@ def main() -> None:
         resume=not args.no_resume,
         prev_alice_df=prev_for_run,
         tender_id=(args.tender_id or "").strip() or None,
+        partial_out_path=prev_path,
     )
 
     if not args.no_resume and not prev_alice.empty:

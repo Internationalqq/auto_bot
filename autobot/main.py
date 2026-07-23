@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from autobot.paths import REPO_ROOT
 import argparse
+import atexit
 import html
+import hashlib
 import io
 import json
 import os
@@ -17,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 from typing import Iterable
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 try:
     from dotenv import load_dotenv
@@ -62,6 +64,16 @@ ARCHIVE_KEYWORDS = [
     "лср",
     "докум",
 ]
+DOC_EXTENSIONS = (".zip", ".rar", ".7z", ".xlsx", ".xls", ".xlsm", ".pdf", ".doc", ".docx", ".rtf")
+NOTICE_ROUTE_TYPES = (
+    "ea20",
+    "ea44",
+    "zk20",
+    "ok20",
+    "po615",
+    "priz",
+    "ep44",
+)
 
 # Параметры этапов из URL расширенного поиска.
 # Оставляем включенными, а итоговый этап дополнительно фильтруем ниже по карточке.
@@ -75,6 +87,7 @@ WORK_COLUMN_HINTS = ("наименование", "работ", "услуг", "п
 PRICE_COLUMN_HINTS = ("цена", "стоимость", "сумма", "всего")
 ESTIMATE_FILE_HINTS = ("лср",)
 OBJECT_SMETA_NAME_HINTS = ("объектн", "объектная", "objectnaya")
+PDF_LINE_PRICE_RE = re.compile(r"^(?P<name>.+?)\s+(?P<price>\d[\d\s\xa0]{2,}(?:[.,]\d{1,2})?)\s*(?:руб(?:\.|лей|ля|ль)?|₽)?$", re.IGNORECASE)
 
 
 def should_skip_object_estimate_file(path: Path) -> bool:
@@ -112,6 +125,27 @@ class Tender:
     stage: str
     price_rub: float | None
     publish_date: str | None
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    v = (os.environ.get(name, default) or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _eis_ignore_https_errors() -> bool:
+    """
+    Обход для случаев, когда VPN/антивирус подменяет TLS-сертификат ЕИС.
+    Можно выключить через EIS_IGNORE_HTTPS_ERRORS=0.
+    """
+    return _truthy_env("EIS_IGNORE_HTTPS_ERRORS", "1")
+
+
+def _new_eis_page(browser):
+    context = browser.new_context(
+        user_agent=USER_AGENT,
+        ignore_https_errors=_eis_ignore_https_errors(),
+    )
+    return context.new_page()
 
 
 def configure_rar_backend() -> bool:
@@ -177,6 +211,87 @@ def ensure_dirs() -> dict[str, Path]:
     for path in paths.values():
         path.mkdir(parents=True, exist_ok=True)
     return paths
+
+
+def _resume_enabled() -> bool:
+    return _truthy_env("SEARCH_RESUME", "1")
+
+
+def _checkpoint_signature(args: argparse.Namespace) -> str:
+    payload = {
+        "max_pages": int(args.max_pages),
+        "max_tenders": int(args.max_tenders),
+        "days_back": int(args.days_back),
+        "regions": REGIONS,
+        "keywords": KEYWORDS,
+        "price_min": PRICE_MIN,
+        "price_max": PRICE_MAX,
+        "needed_stage": NEEDED_STAGE,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _search_checkpoint_path(out_paths: dict[str, Path]) -> Path:
+    return out_paths["root"] / "search_resume_checkpoint.json"
+
+
+def _load_search_checkpoint(out_paths: dict[str, Path], args: argparse.Namespace) -> dict | None:
+    if not _resume_enabled():
+        return None
+    path = _search_checkpoint_path(out_paths)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("signature") != _checkpoint_signature(args):
+        return None
+    if data.get("completed"):
+        return None
+    tenders = data.get("filtered_tenders")
+    if not isinstance(tenders, list) or not tenders:
+        return None
+    return data
+
+
+def _save_search_checkpoint(
+    out_paths: dict[str, Path],
+    args: argparse.Namespace,
+    *,
+    filtered: list[Tender],
+    completed_ids: set[str],
+    new_ids: set[str],
+    search_total: int,
+    completed: bool = False,
+) -> None:
+    if not _resume_enabled():
+        return
+    payload = {
+        "signature": _checkpoint_signature(args),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "completed": bool(completed),
+        "search_total": int(search_total),
+        "filtered_tenders": [asdict(t) for t in filtered],
+        "completed_ids": sorted({str(x).strip() for x in completed_ids if str(x).strip()}),
+        "new_ids": sorted({str(x).strip() for x in new_ids if str(x).strip()}),
+    }
+    _search_checkpoint_path(out_paths).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _clear_search_checkpoint(out_paths: dict[str, Path]) -> None:
+    path = _search_checkpoint_path(out_paths)
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
 
 
 def get_tender_price_from_cache(tender_id: str, out_paths: dict[str, Path]) -> float | None:
@@ -277,6 +392,70 @@ def normalize_href(href: str) -> str:
     return f"https://zakupki.gov.ru{href}"
 
 
+def _extract_reg_number_from_url(url: str) -> str:
+    try:
+        p = urlparse(url)
+        q = parse_qs(p.query)
+    except Exception:
+        return ""
+    reg = (q.get("regNumber", [""])[0] or "").strip()
+    return reg if reg.isdigit() else ""
+
+
+def _candidate_notice_urls(tender: Tender) -> list[str]:
+    """
+    Генерирует расширенный набор URL карточки/документов для разных типов закупок.
+    Это повышает шанс найти файлы, если исходный тип пути в ссылке неправильный или устарел.
+    """
+    base = (tender.url or "").strip()
+    out: list[str] = []
+    if base:
+        out.append(base)
+        if "common-info.html" in base:
+            out.append(base.replace("common-info.html", "documents.html"))
+        if "documents.html" in base:
+            out.append(base.replace("documents.html", "common-info.html"))
+
+    reg = _extract_reg_number_from_url(base) or (tender.tender_id.strip() if tender.tender_id.isdigit() else "")
+    if reg:
+        for route in NOTICE_ROUTE_TYPES:
+            root = f"https://zakupki.gov.ru/epz/order/notice/{route}/view"
+            out.append(f"{root}/common-info.html?regNumber={reg}")
+            out.append(f"{root}/documents.html?regNumber={reg}")
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for u in out:
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        uniq.append(u)
+    return uniq
+
+
+def _goto_with_retries(page, url: str, *, timeout_ms: int = 60_000, retries: int = 3) -> tuple[bool, list[str]]:
+    """Пробует открыть страницу несколько раз, включая fallback wait_until='commit'."""
+    errs: list[str] = []
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(1800)
+            return True, errs
+        except (PlaywrightTimeoutError, PlaywrightError) as e:
+            errs.append(f"{url} [attempt {attempt}/{attempts}, domcontentloaded] -> {type(e).__name__}: {e}")
+        try:
+            page.goto(url, wait_until="commit", timeout=timeout_ms)
+            page.wait_for_load_state("domcontentloaded", timeout=15_000)
+            page.wait_for_timeout(1800)
+            return True, errs
+        except (PlaywrightTimeoutError, PlaywrightError) as e:
+            errs.append(f"{url} [attempt {attempt}/{attempts}, commit] -> {type(e).__name__}: {e}")
+        if attempt < attempts:
+            page.wait_for_timeout(1000 * attempt)
+    return False, errs
+
+
 def parse_publish_date(text: str) -> str | None:
     m = re.search(r"(\d{2}\.\d{2}\.\d{4})", text or "")
     return m.group(1) if m else None
@@ -297,7 +476,7 @@ def search_tenders(region: str, keyword: str, max_pages: int = 3) -> list[Tender
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=USER_AGENT)
+        page = _new_eis_page(browser)
 
         for page_no in range(1, max_pages + 1):
             params = {
@@ -451,7 +630,7 @@ def refresh_cached_open_tender_stages(out_paths: dict[str, Path]) -> list[tuple[
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=USER_AGENT)
+        page = _new_eis_page(browser)
         for tid, url in candidates:
             old_stage = (str(merged.get(tid, {}).get("stage") or "")).strip() or NEEDED_STAGE
             try:
@@ -508,13 +687,16 @@ def collect_doc_links(page) -> list[tuple[str, str]]:
         if not href:
             continue
         full = normalize_href(href)
-        is_direct_download = "/download/priz/file.html" in full.lower()
-        is_archive = full.lower().endswith((".zip", ".rar")) or any(k in text for k in ARCHIVE_KEYWORDS)
-        if is_archive or is_direct_download:
+        low_url = full.lower()
+        is_direct_download = "/download/" in low_url and "file.html" in low_url
+        is_doc_ext = low_url.endswith(DOC_EXTENSIONS)
+        is_doc_text = any(k in text for k in ARCHIVE_KEYWORDS) or any(x in text for x in ("pdf", "xlsx", "xls", "doc"))
+        if is_doc_ext or is_doc_text or is_direct_download:
             candidates.append((text, full))
     # Иногда ссылка на архив есть только в сыром HTML.
     html = page.content().lower()
-    for match in re.finditer(r'https?://[^"\'\s>]+?\.(?:zip|rar)(?:\?[^"\'\s>]*)?', html):
+    ext_re = "|".join(x.strip(".") for x in DOC_EXTENSIONS)
+    for match in re.finditer(rf'https?://[^"\'\s>]+?\.(?:{ext_re})(?:\?[^"\'\s>]*)?', html):
         candidates.append(("html-direct", match.group(0)))
     # Keep unique urls
     uniq = {}
@@ -554,6 +736,59 @@ def _guess_original_name(url: str, content_disposition: str | None, saved_path: 
     if url_name:
         return requests.utils.unquote(url_name)
     return saved_path.name
+
+
+def _sanitize_filename_for_windows(name: str, fallback: str = "document.bin") -> str:
+    """Безопасное имя файла для Windows/NTFS."""
+    cleaned = (name or "").strip().replace("\x00", "")
+    cleaned = cleaned.replace("/", "_").replace("\\", "_")
+    cleaned = re.sub(r'[<>:"|?*]+', "_", cleaned)
+    cleaned = cleaned.rstrip(" .")
+    if not cleaned:
+        cleaned = fallback
+    reserved = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
+    stem = Path(cleaned).stem or cleaned
+    if stem.upper() in reserved:
+        ext = Path(cleaned).suffix
+        cleaned = f"_{stem}{ext}"
+    return cleaned[:220]
+
+
+def _choose_unique_path(target_dir: Path, desired_name: str) -> Path:
+    """Выбирает уникальный путь, добавляя суффикс (2), (3), ..."""
+    candidate = target_dir / desired_name
+    if not candidate.exists():
+        return candidate
+    stem = Path(desired_name).stem
+    ext = Path(desired_name).suffix
+    for i in range(2, 10_000):
+        alt = target_dir / f"{stem} ({i}){ext}"
+        if not alt.exists():
+            return alt
+    return target_dir / f"{stem}_{int(datetime.now().timestamp())}{ext}"
 
 
 def _doc_type_label(path_or_name: str) -> str:
@@ -674,8 +909,17 @@ def _send_no_estimate_files_summary_to_tg(
 
 def download_file(url: str, target_path: Path, cookies: dict[str, str] | None = None) -> tuple[Path, str] | None:
     headers = {"User-Agent": USER_AGENT}
+    verify_tls = not _eis_ignore_https_errors()
+    if not verify_tls:
+        warnings.filterwarnings("ignore", message="Unverified HTTPS request")
     try:
-        resp = requests.get(url, headers=headers, cookies=cookies or {}, timeout=60)
+        resp = requests.get(
+            url,
+            headers=headers,
+            cookies=cookies or {},
+            timeout=60,
+            verify=verify_tls,
+        )
         resp.raise_for_status()
     except requests.RequestException:
         return None
@@ -709,18 +953,25 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=USER_AGENT)
+        page = _new_eis_page(browser)
         links: list[tuple[str, str]] = []
-        candidate_urls = [tender.url]
-        if "common-info.html" in tender.url:
-            candidate_urls.append(tender.url.replace("common-info.html", "documents.html"))
+        candidate_urls = _candidate_notice_urls(tender)
 
         cookie_jar: dict[str, str] = {}
         nav_errors: list[str] = []
+        nav_timeout_ms = max(20_000, int(os.environ.get("EIS_NAV_TIMEOUT_MS", "90000") or "90000"))
+        nav_retries = max(1, min(5, int(os.environ.get("EIS_NAV_RETRIES", "3") or "3")))
         for candidate_url in candidate_urls:
+            ok, errs = _goto_with_retries(
+                page,
+                candidate_url,
+                timeout_ms=nav_timeout_ms,
+                retries=nav_retries,
+            )
+            nav_errors.extend(errs)
+            if not ok:
+                continue
             try:
-                page.goto(candidate_url, wait_until="domcontentloaded", timeout=60_000)
-                page.wait_for_timeout(1800)
                 links.extend(collect_doc_links(page))
                 for item in page.context.cookies():
                     name = item.get("name")
@@ -728,7 +979,7 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
                     if name and value:
                         cookie_jar[name] = value
             except (PlaywrightTimeoutError, PlaywrightError) as e:
-                nav_errors.append(f"{candidate_url} -> {type(e).__name__}: {e}")
+                nav_errors.append(f"{candidate_url} [collect] -> {type(e).__name__}: {e}")
                 continue
         browser.close()
 
@@ -760,6 +1011,20 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
         downloaded = download_file(url, file_path, cookies=cookie_jar)
         if downloaded:
             saved_path, original_name = downloaded
+            preferred_name = _sanitize_filename_for_windows(
+                original_name,
+                fallback=saved_path.name,
+            )
+            final_path = _choose_unique_path(tender_dir, preferred_name)
+            if final_path != saved_path:
+                try:
+                    if final_path.exists():
+                        final_path.unlink()
+                    saved_path.rename(final_path)
+                    saved_path = final_path
+                except OSError:
+                    # Если переименование не удалось, оставляем техническое имя doc_N.
+                    pass
             saved.append(saved_path)
             download_log.append(
                 {
@@ -768,6 +1033,7 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
                     "status": "ok",
                     "saved_path": str(saved_path),
                     "original_name": original_name,
+                    "saved_name": saved_path.name,
                     "size_bytes": saved_path.stat().st_size if saved_path.exists() else 0,
                 }
             )
@@ -904,6 +1170,10 @@ def sort_excel_for_lsr_priority(paths: list[Path]) -> list[Path]:
 
 def is_excel_file(path: Path) -> bool:
     return path.suffix.lower() in (".xlsx", ".xls")
+
+
+def is_pdf_file(path: Path) -> bool:
+    return path.suffix.lower() == ".pdf"
 
 
 def is_estimate_excel(path: Path) -> bool:
@@ -1309,6 +1579,7 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> lis
                 "tender_title": tender.title,
                 "tender_url": tender.url,
                 "source_file": str(source_file),
+                "extract_source": "LSR",
                 "item_no": item_no,
                 "work_name": work_text,
                 "unit": unit_text,
@@ -1346,6 +1617,7 @@ def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> li
                     "tender_title": tender.title,
                     "tender_url": tender.url,
                     "source_file": str(source_file),
+                    "extract_source": "Excel fallback",
                     "work_name": work_text,
                     "price_from_estimate_rub": price,
                 }
@@ -1398,6 +1670,7 @@ def extract_work_rows_fallback(df: pd.DataFrame, tender: Tender, source_file: Pa
                 "tender_title": tender.title,
                 "tender_url": tender.url,
                 "source_file": str(source_file),
+                "extract_source": "Excel deep fallback",
                 "work_name": work_name,
                 "price_from_estimate_rub": rightmost_price,
             }
@@ -1414,14 +1687,86 @@ def extract_rows_from_excel(path: Path, tender: Tender) -> list[dict]:
     except Exception:
         return rows
 
+    fallback_enabled = _truthy_env("ESTIMATE_EXCEL_FALLBACK", "1")
+    deep_fallback_enabled = _truthy_env("ESTIMATE_EXCEL_DEEP_FALLBACK", "0")
     for _, df in data.items():
         if df.empty:
             continue
         part = extract_lsr_rows(df, tender, path)
-        # По текущему ТЗ берем только ЛСР-структуру.
+        if not part and fallback_enabled:
+            part = extract_work_rows(df, tender, path)
+        if not part and deep_fallback_enabled:
+            part = extract_work_rows_fallback(df, tender, path)
         rows.extend(part)
     # Убираем дубли строк в рамках одного файла.
     uniq = {}
+    for row in rows:
+        key = (row["source_file"], row["work_name"], round(float(row["price_from_estimate_rub"]), 2))
+        uniq[key] = row
+    return list(uniq.values())
+
+
+def _iter_pdf_lines(path: Path) -> Iterable[str]:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:
+        return []
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        return []
+    out: list[str] = []
+    for pg in reader.pages:
+        try:
+            txt = pg.extract_text() or ""
+        except Exception:
+            txt = ""
+        if not txt:
+            continue
+        for ln in txt.splitlines():
+            s = re.sub(r"\s+", " ", ln).strip()
+            if s:
+                out.append(s)
+    return out
+
+
+def extract_rows_from_pdf(path: Path, tender: Tender) -> list[dict]:
+    """
+    Универсальный fallback по PDF: ищем строки вида «наименование ... сумма».
+    Работает не для всех PDF (сканы/OCR), но даёт шанс вытащить позиции там, где Excel нет.
+    """
+    rows: list[dict] = []
+    for line in _iter_pdf_lines(path):
+        m = PDF_LINE_PRICE_RE.match(line)
+        if not m:
+            continue
+        work_name = str(m.group("name") or "").strip()
+        if len(work_name) < 8 or len(work_name) > 260:
+            continue
+        low = work_name.lower()
+        if any(h in low for h in SKIP_ROW_HINTS):
+            continue
+        price = to_float(m.group("price"))
+        if price is None or price < 100 or price > 5_000_000_000:
+            continue
+        rows.append(
+            {
+                "tender_id": tender.tender_id,
+                "region": tender.region,
+                "tender_title": tender.title,
+                "tender_url": tender.url,
+                "source_file": str(path),
+                "extract_source": "PDF fallback",
+                "item_no": None,
+                "work_name": work_name,
+                "unit": "",
+                "qty": None,
+                "qty_with_unit": "",
+                "unit_price_rub": None,
+                "price_from_estimate_rub": price,
+            }
+        )
+    uniq: dict[tuple[str, str, float], dict] = {}
     for row in rows:
         key = (row["source_file"], row["work_name"], round(float(row["price_from_estimate_rub"]), 2))
         uniq[key] = row
@@ -1465,6 +1810,7 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
                 "Файл ЛСР",
+                "Источник извлечения",
                 "№ п/п",
                 "Название работы/услуги",
                 "Ед. изм.",
@@ -1478,6 +1824,7 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
     clean_df = df[
         [
             "source_file",
+            "extract_source",
             "item_no",
             "work_name",
             "unit",
@@ -1489,6 +1836,7 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
     ].rename(
         columns={
             "source_file": "Файл ЛСР",
+            "extract_source": "Источник извлечения",
             "item_no": "№ п/п",
             "work_name": "Название работы/услуги",
             "unit": "Ед. изм.",
@@ -1533,6 +1881,19 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
         except Exception:
             return str(v)
 
+    def source_badge(raw) -> str:
+        src = str(raw or "").strip()
+        key = src.lower()
+        cls = "src-lsr"
+        if "pdf" in key:
+            cls = "src-pdf"
+        elif "deep" in key:
+            cls = "src-deep"
+        elif "fallback" in key:
+            cls = "src-fallback"
+        label = src or "LSR"
+        return f"<span class='src-badge {cls}'>{html.escape(label)}</span>"
+
     total_sum_val = float(clean_df["Сумма, руб"].sum()) if not clean_df.empty else 0.0
     total_sum = fmt_num(total_sum_val)
     tender_price = to_float(tender.price_rub)
@@ -1560,9 +1921,10 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
             rows_html = []
             for _, row in grp.iterrows():
                 rows_html.append(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
                     "<td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td></tr>".format(
                         row.get("№ п/п", ""),
+                        source_badge(row.get("Источник извлечения", "")),
                         row.get("Название работы/услуги", ""),
                         row.get("Ед. изм.", ""),
                         fmt_num(row.get("Кол-во", "")),
@@ -1581,7 +1943,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
   <table>
     <thead>
       <tr>
-        <th>№ п/п</th><th>Название работы/услуги</th><th>Ед. изм.</th><th>Кол-во</th>
+        <th>№ п/п</th><th>Источник</th><th>Название работы/услуги</th><th>Ед. изм.</th><th>Кол-во</th>
         <th>Объем</th><th>Цена за ед., руб</th><th>Сумма, руб</th>
       </tr>
     </thead>
@@ -1592,7 +1954,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
 </details>
 """
             )
-    html = f"""<!doctype html>
+    html_doc = f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
@@ -1639,6 +2001,23 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
     th {{ background:#1e2644; }}
     tr:nth-child(even) {{ background:#12172a; }}
     .wrap {{ white-space:normal; }}
+    .src-badge {{
+      display:inline-flex;
+      align-items:center;
+      font-weight:700;
+      font-size:11px;
+      line-height:1.2;
+      padding:3px 8px;
+      border-radius:999px;
+      border:1px solid #3c4f83;
+      background:#1d2742;
+      color:#d8e4ff;
+      white-space:nowrap;
+    }}
+    .src-badge.src-lsr {{ background:#1d3a2b; border-color:#3d8a67; color:#b8f5d6; }}
+    .src-badge.src-fallback {{ background:#3a2f1f; border-color:#8a6340; color:#ffd8ae; }}
+    .src-badge.src-deep {{ background:#3a2323; border-color:#8b4a4a; color:#ffcdcd; }}
+    .src-badge.src-pdf {{ background:#2e2440; border-color:#7a5ab3; color:#dbc7ff; }}
     .report-header-extra {{
       overflow: hidden;
       max-height: 320px;
@@ -1695,7 +2074,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
   </script>
 </body>
 </html>"""
-    html_path.write_text(html, encoding="utf-8")
+    html_path.write_text(html_doc, encoding="utf-8")
     return html_path
 
 
@@ -1812,17 +2191,23 @@ def main():
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
         excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
+        direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
+        extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
+        pdf_files = unique_paths_preserve_order(extracted_pdf + direct_pdf)
         estimate_excel_files = [p for p in excel_files if is_estimate_excel(p)]
         if not estimate_excel_files:
             estimate_excel_files = excel_files
         if not estimate_excel_files:
-            print("Не найдено ни одного Excel-файла (ЛСР/смета) после скачивания/распаковки.")
-            raise SystemExit(3)
+            if not pdf_files:
+                print("Не найдено ни одного Excel/PDF-файла (ЛСР/смета) после скачивания/распаковки.")
+                raise SystemExit(3)
         estimate_excel_files = sort_excel_for_lsr_priority(estimate_excel_files)
         tender_rows: list[dict] = []
         for excel_path in estimate_excel_files:
             rows = extract_rows_from_excel(excel_path, tender)
             tender_rows.extend(rows)
+        for pdf_path in pdf_files:
+            tender_rows.extend(extract_rows_from_pdf(pdf_path, tender))
         if not tender_rows:
             rar_cnt = sum(1 for p in tender_dl.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
             extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
@@ -1873,16 +2258,22 @@ def main():
         extracted = extract_archives_nested(seeds, out_paths["extracted"]) if seeds else []
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
+        direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
+        extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
         if existing_extracted_root.exists():
             extracted_excel.extend([p for p in existing_extracted_root.rglob("*") if p.is_file() and is_excel_file(p)])
+            extracted_pdf.extend([p for p in existing_extracted_root.rglob("*") if p.is_file() and is_pdf_file(p)])
+        pdf_files = unique_paths_preserve_order(extracted_pdf + direct_pdf)
         estimate_excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
-        if not estimate_excel_files:
-            print(f"Для тендера {tid} в downloads/extracted не найдено Excel-файлов.")
+        if not estimate_excel_files and not pdf_files:
+            print(f"Для тендера {tid} в downloads/extracted не найдено Excel/PDF-файлов.")
             raise SystemExit(4)
         estimate_excel_files = sort_excel_for_lsr_priority(estimate_excel_files)
         tender_rows: list[dict] = []
         for excel_path in estimate_excel_files:
             tender_rows.extend(extract_rows_from_excel(excel_path, tender))
+        for pdf_path in pdf_files:
+            tender_rows.extend(extract_rows_from_pdf(pdf_path, tender))
         if not tender_rows:
             rar_cnt = sum(1 for p in base.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
             extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
@@ -1908,25 +2299,68 @@ def main():
         print(f"Done (exit 0). Tender {tid}: {len(clean_df)} positions -> XLSX + HTML.")
         return
 
-    print("Поиск тендеров...")
-    for region in REGIONS:
-        for kw in KEYWORDS:
-            found = search_tenders(region, kw, max_pages=args.max_pages)
-            all_found.extend(found)
-            print(f"- {region} / {kw}: {len(found)} найдено")
-
-    unique = dedupe_tenders(all_found)
-    filtered = [t for t in unique if tender_matches_filters(t, days_back=args.days_back)]
-    filtered = filtered[: args.max_tenders]
-    cached = load_cached_tenders(out_paths)
-    cached_ids = {str(x.get("tender_id", "")).strip() for x in cached if str(x.get("tender_id", "")).strip()}
-    new_ids = {t.tender_id for t in filtered if t.tender_id not in cached_ids}
-    current_ids = {t.tender_id for t in filtered}
-    already_in_system = len([tid for tid in current_ids if tid in cached_ids])
-    new_in_run = len(current_ids) - already_in_system
-    print(f"Итого после фильтров: {len(filtered)}")
-    print(f"Новые в этом запуске: {new_in_run}")
-    print(f"Уже были в системе: {already_in_system}")
+    checkpoint = _load_search_checkpoint(out_paths, args)
+    resumed_from_checkpoint = False
+    completed_ids: set[str] = set()
+    search_total = 0
+    unique: list[Tender] = []
+    filtered: list[Tender] = []
+    new_ids: set[str] = set()
+    already_in_system = 0
+    new_in_run = 0
+    if checkpoint:
+        for row in checkpoint.get("filtered_tenders") or []:
+            try:
+                filtered.append(Tender(**row))
+            except TypeError:
+                continue
+        unique = list(filtered)
+        completed_ids = {str(x).strip() for x in checkpoint.get("completed_ids") or [] if str(x).strip()}
+        new_ids = {str(x).strip() for x in checkpoint.get("new_ids") or [] if str(x).strip()}
+        search_total = int(checkpoint.get("search_total") or 0)
+        resumed_from_checkpoint = bool(filtered)
+        cached = load_cached_tenders(out_paths)
+        cached_ids = {str(x.get("tender_id", "")).strip() for x in cached if str(x.get("tender_id", "")).strip()}
+        current_ids = {t.tender_id for t in filtered}
+        already_in_system = len([tid for tid in current_ids if tid in cached_ids])
+        new_in_run = len(current_ids) - already_in_system
+        if resumed_from_checkpoint:
+            print(
+                f"Продолжаем прошлый прогон: найдено {len(filtered)}, "
+                f"уже обработано {len(completed_ids)}, осталось {max(0, len(filtered) - len(completed_ids))}."
+            )
+            print(f"Итого после фильтров: {len(filtered)}")
+            print(f"Новые в этом запуске: {new_in_run}")
+            print(f"Уже были в системе: {already_in_system}")
+    else:
+        print("Поиск тендеров...")
+        for region in REGIONS:
+            for kw in KEYWORDS:
+                found = search_tenders(region, kw, max_pages=args.max_pages)
+                all_found.extend(found)
+                print(f"- {region} / {kw}: {len(found)} найдено")
+        search_total = len(all_found)
+        unique = dedupe_tenders(all_found)
+        filtered = [t for t in unique if tender_matches_filters(t, days_back=args.days_back)]
+        filtered = filtered[: args.max_tenders]
+        cached = load_cached_tenders(out_paths)
+        cached_ids = {str(x.get("tender_id", "")).strip() for x in cached if str(x.get("tender_id", "")).strip()}
+        new_ids = {t.tender_id for t in filtered if t.tender_id not in cached_ids}
+        current_ids = {t.tender_id for t in filtered}
+        already_in_system = len([tid for tid in current_ids if tid in cached_ids])
+        new_in_run = len(current_ids) - already_in_system
+        print(f"Итого после фильтров: {len(filtered)}")
+        print(f"Новые в этом запуске: {new_in_run}")
+        print(f"Уже были в системе: {already_in_system}")
+        _save_search_checkpoint(
+            out_paths,
+            args,
+            filtered=filtered,
+            completed_ids=completed_ids,
+            new_ids=new_ids,
+            search_total=search_total,
+            completed=False,
+        )
 
     stage_changes: list[tuple[str, str, str]] = []
     if os.environ.get("REFRESH_CACHED_STAGES", "1").strip().lower() not in ("0", "false", "no", "off"):
@@ -2016,9 +2450,18 @@ def main():
         emit_path.write_text("\n".join(sorted(new_ids)) + ("\n" if new_ids else ""), encoding="utf-8")
         print(f"Список новых id записан: {emit_path} ({len(new_ids)} шт.)")
 
+    remaining = [t for t in filtered if t.tender_id not in completed_ids]
+    if resumed_from_checkpoint and completed_ids:
+        print(f"Возобновляем обработку документов: осталось {len(remaining)} из {len(filtered)}.")
+    if resumed_from_checkpoint and not remaining:
+        print("По чекпоинту новых шагов не осталось — очищаем сохранённый прогресс.")
+        _clear_search_checkpoint(out_paths)
+        return
+
     all_rows: list[dict] = []
-    for idx, tender in enumerate(filtered, start=1):
-        print(f"[{idx}/{len(filtered)}] {tender.tender_id}: скачивание документов")
+    for idx, tender in enumerate(remaining, start=1):
+        absolute_idx = len(completed_ids) + idx
+        print(f"[{absolute_idx}/{len(filtered)}] {tender.tender_id}: скачивание документов")
         downloaded_files = open_tender_and_download_archives(tender, out_paths["downloads"])
         if not downloaded_files:
             if tg_cfg and tender.tender_id in new_ids:
@@ -2036,6 +2479,16 @@ def main():
                     sum_positions=0.0,
                     top_work_lines=["(документы не скачались — проверь доступ к ЕИС)"],
                 )
+            completed_ids.add(tender.tender_id)
+            _save_search_checkpoint(
+                out_paths,
+                args,
+                filtered=filtered,
+                completed_ids=completed_ids,
+                new_ids=new_ids,
+                search_total=search_total,
+                completed=False,
+            )
             continue
         tender_dl = out_paths["downloads"] / tender.tender_id
         ext_root = out_paths["extracted"] / tender.tender_id
@@ -2043,7 +2496,10 @@ def main():
         extracted = extract_archives_nested(seeds, out_paths["extracted"]) if seeds else []
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
+        direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
+        extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
         excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
+        pdf_files = unique_paths_preserve_order(extracted_pdf + direct_pdf)
 
         # В отчет по сметам берем только файлы, похожие на сметные.
         estimate_excel_files = [p for p in excel_files if is_estimate_excel(p)]
@@ -2056,6 +2512,8 @@ def main():
         for excel_path in estimate_excel_files:
             rows = extract_rows_from_excel(excel_path, tender)
             tender_rows.extend(rows)
+        for pdf_path in pdf_files:
+            tender_rows.extend(extract_rows_from_pdf(pdf_path, tender))
         if not tender_rows:
             rar_cnt = sum(1 for p in tender_dl.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
             extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
@@ -2096,6 +2554,16 @@ def main():
                 sum_positions=sum_pos,
                 top_work_lines=_top_work_snippets_from_clean_df(clean_df),
             )
+        completed_ids.add(tender.tender_id)
+        _save_search_checkpoint(
+            out_paths,
+            args,
+            filtered=filtered,
+            completed_ids=completed_ids,
+            new_ids=new_ids,
+            search_total=search_total,
+            completed=False,
+        )
 
     # Общий файл по всем сметам (без отдельного отчета по тендерам).
     combined_path = out_paths["reports"] / f"ОТЧЕТ_ПО_СМЕТАМ_ОБЩИЙ_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -2113,6 +2581,7 @@ def main():
     combined_df.to_excel(combined_path, index=False)
     print(f"Готово. Общий отчет по сметам: {combined_path}")
     print(f"Всего позиций из смет: {len(all_rows)}")
+    _clear_search_checkpoint(out_paths)
 
 
 if __name__ == "__main__":

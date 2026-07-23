@@ -527,6 +527,7 @@ def _render_html(
     viability_html: str = "",
 ) -> str:
     alice_col = "Ответ Алисы"
+    alice_full_col = "Ответ Алисы (полный)" if "Ответ Алисы (полный)" in df.columns else alice_col
     if "Рынок цены за ед. (итог)" in df.columns:
         rub_col = "Рынок цены за ед. (итог)"
     elif "Суммы из ответа (итог)" in df.columns:
@@ -554,9 +555,7 @@ def _render_html(
             unit_label=u_lbl,
         )
         alice_raw = row.get(alice_col, "")
-        alice_esc = _cell(alice_raw) if not (isinstance(alice_raw, float) and pd.isna(alice_raw)) else "—"
-        if alice_esc == "—" and isinstance(alice_raw, str) and alice_raw.strip():
-            alice_esc = html_mod.escape(alice_raw.strip())
+        alice_full_raw = row.get(alice_full_col, "")
         phones_raw = "" if pd.isna(row.get("Телефоны (строго)", "")) else str(row.get("Телефоны (строго)", ""))
         urls_raw = "" if pd.isna(row.get("Ссылки (строго)", "")) else str(row.get("Ссылки (строго)", ""))
         phones_struct = _cell(phones_raw) if "Телефоны (строго)" in df.columns else "—"
@@ -566,14 +565,18 @@ def _render_html(
             txt = "" if pd.isna(alice_raw) else str(alice_raw)
             phones_raw = "; ".join(collect_phones(txt))
             urls_raw = "; ".join(collect_urls(txt))
-        alice_txt = "" if pd.isna(alice_raw) else str(alice_raw)
+        alice_full_txt = "" if pd.isna(alice_full_raw) else str(alice_full_raw)
+        alice_preview_txt = alice_full_txt.strip() if alice_full_txt.strip() else ("" if pd.isna(alice_raw) else str(alice_raw))
+        alice_preview_short = alice_preview_txt[:420] + ("…" if len(alice_preview_txt) > 420 else "")
+        alice_preview_html = html_mod.escape(alice_preview_short) if alice_preview_short else "—"
+        alice_full_html = html_mod.escape(alice_preview_txt) if alice_preview_txt else "—"
         bundle_rows = _rows_from_bundle_or_fallback(
             bundle_json="" if pd.isna(row.get("Цена-сайт-телефон (json)", "")) else str(row.get("Цена-сайт-телефон (json)", "")),
             qty_scale=q_scale,
             fallback_prices_text="" if pd.isna(raw_rub) else str(raw_rub),
             fallback_phones_text=phones_raw,
             fallback_urls_text=urls_raw,
-            alice_full_text=alice_txt,
+            alice_full_text=alice_preview_txt,
             median_unit_raw=row.get("Медиана цена за ед. (рынок)", ""),
         )
         source_focus_col = _bundle_focus_html(bundle_rows, qty_scale=q_scale, unit_label=u_lbl)
@@ -585,7 +588,8 @@ def _render_html(
         err = _cell(row.get(err_col, "")) if err_col in df.columns else ""
         rub_raw_cell = _cell(row.get(rub_col, "")) if rub_col in df.columns else "—"
         rows_alice.append(
-            f"<tr><td>{item_no}</td><td>{name}</td><td class='alice-text'><div class='alice-scroll'>{alice_esc}</div></td>"
+            f"<tr><td>{item_no}</td><td>{name}</td><td class='alice-text'><details class='alice-details'><summary>{alice_preview_html}</summary>"
+            f"<div class='alice-scroll'>{alice_full_html}</div></details></td>"
             f"<td>{rub_raw_cell}</td><td>{err}</td></tr>"
         )
 
@@ -767,6 +771,15 @@ def _render_html(
       word-break: break-word;
       padding: .25rem 0;
     }}
+    .alice-details summary {{
+      cursor: pointer;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+      list-style: none;
+    }}
+    .alice-details summary::-webkit-details-marker {{ display: none; }}
+    .alice-details[open] summary {{ color: var(--violet); margin-bottom: .3rem; }}
     .alice-scroll::-webkit-scrollbar {{ width: 6px; }}
     .alice-scroll::-webkit-scrollbar-thumb {{ background: rgba(167,139,250,.4); border-radius: 3px; }}
     .muted {{ color: var(--muted); font-size: .88em; }}

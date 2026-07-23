@@ -9,7 +9,12 @@ import runpy
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+TOOLS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS_DIR))
+
+from runtime_paths import configure_runtime_paths
+
+ROOT = TOOLS_DIR.parent
 
 
 def main() -> None:
@@ -18,6 +23,7 @@ def main() -> None:
         print("example: run_module.py autobot.main --help", file=sys.stderr)
         raise SystemExit(2)
     mod = sys.argv[1]
+    configure_runtime_paths(ROOT)
     sys.path.insert(0, str(ROOT))
     sys.argv = [mod] + sys.argv[2:]
     runpy.run_module(mod, run_name="__main__", alter_sys=True)
