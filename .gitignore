@@ -6,6 +6,7 @@ __pycache__/
 venv/
 .runtime/
 data/alice_playwright_profile/
+data/avito_profile/
 *.pyo
 *.pyd
 
@@ -34,6 +35,8 @@ data/extracted/
 data/reports/
 data/reports_site/
 data/nmck_previews/
+data/uploads/
+data/user_estimates/
 data/tenders.json
 data/last_new_tender_ids.txt
 data/logs/

@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from autobot.paths import REPO_ROOT
+import io
 import json
 import os
 import re
 import subprocess
 import uuid
 import sys
+import time
 import traceback
 import threading
 import html as html_mod
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import pandas as pd
 
@@ -30,6 +32,7 @@ from flask import (
     make_response,
     render_template_string,
     request,
+    send_file,
     send_from_directory,
 )
 
@@ -72,9 +75,9 @@ merge_site_state: dict = {
     "total": 0,
     "done": 0,
     "current_tid": "",
-    "alice_done": 0,
-    "alice_total": 0,
-    "last_alice_chat_done": 0,
+    "market_done": 0,
+    "market_total": 0,
+    "last_market_chat_done": 0,
     "started_at": None,
     "ended_at": None,
     "error_ids": [],
@@ -85,6 +88,11 @@ merge_site_state: dict = {
     "last_reason_counts": {},
 }
 merge_site_lock = threading.Lock()
+
+estimate_upload_jobs: dict[str, dict] = {}
+estimate_upload_lock = threading.Lock()
+estimate_market_jobs: dict[str, dict] = {}
+estimate_market_lock = threading.Lock()
 
 
 def _telegram_cfg() -> tuple[str, str] | None:
@@ -138,21 +146,30 @@ def _merge_chat_add(kind: str, text: str, *, tender_id: str = "", seq: int = 0, 
         merge_site_state["chat_events"] = events[-120:]
 
 
-def _alice_web_events_path(tender_id: str) -> Path:
+def _market_web_events_path(tender_id: str) -> Path:
     safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", (tender_id or "unknown").strip())[:80] or "unknown"
-    return REPO_ROOT / "data" / "logs" / f"alice_web_events_{safe}.jsonl"
+    return REPO_ROOT / "data" / "logs" / f"market_web_events_{safe}.jsonl"
 
 
-def _read_alice_web_events(tender_id: str, *, limit: int = 80) -> list[dict]:
-    path = _alice_web_events_path(tender_id)
-    if not path.is_file():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-limit:]
-    except OSError:
+def _market_web_events_path(tender_id: str) -> Path:
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", (tender_id or "unknown").strip())[:80] or "unknown"
+    return REPO_ROOT / "data" / "logs" / f"market_web_events_{safe}.jsonl"
+
+
+def _read_market_web_events(tender_id: str, *, limit: int = 80) -> list[dict]:
+    paths = [_market_web_events_path(tender_id), _market_web_events_path(tender_id)]
+    raw_lines: list[str] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            raw_lines.extend(path.read_text(encoding="utf-8", errors="ignore").splitlines()[-limit:])
+        except OSError:
+            continue
+    if not raw_lines:
         return []
     out: list[dict] = []
-    for line in lines:
+    for line in raw_lines[-limit * 2 :]:
         line = line.strip()
         if not line:
             continue
@@ -166,7 +183,10 @@ def _read_alice_web_events(tender_id: str, *, limit: int = 80) -> list[dict]:
         work = str(ev.get("work_name") or "").strip()
         detail = str(ev.get("detail") or "").strip()
         tid = str(ev.get("tender_id") or tender_id or "").strip()
-        if kind == "begin":
+        source = str(ev.get("source") or "").strip().lower()
+        if source == "market" and str(ev.get("text") or "").strip():
+            text = str(ev.get("text") or "").strip()
+        elif kind == "begin":
             text = f"Работа {seq} из {total} началась" + (f": {work}" if work else "")
         elif kind == "done":
             text = f"✅ {seq}/{total} · готово."
@@ -181,7 +201,7 @@ def _read_alice_web_events(tender_id: str, *, limit: int = 80) -> list[dict]:
         out.append(
             {
                 "ts": str(ev.get("ts") or ""),
-                "source": "alice",
+                "source": source or "market",
                 "kind": kind,
                 "text": text[:700],
                 "tender_id": tid,
@@ -843,6 +863,17 @@ INDEX_TEMPLATE = """
       letter-spacing: 0.06em; color: #ffd7a8; background: rgba(77, 53, 30, 0.5);
       border: 1px solid #8a623d; border-radius: 999px; padding: 2px 8px; margin-left: 8px;
     }
+    .main-tabs {
+      display:flex; flex-wrap:wrap; gap:8px; margin: 14px 0 18px;
+    }
+    .main-tab {
+      display:inline-flex; align-items:center; gap:7px;
+      padding:9px 12px; border-radius:999px; text-decoration:none;
+      color:#c8d8f8; background:rgba(15, 22, 44, .72);
+      border:1px solid var(--border-soft); font-size:13px; font-weight:700;
+    }
+    .main-tab:hover { color:#fff; border-color:#6d8fe8; background:rgba(49, 78, 145, .45); }
+    .main-tab.is-active { color:#fff; background:linear-gradient(180deg, #345095, #263d78); border-color:#6d8fe8; }
     details.action-options {
       margin-top: 13px;
       border: 1px solid var(--border-soft);
@@ -897,13 +928,17 @@ INDEX_TEMPLATE = """
       </span>
       <h1>Помощник по госзакупкам</h1>
     </div>
-    <p class="sub" style="max-width:none;">Программа ищет закупки на <strong>zakupki.gov.ru</strong>, вытаскивает из документов <strong>смету</strong> (список работ и цен), через <strong>Алису</strong> (нейросеть Яндекса) находит <strong>рыночные цены</strong> и показывает, где заказчик завысил или занизил.</p>
+    <p class="sub" style="max-width:none;">Программа ищет закупки на <strong>zakupki.gov.ru</strong>, вытаскивает из документов <strong>смету</strong> (список работ и цен), ищет <strong>рыночные источники</strong> в интернете и показывает, где заказчик завысил или занизил.</p>
+    <nav class="main-tabs" aria-label="Разделы сайта">
+      <a class="main-tab is-active" href="/">📋 Тендеры</a>
+      <a class="main-tab" href="/estimates">📊 Сметы</a>
+    </nav>
 
     <section class="help-section" aria-labelledby="helpTitle">
       <h2 class="section-title" id="helpTitle">Как пользоваться — три шага</h2>
       <ol class="help-steps">
         <li><strong>Шаг 1.</strong> Нажмите «Найти новые закупки» — программа скачает документы и извлечёт сметы.</li>
-        <li><strong>Шаг 2.</strong> Нажмите «Подготовить недостающие сравнения» — Алиса найдёт рыночные цены. <strong>Это долгий этап</strong>, он может идти часами.</li>
+        <li><strong>Шаг 2.</strong> Нажмите «Подготовить недостающие сравнения» — программа найдёт рыночные цены и ссылки на источники. <strong>Это долгий этап</strong>, он может идти часами.</li>
         <li><strong>Шаг 3.</strong> В готовой карточке нажмите «Посмотреть сравнение цен».</li>
       </ol>
       <details class="help-glossary">
@@ -915,8 +950,8 @@ INDEX_TEMPLATE = """
           <div>Официальный портал <strong>zakupki.gov.ru</strong>. «Скачать с ЕИС» = скачать с этого сайта.</div>
           <div class="glossary-term">Смета</div>
           <div>Таблица из документов: какие работы, объёмы и цены заложил заказчик.</div>
-          <div class="glossary-term">Алиса</div>
-          <div>Нейросеть Яндекса — ищет рыночные цены на каждую позицию сметы.</div>
+          <div class="glossary-term">Рыночные источники</div>
+          <div>Объявления и страницы в интернете, откуда берём примерные цены по позициям сметы.</div>
           <div class="glossary-term">Сравнение цен</div>
           <div>Готовая страница: цена заказчика рядом с найденными рыночными ценами. Это главный результат работы.</div>
           <div class="glossary-term">НМЦК</div>
@@ -938,7 +973,7 @@ INDEX_TEMPLATE = """
       {% if coverage.tenders_missing_merge_html > 0 %}
       · ещё <strong>{{ coverage.tenders_missing_merge_html }}</strong> ждут шага 2 («Подготовить недостающие сравнения»)
       {% if coverage.missing_no_svodka > 0 and coverage.missing_no_estimate == 0 %}
-      — у {{ coverage.missing_no_svodka }} смета уже есть, но Алиса ещё не прогонялась
+      — у {{ coverage.missing_no_svodka }} смета уже есть, но рыночные источники ещё не собирались
       {% endif %}
       {% endif %}
       {% endif %}
@@ -1011,20 +1046,20 @@ INDEX_TEMPLATE = """
               </div>
             </div>
 
-            {% if t.alice_progress_total > 0 %}
+            {% if t.market_progress_total > 0 %}
             <div class="tender-progress">
               <div class="tender-progress-head">
                 <span class="tender-progress-label">&#1055;&#1086;&#1080;&#1089;&#1082; &#1094;&#1077;&#1085;</span>
-                <span class="tender-progress-value">{{ t.alice_progress_done }}/{{ t.alice_progress_total }}</span>
+                <span class="tender-progress-value">{{ t.market_progress_done }}/{{ t.market_progress_total }}</span>
               </div>
               <div class="tender-progress-track">
-                <div class="tender-progress-fill" style="width: {{ t.alice_progress_percent }}%;"></div>
+                <div class="tender-progress-fill" style="width: {{ t.market_progress_percent }}%;"></div>
               </div>
               <div class="tender-progress-note">
-                {% if t.alice_progress_done >= t.alice_progress_total %}
+                {% if t.market_progress_done >= t.market_progress_total %}
                 &#1042;&#1089;&#1077; &#1089;&#1090;&#1088;&#1086;&#1082;&#1080; &#1089;&#1084;&#1077;&#1090;&#1099; &#1086;&#1073;&#1088;&#1072;&#1073;&#1086;&#1090;&#1072;&#1085;&#1099;.
-                {% elif t.has_alice_partial %}
-                &#1054;&#1073;&#1088;&#1072;&#1073;&#1086;&#1090;&#1072;&#1085;&#1086; {{ t.alice_progress_done }} &#1080;&#1079; {{ t.alice_progress_total }}, &#1086;&#1089;&#1090;&#1072;&#1083;&#1086;&#1089;&#1100; {{ t.alice_progress_left }}.
+                {% elif t.has_market_partial %}
+                &#1054;&#1073;&#1088;&#1072;&#1073;&#1086;&#1090;&#1072;&#1085;&#1086; {{ t.market_progress_done }} &#1080;&#1079; {{ t.market_progress_total }}, &#1086;&#1089;&#1090;&#1072;&#1083;&#1086;&#1089;&#1100; {{ t.market_progress_left }}.
                 {% else %}
                 &#1057;&#1084;&#1077;&#1090;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;. &#1055;&#1086;&#1080;&#1089;&#1082; &#1094;&#1077;&#1085; &#1077;&#1097;&#1105; &#1085;&#1077; &#1079;&#1072;&#1087;&#1091;&#1089;&#1082;&#1072;&#1083;&#1089;&#1103;.
                 {% endif %}
@@ -1040,7 +1075,7 @@ INDEX_TEMPLATE = """
             <div class="tender-status-row">
               {% if t.has_svodka %}
               <span class="tag tag-merge">&#1050;&#1072;&#1088;&#1090;&#1086;&#1095;&#1082;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;</span>
-              {% elif t.has_alice_partial %}
+              {% elif t.has_market_partial %}
               <span class="tag tag-merge">&#1045;&#1089;&#1090;&#1100; &#1095;&#1072;&#1089;&#1090;&#1080;&#1095;&#1085;&#1099;&#1077; &#1094;&#1077;&#1085;&#1099;</span>
               {% elif t.has_estimate %}
               <span class="tag tag-ok">&#1057;&#1084;&#1077;&#1090;&#1072; &#1075;&#1086;&#1090;&#1086;&#1074;&#1072;</span>
@@ -1055,7 +1090,7 @@ INDEX_TEMPLATE = """
               {% if t.has_svodka %}
               <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть сравнение цен</a>
               <p class="tender-next">Готово или частично готово: сохранённые строки Алисы будут вверху таблицы.</p>
-              {% elif t.has_alice_partial %}
+              {% elif t.has_market_partial %}
               <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть частичные цены</a>
               <p class="tender-next">Есть сохранённый прогресс Алисы. Можно открыть карточку и продолжить поиск.</p>
               {% elif t.has_estimate %}
@@ -1069,7 +1104,7 @@ INDEX_TEMPLATE = """
                 <summary>Дополнительные действия</summary>
                 <div class="tender-more-actions">
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')" title="Продолжить поиск недостающих рыночных цен и заново собрать страницу сравнения.">Продолжить или обновить поиск цен</button>
-                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rerunAliceForTender('{{ t.tender_id }}')" title="Удалить прогресс поиска цен и опросить Алису по всем позициям заново.">Начать поиск цен заново</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rerunMarketForTender('{{ t.tender_id }}')" title="Удалить прогресс поиска цен и опросить Алису по всем позициям заново.">Начать поиск цен заново</button>
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rebuildReportForTender('{{ t.tender_id }}')" title="Повторно прочитать уже скачанные документы. Поиск рыночных цен не запускается.">Повторно извлечь смету из файлов</button>
                   {% if t.has_svodka %}
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runViabilityOnly('{{ t.tender_id }}')" title="Обновить вывод о выгодности и отправить его в настроенный Telegram-чат.">Отправить вывод в Telegram</button>
@@ -1133,7 +1168,7 @@ INDEX_TEMPLATE = """
 
         <article class="action-card">
           <h3 class="action-card-title">Шаг 2. Сравнить цены заказчика с рынком</h3>
-          <p class="action-card-desc">Алиса ищет рыночные цены для позиций сметы, а программа собирает готовую страницу сравнения. <strong>Долго</strong> — обработка нескольких закупок может занять часы.</p>
+          <p class="action-card-desc">Программа ищет рыночные цены и реальные ссылки для позиций сметы, а затем собирает готовую страницу сравнения. <strong>Долго</strong> — обработка нескольких закупок может занять часы.</p>
           <div class="btn-row">
             <button class="btn btn-lg" type="button" id="genMergeMissingBtn" onclick="generateMergeSiteMissing()">Подготовить недостающие сравнения</button>
             <button class="btn secondary" type="button" id="genMergeSiteBtn" onclick="generateMergeSiteAll()">Обновить сравнения для всех</button>
@@ -1245,7 +1280,7 @@ INDEX_TEMPLATE = """
       <button type="button" class="site-chat-close" onclick="toggleSiteChat(false)">закрыть</button>
     </div>
     <div class="site-chat-feed" id="siteChatFeed">
-      <div class="site-chat-empty">Пока событий нет. Когда запустится Алиса, здесь появятся сообщения как в Telegram.</div>
+      <div class="site-chat-empty">Пока событий нет. Когда запустится сравнение цен, здесь появятся сообщения как в Telegram.</div>
     </div>
   </aside>
   <script>
@@ -1621,7 +1656,7 @@ INDEX_TEMPLATE = """
     }
 
     async function generateMergeSiteAll() {
-      if (!confirm("Обновить сравнения цен для всех закупок со сметой?\\n\\nАлиса повторно проверит цены. Процесс может занять несколько часов.")) return;
+      if (!confirm("Обновить сравнения цен для всех закупок со сметой?\\n\\nПрограмма повторно проверит рыночные источники. Процесс может занять несколько часов.")) return;
       try {
         const r = await fetch("/api/generate-merge-site-all", {
           method: "POST",
@@ -1694,13 +1729,13 @@ INDEX_TEMPLATE = """
       refreshCoverage();
     }
 
-    async function rerunAliceForTender(tid) {
+    async function rerunMarketForTender(tid) {
       const t = String(tid || "").trim();
       if (!t) return;
       if (!confirm("Начать поиск рыночных цен для закупки " + t + " заново?\\n\\nСохранённый прогресс Алисы будет отброшен.")) return;
       setQuickTenderLinks(t);
       try {
-        const r = await fetch("/api/generate-merge-site-one-rerun-alice", {
+        const r = await fetch("/api/generate-merge-site-one-rerun-market", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Accept": "application/json" },
           body: JSON.stringify({ tender_id: t }),
@@ -1959,7 +1994,7 @@ INDEX_TEMPLATE = """
       if (!list.length) {
         const empty = document.createElement("div");
         empty.className = "site-chat-empty";
-        empty.textContent = "Пока событий нет. Когда запустится Алиса, здесь появятся сообщения как в Telegram.";
+        empty.textContent = "Пока событий нет. Когда запустится сравнение цен, здесь появятся сообщения как в Telegram.";
         feed.appendChild(empty);
         return;
       }
@@ -2100,21 +2135,21 @@ INDEX_TEMPLATE = """
         const ptext = document.getElementById("mergePercentText");
         const det = document.getElementById("mergeSiteDetail");
         const mlogs = document.getElementById("mergeSiteLogs");
-        const aliceDone = Number(mr.alice_done || 0);
-        const aliceTotal = Number(mr.alice_total || 0);
-        const aliceLeft = Number(mr.alice_left || Math.max(0, aliceTotal - aliceDone));
+        const marketDone = Number(mr.market_done || 0);
+        const marketTotal = Number(mr.market_total || 0);
+        const marketLeft = Number(mr.market_left || Math.max(0, marketTotal - marketDone));
         if (fill) fill.style.width = Math.min(100, Math.max(0, pct)) + "%";
         if (ptext) {
           let text = pct + "% · тендеры " + (mr.done ?? 0) + " / " + (mr.total ?? 0);
-          if (aliceTotal > 0) text += " · Алиса " + aliceDone + " / " + aliceTotal;
+          if (marketTotal > 0) text += " · рынок " + marketDone + " / " + marketTotal;
           if (mr.current_tid) text += " · сейчас: " + mr.current_tid;
           ptext.textContent = text;
         }
         if (det) {
-          if (mergeRun && aliceTotal > 0 && aliceDone < aliceTotal) {
-            det.textContent = "Алиса ищет цены по строкам сметы: обработано " + aliceDone + " из " + aliceTotal + ", осталось " + aliceLeft + ".";
-          } else if (mergeRun && aliceTotal > 0 && aliceDone >= aliceTotal) {
-            det.textContent = "Алиса обработала строки сметы, собираем страницу сравнения…";
+          if (mergeRun && marketTotal > 0 && marketDone < marketTotal) {
+            det.textContent = "Поиск рынка идёт по строкам сметы: обработано " + marketDone + " из " + marketTotal + ", осталось " + marketLeft + ".";
+          } else if (mergeRun && marketTotal > 0 && marketDone >= marketTotal) {
+            det.textContent = "Рынок обработал строки сметы, собираем страницу сравнения…";
           } else {
             det.textContent = mergeRun ? "Ищем рыночные цены и собираем страницы сравнения…" : "";
           }
@@ -2137,7 +2172,7 @@ INDEX_TEMPLATE = """
         if (mreason) {
           const reasons = mr.last_reason_counts || {};
           const txt = "Не удалось обработать: без сметы " + (reasons.no_estimate || 0)
-            + ", ошибка поиска цен " + (reasons.alice_failed || 0)
+            + ", ошибка поиска цен " + (reasons.market_failed || 0)
             + ", ошибка объединения данных " + (reasons.merge_failed || 0)
             + ", ошибка страницы результата " + (reasons.html_failed || 0);
           mreason.textContent = !mergeRun && mr.last_ended_at ? txt : "";
@@ -2218,10 +2253,10 @@ def _estimate_rows_by_tender_id() -> dict[str, int]:
     return out
 
 
-def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
+def _market_progress_for_tender(tid: str) -> tuple[int, int]:
     """
     Прогресс Алисы по строкам сметы: (готово, всего) для тех же строк,
-    которые реально идут в alice_market_scraper.py
+    которые реально идут в real_market_scraper.py
     (без явных дублей и без слишком коротких названий).
     """
     from autobot.market_analytics import COL_DUP, COL_NAME
@@ -2250,12 +2285,11 @@ def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
     if total <= 0:
         return 0, 0
 
-    stem = est_path.stem
-    alice_path = REPORTS_DIR / f"АЛИСА_РЫНОК_{stem}.xlsx"
-    if not alice_path.is_file():
+    market_path = _price_output_path_for_tender(tid)
+    if not market_path.is_file():
         return 0, total
     try:
-        ali = pd.read_excel(alice_path)
+        ali = pd.read_excel(market_path)
     except Exception:
         return 0, total
     if COL_NAME not in ali.columns:
@@ -2272,15 +2306,27 @@ def _alice_progress_for_tender(tid: str) -> tuple[int, int]:
         name = str(row.get(COL_NAME, "") or "").strip()
         if not name:
             continue
-        # Частичный файл Алисы содержит только уже пройденные строки.
+        # Частичный файл с рыночными источниками содержит только уже пройденные строки.
         # Для прогресса считаем строку обработанной даже если цена не найдена
         # или ответ был пустым/ошибочным — Telegram считает этот шаг так же.
         done += 1
     return min(done, total), total
 
-def _alice_output_path_for_tender(tid: str) -> Path:
+def _legacy_price_output_path_for_tender(tid: str) -> Path:
     est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
-    return REPORTS_DIR / f"АЛИСА_РЫНОК_{est_path.stem}.xlsx"
+    return REPORTS_DIR / f"РЫНОК_ИСТОЧНИКИ_{est_path.stem}.xlsx"
+
+
+def _market_output_path_for_tender(tid: str) -> Path:
+    est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    return REPORTS_DIR / f"РЫНОК_ИСТОЧНИКИ_{est_path.stem}.xlsx"
+
+
+def _price_output_path_for_tender(tid: str) -> Path:
+    market_path = _market_output_path_for_tender(tid)
+    if market_path.is_file():
+        return market_path
+    return _legacy_price_output_path_for_tender(tid)
 
 
 def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
@@ -2288,7 +2334,7 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
     Все тендеры из tenders.json + признаки: есть файл отчёта и есть ли в нём блоки позиций
     (иначе внутри отчёта только «Нет данных для отображения»).
     """
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
 
     meta = load_tender_metadata()
     reports_map = _html_reports_by_tender_id()
@@ -2303,12 +2349,12 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
         rp = REPORTS_DIR / report_file if report_file else None
         has_display_data = bool(rp) and _smet_report_html_has_position_groups(rp)
         estimate_rows = int(rows_map.get(tid, 0))
-        alice_partial_exists = _alice_output_path_for_tender(tid).is_file()
+        market_partial_exists = _price_output_path_for_tender(tid).is_file()
         merge_html_exists = (merge_root / tid / "index.html").is_file()
         svodka_exists = (REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx").is_file()
-        alice_done, alice_total = _alice_progress_for_tender(tid) if estimate_rows > 0 else (0, 0)
-        alice_left = max(0, alice_total - alice_done)
-        alice_pct = int(min(100, max(0, round(100.0 * alice_done / alice_total)))) if alice_total > 0 else 0
+        market_done, market_total = _market_progress_for_tender(tid) if estimate_rows > 0 else (0, 0)
+        market_left = max(0, market_total - market_done)
+        market_pct = int(min(100, max(0, round(100.0 * market_done / market_total)))) if market_total > 0 else 0
         stage_raw = (tmeta.get("stage") or "").strip()
         stage_open = stage_raw == STAGE_SUBMISSION
         stage_display = stage_raw if stage_raw else "—"
@@ -2321,17 +2367,17 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
                 "has_report": has_report,
                 "has_display_data": has_display_data,
                 "has_estimate": estimate_rows > 0,
-                "has_merge_report": merge_html_exists or svodka_exists or alice_partial_exists or estimate_rows > 0,
+                "has_merge_report": merge_html_exists or svodka_exists or market_partial_exists or estimate_rows > 0,
                 "has_svodka": svodka_exists,
-                "has_alice_partial": alice_partial_exists,
+                "has_market_partial": market_partial_exists,
                 "report_file": report_file,
                 "stage_open": stage_open,
                 "stage_display": stage_display,
                 "estimate_rows": estimate_rows,
-                "alice_progress_done": alice_done,
-                "alice_progress_total": alice_total,
-                "alice_progress_left": alice_left,
-                "alice_progress_percent": alice_pct,
+                "market_progress_done": market_done,
+                "market_progress_total": market_total,
+                "market_progress_left": market_left,
+                "market_progress_percent": market_pct,
                 "publish_date": (tmeta.get("publish_date") or "").strip(),
             }
         )
@@ -2432,20 +2478,20 @@ SIMPLE_INDEX_TEMPLATE = """
               <div><span class="muted">Смета:</span> {% if t.has_estimate %}{{ t.estimate_rows }} строк{% else %}ещё не собрана{% endif %}</div>
             </div>
 
-            {% if t.alice_progress_total > 0 %}
+            {% if t.market_progress_total > 0 %}
             <div class="progress">
               <div class="progress-row">
                 <span>Поиск цен</span>
-                <span>{{ t.alice_progress_done }}/{{ t.alice_progress_total }}</span>
+                <span>{{ t.market_progress_done }}/{{ t.market_progress_total }}</span>
               </div>
-              <div class="track"><div class="fill" style="width: {{ t.alice_progress_percent }}%;"></div></div>
+              <div class="track"><div class="fill" style="width: {{ t.market_progress_percent }}%;"></div></div>
             </div>
             {% endif %}
 
             <div class="tags">
               {% if t.has_merge_report %}
               <span class="tag ok">Карточка готова</span>
-              {% elif t.has_alice_partial %}
+              {% elif t.has_market_partial %}
               <span class="tag warn">Есть частичные цены</span>
               {% elif t.has_estimate %}
               <span class="tag ok">Смета готова</span>
@@ -2461,7 +2507,7 @@ SIMPLE_INDEX_TEMPLATE = """
               {% endif %}
               {% if t.has_estimate %}
               <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one', '{{ t.tender_id }}', 'Запускаю поиск цен…')">Запустить поиск цен</button>
-              <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one-rerun-alice', '{{ t.tender_id }}', 'Перезапускаю поиск…')">Перезапустить</button>
+              <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one-rerun-market', '{{ t.tender_id }}', 'Перезапускаю поиск…')">Перезапустить</button>
               <button class="btn secondary" type="button" onclick="runAction('/api/rebuild-report', '{{ t.tender_id }}', 'Пересобираю карточку…')">Пересобрать карточку</button>
               {% else %}
               <button class="btn secondary" type="button" disabled>Сначала нужна смета</button>
@@ -2554,6 +2600,1418 @@ def index():
         visible_count=visible_count,
         region_options=region_options,
         selected_region=selected_region,
+    )
+
+
+USER_ESTIMATES_DIR = REPO_ROOT / "data" / "user_estimates"
+USER_ESTIMATES_INDEX = USER_ESTIMATES_DIR / "index.json"
+
+
+def _estimate_upload_allowed(filename: str) -> bool:
+    return Path(filename or "").suffix.lower() in (".xlsx", ".xls", ".xlsm")
+
+
+def _safe_upload_filename(filename: str) -> str:
+    raw = Path(filename or "estimate.xlsx").name
+    stem = Path(raw).stem
+    suffix = Path(raw).suffix.lower()
+    stem = re.sub(r"[^0-9A-Za-zА-Яа-я_. -]+", "_", stem).strip(" ._")[:80] or "estimate"
+    if suffix not in (".xlsx", ".xls", ".xlsm"):
+        suffix = ".xlsx"
+    return f"{stem}{suffix}"
+
+
+def _read_estimates_index() -> list[dict]:
+    if not USER_ESTIMATES_INDEX.is_file():
+        return []
+    try:
+        data = json.loads(USER_ESTIMATES_INDEX.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _write_estimates_index(items: list[dict]) -> None:
+    USER_ESTIMATES_DIR.mkdir(parents=True, exist_ok=True)
+    USER_ESTIMATES_INDEX.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _estimate_meta_path(estimate_id: str) -> Path:
+    return USER_ESTIMATES_DIR / estimate_id / "meta.json"
+
+
+def _estimate_rows_path(estimate_id: str) -> Path:
+    return USER_ESTIMATES_DIR / estimate_id / "rows.json"
+
+
+def _estimate_market_raw_path(estimate_id: str) -> Path:
+    return USER_ESTIMATES_DIR / estimate_id / "market_sources.xlsx"
+
+
+def _estimate_market_merged_path(estimate_id: str) -> Path:
+    return USER_ESTIMATES_DIR / estimate_id / "market_compare.xlsx"
+
+
+def _load_estimate_meta(estimate_id: str) -> dict | None:
+    p = _estimate_meta_path(estimate_id)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _load_estimate_rows(estimate_id: str) -> list[dict]:
+    p = _estimate_rows_path(estimate_id)
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _json_num(v) -> float | None:
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except Exception:
+        if v is None:
+            return None
+    try:
+        f = float(v)
+    except Exception:
+        return None
+    return f if f == f else None
+
+
+def _position_type(name: str, unit: str = "") -> tuple[str, str]:
+    text = f"{name} {unit}".casefold().replace("ё", "е")
+    material_keys = (
+        "бетон", "раствор", "смесь", "цемент", "песок", "щебень", "грунт", "краска", "эмаль",
+        "плитк", "кирпич", "труба", "кабель", "провод", "арматур", "битум", "мастик", "лист",
+        "профил", "доска", "брус", "изоляц", "линолеум", "ламинат", "керамзит",
+    )
+    product_keys = (
+        "насос", "шкаф", "щит", "светильник", "радиатор", "кран", "задвижк", "клапан", "вентил",
+        "люк", "двер", "окно", "блок", "прибор", "оборудован", "издели", "унитаз", "раковин",
+        "смесител", "тройник", "угольник", "муфт", "фланец",
+    )
+    service_keys = ("аренда", "перевозка", "доставка", "вывоз", "погруз", "разгруз", "обслуживание", "испытание", "пусконалад")
+    work_keys = (
+        "устройство", "установка", "монтаж", "демонтаж", "разборка", "снятие", "прокладка", "окраска",
+        "ремонт", "очистка", "расчистка", "штукатур", "облицов", "сверление", "засыпка", "разработка",
+        "укладка", "изоляция", "испытание",
+    )
+    if any(k in text for k in service_keys):
+        return "service", "Услуга"
+    if any(k in text for k in work_keys):
+        return "work", "Работа"
+    if any(k in text for k in material_keys):
+        return "material", "Материал"
+    if any(k in text for k in product_keys):
+        return "product", "Товар/изделие"
+    return "other", "Другое"
+
+
+def _fmt_money(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + " ₽"
+
+
+def _fmt_qty(v: float | None) -> str:
+    if v is None:
+        return "—"
+    s = f"{float(v):,.4f}".replace(",", " ").rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+def _normalize_section_title(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    parts = text.split(" ")
+    if len(parts) >= 4 and len(parts) % 2 == 0:
+        half = len(parts) // 2
+        left = " ".join(parts[:half]).strip()
+        right = " ".join(parts[half:]).strip()
+        if left == right:
+            return left
+    return text
+
+
+def _summarize_estimate_rows(rows: list[dict]) -> dict:
+    total_sum = 0.0
+    has_sum = False
+    qty_by_unit: dict[str, float] = {}
+    prices: list[float] = []
+    type_counts: dict[str, int] = {}
+    for r in rows:
+        tkey = str(r.get("type") or "other")
+        type_counts[tkey] = type_counts.get(tkey, 0) + 1
+        sm = _json_num(r.get("total"))
+        if sm is not None:
+            total_sum += sm
+            has_sum = True
+        qty = _json_num(r.get("qty"))
+        unit = str(r.get("unit") or "без ед.").strip() or "без ед."
+        if qty is not None:
+            qty_by_unit[unit] = qty_by_unit.get(unit, 0.0) + qty
+        up = _json_num(r.get("unit_price"))
+        if up is not None and up > 0:
+            prices.append(up)
+    qty_parts = [f"{_fmt_qty(v)} {u}" for u, v in sorted(qty_by_unit.items(), key=lambda x: x[0])]
+    return {
+        "row_count": len(rows),
+        "total_sum": total_sum if has_sum else None,
+        "qty_by_unit": qty_by_unit,
+        "qty_text": "; ".join(qty_parts) if qty_parts else "—",
+        "avg_price": (sum(prices) / len(prices)) if prices else None,
+        "type_counts": type_counts,
+    }
+
+
+def _normalize_selected_estimate_types(raw_values: list[str] | tuple[str, ...] | None) -> list[str]:
+    allowed = {"work", "service", "product", "material", "other"}
+    out: list[str] = []
+    for value in raw_values or []:
+        for part in str(value or "").split(","):
+            key = part.strip()
+            if key and key in allowed and key not in out:
+                out.append(key)
+    return out
+
+
+def _filter_estimate_rows(rows_all: list[dict], *, q: str = "", selected_types: list[str] | None = None) -> list[dict]:
+    rows = list(rows_all)
+    if q:
+        q_low = str(q).casefold()
+        rows = [r for r in rows if q_low in str(r.get("name") or "").casefold()]
+    selected_types = _normalize_selected_estimate_types(selected_types)
+    if selected_types:
+        allowed = set(selected_types)
+        rows = [r for r in rows if str(r.get("type") or "") in allowed]
+    return rows
+
+
+def _estimate_row_to_dict(row) -> dict:
+    type_key, type_label = _position_type(row.name, row.unit)
+    return {
+        "idx": int(row.idx),
+        "name": row.name,
+        "unit": row.unit,
+        "qty": _json_num(row.qty),
+        "unit_price": _json_num(row.unit_price),
+        "total": _json_num(row.total),
+        "item_no": row.item_no,
+        "sheet": row.sheet,
+        "excel_row": row.excel_row,
+        "section": row.section,
+        "source": row.source,
+        "type": type_key,
+        "type_label": type_label,
+    }
+
+
+def _estimate_rows_to_report_df(rows: list[dict]) -> pd.DataFrame:
+    from autobot.market_analytics import COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
+
+    data: list[dict] = []
+    for r in rows:
+        data.append(
+            {
+                COL_ITEM: str(r.get("item_no") or ""),
+                COL_NAME: str(r.get("name") or ""),
+                COL_UNIT: str(r.get("unit") or ""),
+                COL_QTY: _json_num(r.get("qty")),
+                COL_UNIT_PRICE: _json_num(r.get("unit_price")),
+                COL_SUM: _json_num(r.get("total")),
+                "Лист": str(r.get("sheet") or ""),
+                "Строка Excel": r.get("excel_row"),
+                "Раздел": str(r.get("section") or ""),
+                "Тип": str(r.get("type_label") or ""),
+            }
+        )
+    return pd.DataFrame(data)
+
+
+def _merge_uploaded_estimate_market_df(est_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
+    from autobot.market_analytics import COL_NAME, extract_ruble_amounts, recalc_estimate_qty_price_from_unit
+    from autobot.merge_estimate_market import _agg_text, _norm_key, _normalize_market_columns
+
+    est = recalc_estimate_qty_price_from_unit(est_df.copy())
+    ali = _normalize_market_columns(market_df.copy())
+    if COL_NAME not in est.columns or COL_NAME not in ali.columns:
+        return est
+
+    est["__merge_key"] = est[COL_NAME].map(_norm_key)
+    ali["__merge_key"] = ali[COL_NAME].map(_norm_key)
+    ali = ali.drop(columns=[COL_NAME], errors="ignore")
+    agg_cols = [c for c in ali.columns if c != "__merge_key"]
+    if agg_cols:
+        ali = ali.groupby("__merge_key", as_index=False).agg({c: _agg_text for c in agg_cols})
+    merged = est.merge(ali, on="__merge_key", how="left").drop(columns=["__merge_key"], errors="ignore")
+    merged = recalc_estimate_qty_price_from_unit(merged)
+
+    def _rub_line(txt) -> str:
+        if txt is None or (isinstance(txt, float) and pd.isna(txt)):
+            return ""
+        amounts = extract_ruble_amounts(str(txt))
+        if not amounts:
+            return ""
+        uniq = sorted({round(x, 2) for x in amounts})[:12]
+        return "; ".join(f"{v:,.0f}".replace(",", " ") for v in uniq)
+
+    if "Рыночные источники" in merged.columns:
+        merged["Суммы из текста ответа (авто)"] = merged["Рыночные источники"].map(_rub_line)
+    if "Цены за ед. (рынок, руб)" in merged.columns:
+        strict_prices = merged["Цены за ед. (рынок, руб)"].fillna("").astype(str).str.strip()
+        fallback = merged.get("Суммы из текста ответа (авто)", pd.Series([""] * len(merged), index=merged.index))
+        merged["Рынок цены за ед. (итог)"] = strict_prices.where(strict_prices != "", fallback)
+    elif "Суммы из текста ответа (авто)" in merged.columns:
+        merged["Рынок цены за ед. (итог)"] = merged["Суммы из текста ответа (авто)"]
+    return merged
+
+
+def _estimate_upload_log_append(job: dict, line: str) -> None:
+    logs = list(job.get("log_lines") or [])
+    stamp = datetime.now().strftime("%H:%M:%S")
+    logs.append(f"{stamp} · {line}")
+    job["log_lines"] = logs[-20:]
+
+
+def _estimate_market_log_append(job: dict, line: str) -> None:
+    logs = list(job.get("log_lines") or [])
+    stamp = datetime.now().strftime("%H:%M:%S")
+    logs.append(f"{stamp} · {line}")
+    job["log_lines"] = logs[-30:]
+
+
+def _estimate_upload_set(job_id: str, **updates) -> None:
+    with estimate_upload_lock:
+        job = estimate_upload_jobs.get(job_id)
+        if not job:
+            return
+        for key, value in updates.items():
+            job[key] = value
+
+
+def _estimate_market_set(estimate_id: str, **updates) -> None:
+    with estimate_market_lock:
+        job = estimate_market_jobs.get(estimate_id)
+        if not job:
+            return
+        for key, value in updates.items():
+            job[key] = value
+
+
+def _estimate_market_cleanup(max_jobs: int = 16) -> None:
+    with estimate_market_lock:
+        items = sorted(
+            estimate_market_jobs.items(),
+            key=lambda kv: str(kv[1].get("started_at") or ""),
+            reverse=True,
+        )
+        keep = dict(items[:max_jobs])
+        estimate_market_jobs.clear()
+        estimate_market_jobs.update(keep)
+
+
+def _estimate_upload_progress_cb(job_id: str):
+    def _cb(percent: int, stage: str, detail: str = "") -> None:
+        with estimate_upload_lock:
+            job = estimate_upload_jobs.get(job_id)
+            if not job:
+                return
+            job["progress"] = max(int(job.get("progress") or 0), int(percent))
+            job["stage"] = stage
+            job["detail"] = detail
+            _estimate_upload_log_append(job, f"{stage}" + (f": {detail}" if detail else ""))
+    return _cb
+
+
+def _estimate_upload_cleanup(max_jobs: int = 16) -> None:
+    with estimate_upload_lock:
+        items = sorted(
+            estimate_upload_jobs.items(),
+            key=lambda kv: str(kv[1].get("started_at") or ""),
+            reverse=True,
+        )
+        keep = dict(items[:max_jobs])
+        estimate_upload_jobs.clear()
+        estimate_upload_jobs.update(keep)
+
+
+def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str, original_name: str, src_path: Path) -> None:
+    try:
+        from autobot.estimate_excel_analysis import load_estimate_session
+
+        _estimate_upload_set(job_id, running=True, progress=max(30, int(estimate_upload_jobs.get(job_id, {}).get("progress") or 0)), stage="Файл получен", detail="Запускаю разбор Excel")
+        _estimate_upload_set(job_id, updated_at=datetime.now().isoformat(timespec="seconds"))
+        session = load_estimate_session(src_path, progress_cb=_estimate_upload_progress_cb(job_id))
+        rows = [_estimate_row_to_dict(r) for r in session.rows]
+        summary = _summarize_estimate_rows(rows)
+        _estimate_upload_set(job_id, progress=97, stage="Сохраняю смету", detail="Записываю карточку и таблицу")
+        meta = {
+            "id": estimate_id,
+            "title": (title_raw or Path(original_name).stem)[:160],
+            "original_filename": original_name,
+            "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "row_count": len(rows),
+            "total_sum": summary.get("total_sum"),
+            "source_path": str(src_path.relative_to(REPO_ROOT)),
+        }
+        _estimate_rows_path(estimate_id).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        index_items = [x for x in _read_estimates_index() if str(x.get("id") or "") != estimate_id]
+        index_items.insert(0, meta)
+        _write_estimates_index(index_items)
+        with estimate_upload_lock:
+            job = estimate_upload_jobs.get(job_id)
+            if job:
+                job["running"] = False
+                job["ok"] = True
+                job["progress"] = 100
+                job["stage"] = "Готово"
+                job["detail"] = f"Строк: {len(rows)} · смета сохранена"
+                job["estimate_id"] = estimate_id
+                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                _estimate_upload_log_append(job, f"Готово: смета сохранена, строк {len(rows)}")
+    except Exception as e:
+        with estimate_upload_lock:
+            job = estimate_upload_jobs.get(job_id)
+            if job:
+                job["running"] = False
+                job["ok"] = False
+                job["error"] = str(e)[:500]
+                job["stage"] = "Ошибка"
+                job["detail"] = "Не удалось распарсить Excel или сохранить смету"
+                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                _estimate_upload_log_append(job, f"Ошибка: {str(e)[:300]}")
+    finally:
+        _estimate_upload_cleanup()
+
+
+def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str]) -> None:
+    try:
+        from autobot.market_analytics import COL_NAME
+        from autobot.merge_estimate_market import _norm_key
+        from autobot.real_market_scraper import (
+            AvitoBrowserFetcher,
+            _build_output_row,
+            _compact_query,
+            _eligible_rows,
+            _merge_rows,
+            _processed_keys,
+            _read_previous,
+            search_market,
+        )
+
+        meta = _load_estimate_meta(estimate_id) or {}
+        rows_json = _load_estimate_rows(estimate_id)
+        if not rows_json:
+            raise ValueError("У этой сметы нет строк для поиска рынка.")
+        est_df = _estimate_rows_to_report_df(rows_json)
+        total_rows = len(_eligible_rows(est_df))
+        raw_path = _estimate_market_raw_path(estimate_id)
+        merged_path = _estimate_market_merged_path(estimate_id)
+        prev = _read_previous(raw_path)
+        done_keys = _processed_keys(prev)
+        eligible = _eligible_rows(est_df)
+        total = len(eligible)
+        _estimate_market_set(
+            estimate_id,
+            running=True,
+            progress=3,
+            stage="Готовлю строки сметы",
+            detail=f"К обработке: {total} строк" + (f" · город: {city}" if city else ""),
+            updated_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        use_browser = (os.environ.get("MARKET_AVITO_BROWSER", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+        browser_headless = (os.environ.get("MARKET_AVITO_HEADLESS", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+        max_results = max(1, min(10, int((os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5")))
+        pause = max(0.0, float((os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4"))
+        new_rows: list[dict] = []
+        with AvitoBrowserFetcher(enabled=use_browser and "avito" in sources, headless=browser_headless) as browser:
+            for seq, (_, row) in enumerate(eligible, start=1):
+                work_name = str(row.get(COL_NAME, "") or "").strip()
+                key = _norm_key(work_name)
+                if key in done_keys:
+                    continue
+                query = _compact_query(work_name)
+                _estimate_market_set(
+                    estimate_id,
+                    progress=max(4, min(96, int(round(((seq - 1) / max(1, total)) * 100)))),
+                    stage="Ищу цены",
+                    detail=f"{seq}/{total} · {work_name[:140]}",
+                    current_item=work_name[:220],
+                    done=max(0, len(done_keys) + len(new_rows)),
+                    total=total,
+                )
+                with estimate_market_lock:
+                    job = estimate_market_jobs.get(estimate_id)
+                    if job:
+                        _estimate_market_log_append(job, f"Поиск: {seq}/{total} · {work_name[:160]}")
+                offers, err = search_market(
+                    query,
+                    region=city,
+                    sources=sources,
+                    max_results=max_results,
+                    browser_fetcher=browser,
+                )
+                new_rows.append(_build_output_row(row, offers=offers, query=query, err=err))
+                merged_raw = _merge_rows(prev, new_rows)
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                merged_raw.to_excel(raw_path, index=False)
+                merged_df = _merge_uploaded_estimate_market_df(est_df, merged_raw)
+                merged_df.to_excel(merged_path, index=False)
+                detail = f"{len(offers)} ист." if offers else "ничего не найдено"
+                if err and not offers:
+                    detail += f" · {err[:120]}"
+                with estimate_market_lock:
+                    job = estimate_market_jobs.get(estimate_id)
+                    if job:
+                        _estimate_market_log_append(job, f"Готово: {seq}/{total} · {detail}")
+                if pause > 0 and seq < total:
+                    time.sleep(pause)
+        if new_rows:
+            merged_raw = _merge_rows(prev, new_rows)
+        else:
+            merged_raw = prev
+        if merged_raw is None or (hasattr(merged_raw, "empty") and merged_raw.empty and not raw_path.is_file()):
+            pd.DataFrame().to_excel(raw_path, index=False)
+        else:
+            merged_raw.to_excel(raw_path, index=False)
+        _merge_uploaded_estimate_market_df(est_df, merged_raw).to_excel(merged_path, index=False)
+        meta["market_city"] = city
+        meta["market_sources"] = ",".join(sources)
+        meta["market_updated_at"] = datetime.now().strftime("%d.%m.%Y %H:%M")
+        _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        with estimate_market_lock:
+            job = estimate_market_jobs.get(estimate_id)
+            if job:
+                job["running"] = False
+                job["ok"] = True
+                job["progress"] = 100
+                job["stage"] = "Готово"
+                job["detail"] = f"Поиск рынка завершён · строк: {total_rows}"
+                job["done"] = total
+                job["total"] = total
+                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                job["has_raw"] = raw_path.is_file()
+                job["has_merged"] = merged_path.is_file()
+                _estimate_market_log_append(job, "Готово: файлы рынка сохранены")
+    except Exception as e:
+        with estimate_market_lock:
+            job = estimate_market_jobs.get(estimate_id)
+            if job:
+                job["running"] = False
+                job["ok"] = False
+                job["stage"] = "Ошибка"
+                job["detail"] = "Не удалось выполнить поиск рынка по этой смете"
+                job["error"] = str(e)[:500]
+                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                _estimate_market_log_append(job, f"Ошибка: {str(e)[:300]}")
+    finally:
+        _estimate_market_cleanup()
+
+
+ESTIMATES_TEMPLATE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Сметы</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a30; --panel2:#0f1729; --border:#2a385f; --muted:#9fb0d6; --text:#e8eefc; --accent:#4f8cff; --ok:#5ecf8a; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:radial-gradient(circle at top left,#17294f 0,#0b1020 42%,#070b15 100%); color:var(--text); }
+    .page { max-width:1220px; margin:0 auto; padding:26px 18px 44px; }
+    h1 { margin:0 0 8px; font-size:34px; }
+    .sub,.muted { color:var(--muted); }
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 18px; }
+    .tab { display:inline-flex; padding:9px 12px; border-radius:999px; color:#c8d8f8; text-decoration:none; background:rgba(15,22,44,.72); border:1px solid var(--border); font-weight:700; font-size:13px; }
+    .tab.is-active { color:#fff; background:linear-gradient(180deg,#345095,#263d78); border-color:#6d8fe8; }
+    .panel,.card { background:rgba(18,26,48,.92); border:1px solid var(--border); border-radius:16px; box-shadow:0 18px 45px rgba(0,0,0,.22); }
+    .panel { padding:16px; margin-bottom:16px; }
+    .upload-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    input[type=file], input[type=text], select { background:#0c1325; border:1px solid #33466f; color:var(--text); border-radius:10px; padding:10px; }
+    input[type=text] { min-width:280px; }
+    .btn { border:1px solid #5b7ddd; background:linear-gradient(180deg,#3b61ba,#294c9c); color:white; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+    .btn.secondary { background:#26364f; border-color:#3a4c70; color:#dce7ff; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:12px; }
+    .card { padding:14px; text-decoration:none; color:var(--text); }
+    .card:hover { border-color:#6d8fe8; transform:translateY(-1px); }
+    .card h3 { margin:0 0 9px; font-size:15px; line-height:1.35; }
+    .meta { display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:12px; }
+    .meta b { display:block; color:#fff; font-size:15px; margin-top:2px; }
+    .table-wrap { overflow:auto; border-radius:14px; border:1px solid var(--border); background:#0c1325; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th,td { padding:9px 10px; border-bottom:1px solid #223150; vertical-align:top; }
+    th { position:sticky; top:0; background:#121c34; color:#bfd2ff; text-align:left; z-index:1; }
+    tr:hover td { background:rgba(79,140,255,.07); }
+    .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .tag { display:inline-flex; border-radius:999px; padding:3px 8px; border:1px solid #3a4c70; background:#18243d; color:#cfe0ff; font-size:11px; }
+    .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:12px; }
+    .summary-item { padding:11px; background:#0c1325; border:1px solid #263858; border-radius:12px; }
+    .summary-item span { display:block; color:var(--muted); font-size:11px; }
+    .summary-item b { display:block; margin-top:4px; font-size:16px; }
+    .upload-progress { margin-top:14px; padding:14px; border-radius:14px; border:1px solid #324770; background:linear-gradient(180deg, rgba(17,25,46,.95), rgba(10,16,31,.92)); }
+    .upload-progress[hidden] { display:none; }
+    .upload-progress-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
+    .upload-progress-title { font-size:14px; font-weight:700; color:#eaf1ff; }
+    .upload-progress-pct { font-size:13px; color:#9fd2ff; font-variant-numeric:tabular-nums; }
+    .upload-progress-bar { height:12px; border-radius:999px; overflow:hidden; background:#0a1223; border:1px solid #2a3f61; }
+    .upload-progress-fill { height:100%; width:0%; background:linear-gradient(90deg, #4f8cff, #5ecf8a); transition:width .28s ease; }
+    .upload-progress-stage { margin-top:10px; color:#dbe7ff; font-size:13px; font-weight:700; }
+    .upload-progress-detail { margin-top:5px; color:#9fb0d6; font-size:12px; line-height:1.45; }
+    .upload-progress-steps { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .upload-step { border:1px solid #33466f; background:#14203a; color:#99add7; border-radius:999px; padding:4px 9px; font-size:11px; }
+    .upload-step.is-active { color:#fff; border-color:#5b7ddd; background:#23437f; }
+    .upload-step.is-done { color:#dff7e6; border-color:#3f8a5f; background:#1c3b29; }
+    .upload-progress-error { margin-top:10px; color:#ffbfca; font-size:12px; white-space:pre-wrap; }
+    .upload-progress-logs { margin-top:10px; border-radius:10px; border:1px solid #263858; background:#09111f; padding:9px; max-height:180px; overflow:auto; font-size:11px; color:#aebfe4; line-height:1.45; white-space:pre-wrap; }
+    .empty { text-align:center; padding:28px; color:var(--muted); }
+    @media (max-width:720px){ h1{font-size:28px}.upload-row{align-items:stretch;flex-direction:column}.btn,input[type=text],select{width:100%;box-sizing:border-box}.meta{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Сметы</h1>
+    <div class="sub">Загрузите Excel-смету, сохраните её карточкой и смотрите все найденные позиции в таблице.</div>
+    <nav class="tabs">
+      <a class="tab" href="/">📋 Тендеры</a>
+      <a class="tab is-active" href="/estimates">📊 Сметы</a>
+    </nav>
+
+    <section class="panel">
+      <h2 style="margin:0 0 10px;font-size:18px;">Загрузить Excel-смету</h2>
+      <form id="estimateUploadForm" class="upload-row">
+        <input type="file" name="file" accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+        <input type="text" name="title" placeholder="Название сметы (необязательно)" />
+        <button class="btn" type="submit">Загрузить и распарсить</button>
+      </form>
+      <div id="uploadStatus" class="muted" style="margin-top:10px;"></div>
+      <div id="estimateUploadProgress" class="upload-progress" hidden>
+        <div class="upload-progress-head">
+          <div class="upload-progress-title" id="estimateUploadStage">Подготовка…</div>
+          <div class="upload-progress-pct" id="estimateUploadPct">0%</div>
+        </div>
+        <div class="upload-progress-bar"><div id="estimateUploadFill" class="upload-progress-fill"></div></div>
+        <div id="estimateUploadDetail" class="upload-progress-detail"></div>
+        <div class="upload-progress-steps" id="estimateUploadSteps">
+          <span class="upload-step" data-step="upload">Отправка файла</span>
+          <span class="upload-step" data-step="received">Файл получен</span>
+          <span class="upload-step" data-step="parse">Разбор Excel</span>
+          <span class="upload-step" data-step="catalogue">Каталог позиций</span>
+          <span class="upload-step" data-step="save">Сохранение</span>
+          <span class="upload-step" data-step="done">Готово</span>
+        </div>
+        <div id="estimateUploadError" class="upload-progress-error" hidden></div>
+        <div id="estimateUploadLogs" class="upload-progress-logs" hidden></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 style="margin:0 0 10px;font-size:18px;">Список смет</h2>
+      {% if estimates %}
+      <div class="grid">
+        {% for e in estimates %}
+        <a class="card" href="/estimates/{{ e.id }}">
+          <h3>{{ e.title }}</h3>
+          <div class="muted" style="font-size:12px;margin-bottom:10px;">{{ e.original_filename }}</div>
+          <div class="meta">
+            <div><span class="muted">Строк</span><b>{{ e.row_count }}</b></div>
+            <div><span class="muted">Сумма</span><b>{{ e.total_sum_fmt }}</b></div>
+            <div><span class="muted">Загружено</span><b style="font-size:12px;">{{ e.created_at }}</b></div>
+            <div><span class="muted">Типы</span><b style="font-size:12px;">{{ e.types_text }}</b></div>
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty">Пока нет загруженных смет.</div>
+      {% endif %}
+    </section>
+  </div>
+  <script>
+    (function() {
+      const form = document.getElementById("estimateUploadForm");
+      const status = document.getElementById("uploadStatus");
+      const panel = document.getElementById("estimateUploadProgress");
+      const fill = document.getElementById("estimateUploadFill");
+      const pct = document.getElementById("estimateUploadPct");
+      const stage = document.getElementById("estimateUploadStage");
+      const detail = document.getElementById("estimateUploadDetail");
+      const errBox = document.getElementById("estimateUploadError");
+      const logs = document.getElementById("estimateUploadLogs");
+      const stepNodes = Array.from(document.querySelectorAll("#estimateUploadSteps .upload-step"));
+      let activePoll = 0;
+
+      function showProgress() {
+        panel.hidden = false;
+        logs.hidden = false;
+      }
+
+      function markStep(progress, currentStage, done) {
+        const stageLow = String(currentStage || "").toLowerCase();
+        const currentKey =
+          done ? "done"
+          : progress < 25 ? "upload"
+          : progress < 40 ? "received"
+          : stageLow.includes("каталог") ? "catalogue"
+          : stageLow.includes("сохраня") ? "save"
+          : progress >= 40 ? "parse"
+          : "received";
+        const order = ["upload", "received", "parse", "catalogue", "save", "done"];
+        const currentIndex = order.indexOf(currentKey);
+        stepNodes.forEach(function(node) {
+          const key = node.getAttribute("data-step");
+          const idx = order.indexOf(key);
+          node.classList.toggle("is-done", idx >= 0 && idx < currentIndex);
+          node.classList.toggle("is-active", key === currentKey);
+        });
+      }
+
+      function renderProgress(data) {
+        const value = Math.max(0, Math.min(100, Number(data.progress || 0)));
+        fill.style.width = value + "%";
+        pct.textContent = value + "%";
+        stage.textContent = data.stage || "Подготовка…";
+        detail.textContent = data.detail || "";
+        const resultOk = !!data.result_ok;
+        status.textContent = data.running ? "Смета обрабатывается…" : (resultOk ? "Смета готова." : (data.error ? "Во время обработки возникла ошибка." : ""));
+        if (Array.isArray(data.log_tail) && data.log_tail.length) {
+          logs.hidden = false;
+          logs.textContent = data.log_tail.join("\\n");
+        } else {
+          logs.hidden = true;
+          logs.textContent = "";
+        }
+        if (data.error) {
+          errBox.hidden = false;
+          errBox.textContent = "Ошибка: " + data.error;
+        } else {
+          errBox.hidden = true;
+          errBox.textContent = "";
+        }
+        markStep(value, data.stage || "", resultOk && !data.running);
+      }
+
+      async function pollJob(jobId) {
+        const pollId = ++activePoll;
+        for (;;) {
+          if (pollId !== activePoll) return;
+          let resp, data;
+          try {
+            resp = await fetch("/api/estimates/upload-status/" + encodeURIComponent(jobId), { cache: "no-store" });
+            data = await resp.json();
+          } catch (e) {
+            status.textContent = "Не удалось обновить статус обработки.";
+            return;
+          }
+          if (!resp.ok || !data.ok) {
+            status.textContent = (data && data.message) || "Статус обработки недоступен.";
+            return;
+          }
+          renderProgress(data);
+          if (!data.running) {
+            if (data.result_ok && data.estimate_id) {
+              status.textContent = "Готово, открываю смету…";
+              setTimeout(function() { location.href = "/estimates/" + data.estimate_id; }, 450);
+            }
+            return;
+          }
+          await new Promise(function(resolve) { setTimeout(resolve, 500); });
+        }
+      }
+
+      form.addEventListener("submit", function(e) {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const xhr = new XMLHttpRequest();
+        activePoll += 1;
+        showProgress();
+        errBox.hidden = true;
+        errBox.textContent = "";
+        logs.textContent = "";
+        logs.hidden = true;
+        status.textContent = "Начинаю загрузку файла…";
+        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю Excel на сервер", running: true, result_ok: false, log_tail: [] });
+        xhr.open("POST", "/api/estimates/upload");
+        xhr.upload.addEventListener("progress", function(ev) {
+          if (!ev.lengthComputable) return;
+          showProgress();
+          const uploadPct = Math.max(2, Math.min(24, Math.round(ev.loaded / ev.total * 24)));
+          renderProgress({ progress: uploadPct, stage: "Отправляю файл", detail: "Передано " + ev.loaded + " из " + ev.total + " байт", running: true, result_ok: false, log_tail: [] });
+        });
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState !== 4) return;
+          let data = {};
+          try { data = JSON.parse(xhr.responseText || "{}"); } catch (e) {}
+          if (xhr.status < 200 || xhr.status >= 300 || !data.ok) {
+            showProgress();
+            renderProgress({
+              progress: 100,
+              stage: "Ошибка",
+              detail: "Загрузка или запуск обработки не удались",
+              running: false,
+              result_ok: false,
+              error: data.message || ("HTTP " + xhr.status),
+              log_tail: []
+            });
+            status.textContent = "Ошибка: " + (data.message || ("HTTP " + xhr.status));
+            return;
+          }
+          showProgress();
+          renderProgress({
+            progress: Math.max(26, Number(data.progress || 26)),
+            stage: data.stage || "Файл получен",
+            detail: data.detail || "Сервер принял файл и начал разбор",
+            running: true,
+            result_ok: false,
+            log_tail: data.log_tail || []
+          });
+          status.textContent = "Файл получен, идёт разбор сметы…";
+          pollJob(data.job_id);
+        };
+        xhr.send(fd);
+      });
+    })();
+  </script>
+</body>
+</html>
+"""
+
+
+ESTIMATE_DETAIL_TEMPLATE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ meta.title }} · Смета</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a30; --border:#2a385f; --muted:#9fb0d6; --text:#e8eefc; --accent:#4f8cff; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#0b1020; color:var(--text); }
+    .page { max-width:1380px; margin:0 auto; padding:24px 16px 42px; }
+    a { color:#9fc2ff; }
+    h1 { margin:0 0 8px; font-size:28px; }
+    .muted { color:var(--muted); }
+    .panel { background:rgba(18,26,48,.94); border:1px solid var(--border); border-radius:16px; padding:15px; margin-bottom:14px; }
+    .filters { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+    label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
+    input,select { background:#0c1325; border:1px solid #33466f; color:var(--text); border-radius:10px; padding:10px; min-width:220px; }
+    .btn { border:1px solid #5b7ddd; background:linear-gradient(180deg,#3b61ba,#294c9c); color:white; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; }
+    .btn.secondary { background:#26364f; border-color:#3a4c70; color:#dce7ff; }
+    .actions-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+    .type-picker { margin-top:12px; padding:14px; background:#10182c; border:1px solid #2a3a5c; border-radius:14px; }
+    .type-picker-title { margin:0 0 10px; font-size:14px; font-weight:700; color:#dce7ff; }
+    .type-checks { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+    .type-check { display:flex; align-items:flex-start; gap:10px; padding:11px 12px; background:#0c1325; border:1px solid #2b3d60; border-radius:12px; min-height:58px; }
+    .type-check input { min-width:18px; width:18px; height:18px; margin-top:2px; accent-color:#5f8fff; }
+    .type-check strong { display:block; font-size:14px; color:#eef4ff; }
+    .type-check span { display:block; color:#9fb0d6; font-size:12px; margin-top:2px; }
+    .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+    .summary-item { padding:11px; background:#0c1325; border:1px solid #263858; border-radius:12px; }
+    .summary-item span { display:block; color:var(--muted); font-size:11px; }
+    .summary-item b { display:block; margin-top:4px; font-size:16px; }
+    .table-wrap { overflow:auto; border-radius:14px; border:1px solid var(--border); background:#0c1325; }
+    table { width:100%; border-collapse:collapse; font-size:12px; min-width:980px; }
+    th,td { padding:8px 9px; border-bottom:1px solid #223150; vertical-align:top; }
+    th { position:sticky; top:0; background:#121c34; color:#bfd2ff; text-align:left; z-index:1; }
+    tr:hover td { background:rgba(79,140,255,.07); }
+    tr.section-row td { background:#14213d; color:#eaf1ff; font-weight:700; border-bottom-color:#31456d; }
+    tr.section-row:hover td { background:#14213d; }
+    tr.sheet-total-row td { background:#16233f; color:#ffd8d8; font-weight:700; border-top:1px solid #6f3d4a; border-bottom:1px solid #6f3d4a; }
+    tr.sheet-break-row td { background:#4a1f2a; border-bottom:0; height:14px; padding:0; }
+    .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .name { min-width:360px; }
+    .tag { display:inline-flex; border-radius:999px; padding:3px 8px; border:1px solid #3a4c70; background:#18243d; color:#cfe0ff; font-size:11px; white-space:nowrap; }
+    .where { color:#91a3c8; font-size:11px; line-height:1.35; }
+    .market-box { display:grid; gap:10px; }
+    .status-box { background:#0c1325; border:1px solid #263858; border-radius:12px; padding:12px; }
+    .status-line { color:var(--muted); font-size:12px; }
+    .logs { margin:0; background:#0a1020; border:1px solid #223150; border-radius:12px; padding:10px; max-height:200px; overflow:auto; white-space:pre-wrap; font-size:12px; color:#dbe6ff; }
+    @media (max-width:760px){ .filters{align-items:stretch;flex-direction:column}.btn,input,select{width:100%;box-sizing:border-box} }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <p style="margin:0 0 10px;"><a href="/estimates">← Все сметы</a> · <a href="/">Тендеры</a></p>
+    <h1>{{ meta.title }}</h1>
+    <div class="muted">{{ meta.original_filename }} · загружено {{ meta.created_at }} · всего строк {{ meta.row_count }}</div>
+
+    <section class="panel">
+      <form class="filters" method="get" action="/estimates/{{ meta.id }}" id="estimateFilterForm">
+        <label>Поиск по наименованию
+          <input type="text" name="q" value="{{ q }}" placeholder="например: бетон, демонтаж, труба" />
+        </label>
+        <button class="btn" type="submit">Применить</button>
+        <a class="btn secondary" href="/estimates/{{ meta.id }}">Сбросить</a>
+        <a class="btn" href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}">Скачать Excel</a>
+      </form>
+      <div class="type-picker">
+        <div class="type-picker-title">Фильтр по типам позиций</div>
+        <div class="type-checks">
+          {% for opt in type_options %}
+          <label class="type-check">
+            <input type="checkbox" name="types" value="{{ opt.key }}" form="estimateFilterForm" {% if opt.key in selected_types %}checked{% endif %} />
+            <span>
+              <strong>{{ opt.label }}</strong>
+              <span>Строк: {{ opt.count }}</span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="summary" style="margin-top:12px;">
+        <div class="summary-item"><span>Строк после фильтра</span><b>{{ summary.row_count }}</b></div>
+        <div class="summary-item"><span>Общее количество / объём</span><b>{{ summary.qty_text }}</b></div>
+        <div class="summary-item"><span>Общая сумма</span><b>{{ summary.total_sum_fmt }}</b></div>
+        <div class="summary-item"><span>Средняя цена</span><b>{{ summary.avg_price_fmt }}</b></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="market-box">
+        <div>
+          <h2 style="margin:0 0 8px;">Поиск цен по этой смете</h2>
+          <div class="muted">Ищем цены по интернету и на Авито для строк этой сметы. Можно указать город, чтобы сузить выдачу.</div>
+        </div>
+        <div class="filters">
+          <label>Город для поиска
+            <input type="text" id="marketCityInput" value="{{ market_city }}" placeholder="например: Челябинск" />
+          </label>
+          <button class="btn" type="button" id="marketStartBtn" onclick="startEstimateMarket()">Найти цены</button>
+          <a class="btn secondary" id="marketMergedBtn" href="/estimates/{{ meta.id }}/market-compare.xlsx" {% if not has_market_merged %}hidden{% endif %}>Скачать сравнение рынка</a>
+          <a class="btn secondary" id="marketRawBtn" href="/estimates/{{ meta.id }}/market-sources.xlsx" {% if not has_market_raw %}hidden{% endif %}>Скачать источники рынка</a>
+        </div>
+        <div class="status-box">
+          <div id="marketStatusMain">Пока поиск рынка не запускался.</div>
+          <div class="status-line" id="marketStatusDetail"></div>
+        </div>
+        <pre class="logs" id="marketLogs">—</pre>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>Тип</th>
+              <th class="name">Наименование</th>
+              <th>Ед.</th>
+              <th class="num">Кол-во</th>
+              <th class="num">Цена за ед.</th>
+              <th class="num">Сумма</th>
+              <th>Где найдено</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+            {% if r._is_section %}
+            <tr class="section-row">
+              <td colspan="8">{{ r.section_title }}</td>
+            </tr>
+            {% elif r._is_sheet_total %}
+            <tr class="sheet-total-row">
+              <td colspan="6">Итого по листу: {{ r.sheet_title or "без названия" }}</td>
+              <td class="num">{{ r.sheet_total_fmt }}</td>
+              <td></td>
+            </tr>
+            {% elif r._is_sheet_break %}
+            <tr class="sheet-break-row">
+              <td colspan="8"></td>
+            </tr>
+            {% else %}
+            <tr>
+              <td>{{ r.display_no }}</td>
+              <td><span class="tag">{{ r.type_label }}</span></td>
+              <td class="name">{{ r.name }}</td>
+              <td>{{ r.unit or "—" }}</td>
+              <td class="num">{{ r.qty_fmt }}</td>
+              <td class="num">{{ r.unit_price_fmt }}</td>
+              <td class="num">{{ r.total_fmt }}</td>
+              <td class="where">
+                {% if r.sheet %}лист: {{ r.sheet }}<br>{% endif %}
+                {% if r.excel_row %}строка Excel: {{ r.excel_row }}<br>{% endif %}
+              </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+            {% if not rows %}
+            <tr><td colspan="8" style="text-align:center;color:#9fb0d6;padding:24px;">По фильтру ничего не найдено.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <script>
+    async function refreshEstimateMarketStatus() {
+      try {
+        const resp = await fetch("/api/estimates/{{ meta.id }}/market-status");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const main = document.getElementById("marketStatusMain");
+        const detail = document.getElementById("marketStatusDetail");
+        const logs = document.getElementById("marketLogs");
+        const startBtn = document.getElementById("marketStartBtn");
+        const mergedBtn = document.getElementById("marketMergedBtn");
+        const rawBtn = document.getElementById("marketRawBtn");
+        if (startBtn) startBtn.disabled = !!data.running;
+        if (mergedBtn) mergedBtn.hidden = !data.has_merged;
+        if (rawBtn) rawBtn.hidden = !data.has_raw;
+        if (main) {
+          if (data.running) {
+            main.textContent = "Идёт поиск цен: " + (data.done || 0) + " / " + (data.total || 0);
+          } else if (data.result_ok) {
+            main.textContent = "Поиск рынка завершён.";
+          } else if (data.error) {
+            main.textContent = "Поиск завершился с ошибкой.";
+          } else {
+            main.textContent = "Пока поиск рынка не запускался.";
+          }
+        }
+        if (detail) {
+          const bits = [];
+          if (data.stage) bits.push(data.stage);
+          if (data.detail) bits.push(data.detail);
+          if (data.city) bits.push("город: " + data.city);
+          detail.textContent = bits.join(" · ");
+        }
+        if (logs) {
+          const arr = Array.isArray(data.log_tail) ? data.log_tail : [];
+          logs.textContent = arr.length ? arr.join("\\n") : "—";
+          logs.scrollTop = logs.scrollHeight;
+        }
+      } catch (e) {}
+    }
+
+    async function startEstimateMarket() {
+      const cityInput = document.getElementById("marketCityInput");
+      const city = cityInput ? String(cityInput.value || "").trim() : "";
+      const btn = document.getElementById("marketStartBtn");
+      if (btn) btn.disabled = true;
+      try {
+        const resp = await fetch("/api/estimates/{{ meta.id }}/market-start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ city })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          alert(data.message || "Не удалось запустить поиск рынка");
+        }
+      } catch (e) {
+        alert("Не удалось запустить поиск рынка");
+      } finally {
+        refreshEstimateMarketStatus();
+      }
+    }
+
+    refreshEstimateMarketStatus();
+    setInterval(refreshEstimateMarketStatus, 3000);
+  </script>
+</body>
+</html>
+"""
+
+
+@app.route("/estimates")
+def estimates_page():
+    cards = []
+    for meta in _read_estimates_index():
+        if not isinstance(meta, dict):
+            continue
+        rows = _load_estimate_rows(str(meta.get("id") or ""))
+        summary = _summarize_estimate_rows(rows)
+        type_counts = summary.get("type_counts") or {}
+        labels = {"work": "работ", "service": "услуг", "product": "товаров", "material": "материалов", "other": "другое"}
+        types_text = ", ".join(f"{labels.get(k, k)}: {v}" for k, v in type_counts.items()) or "—"
+        item = dict(meta)
+        item["total_sum_fmt"] = _fmt_money(summary.get("total_sum"))
+        item["types_text"] = types_text
+        cards.append(item)
+    cards.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return render_template_string(ESTIMATES_TEMPLATE, estimates=cards)
+
+
+@app.route("/estimates/<estimate_id>")
+def estimate_detail_page(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id)
+    if not meta:
+        abort(404)
+    rows_all = _load_estimate_rows(estimate_id)
+    q = (request.args.get("q", "") or "").strip()
+    selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
+    if not selected_types:
+        legacy_type = (request.args.get("type", "") or "").strip()
+        if legacy_type:
+            selected_types = _normalize_selected_estimate_types([legacy_type])
+        elif str(request.args.get("hide_work", "") or "").strip() in {"1", "true", "yes", "on"}:
+            selected_types = [x for x in ["service", "product", "material", "other"]]
+    rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
+    summary = _summarize_estimate_rows(rows)
+    summary["total_sum_fmt"] = _fmt_money(summary.get("total_sum"))
+    summary["avg_price_fmt"] = _fmt_money(summary.get("avg_price"))
+    type_counts = _summarize_estimate_rows(rows_all).get("type_counts") or {}
+    labels_full = {"work": "Работы", "service": "Услуги", "product": "Товары/изделия", "material": "Материалы", "other": "Другое"}
+    order = ["work", "service", "product", "material", "other"]
+    type_options = [
+        {"key": k, "label": labels_full.get(k, k), "count": int(type_counts.get(k, 0))}
+        for k in order
+        if int(type_counts.get(k, 0)) > 0
+    ]
+    filter_query = urlencode([("q", q)] + [("types", t) for t in selected_types], doseq=True)
+    rows_view = []
+    display_no = 0
+    last_section = None
+    current_sheet = None
+    current_sheet_total = 0.0
+    current_sheet_has_sum = False
+    for r in rows:
+        rr = dict(r)
+        sheet = str(rr.get("sheet") or "").strip()
+        if current_sheet is None:
+            current_sheet = sheet
+        elif sheet != current_sheet:
+            rows_view.append(
+                {
+                    "_is_sheet_total": True,
+                    "sheet_title": current_sheet,
+                    "sheet_total_fmt": _fmt_money(current_sheet_total if current_sheet_has_sum else None),
+                }
+            )
+            rows_view.append({"_is_sheet_break": True})
+            current_sheet = sheet
+            current_sheet_total = 0.0
+            current_sheet_has_sum = False
+            last_section = None
+        section = _normalize_section_title(str(rr.get("section") or ""))
+        rr["section"] = section
+        if section and section != last_section:
+            rows_view.append(
+                {
+                    "_is_section": True,
+                    "section_title": section,
+                }
+            )
+            last_section = section
+        display_no += 1
+        rr["_is_section"] = False
+        rr["display_no"] = display_no
+        rr["qty_fmt"] = _fmt_qty(_json_num(rr.get("qty")))
+        rr["unit_price_fmt"] = _fmt_money(_json_num(rr.get("unit_price")))
+        rr["total_fmt"] = _fmt_money(_json_num(rr.get("total")))
+        total_num = _json_num(rr.get("total"))
+        if total_num is not None:
+            current_sheet_total += total_num
+            current_sheet_has_sum = True
+        rows_view.append(rr)
+    if current_sheet is not None and rows_view:
+        rows_view.append(
+            {
+                "_is_sheet_total": True,
+                "sheet_title": current_sheet,
+                "sheet_total_fmt": _fmt_money(current_sheet_total if current_sheet_has_sum else None),
+            }
+        )
+    return render_template_string(
+        ESTIMATE_DETAIL_TEMPLATE,
+        meta=meta,
+        rows=rows_view,
+        q=q,
+        selected_types=selected_types,
+        filter_query=filter_query,
+        market_city=str(meta.get("market_city") or ""),
+        has_market_raw=_estimate_market_raw_path(estimate_id).is_file(),
+        has_market_merged=_estimate_market_merged_path(estimate_id).is_file(),
+        type_options=type_options,
+        summary=summary,
+    )
+
+
+@app.route("/estimates/<estimate_id>/download.xlsx")
+def estimate_detail_download_xlsx(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id)
+    if not meta:
+        abort(404)
+    rows_all = _load_estimate_rows(estimate_id)
+    q = (request.args.get("q", "") or "").strip()
+    selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
+    if not selected_types:
+        legacy_type = (request.args.get("type", "") or "").strip()
+        if legacy_type:
+            selected_types = _normalize_selected_estimate_types([legacy_type])
+        elif str(request.args.get("hide_work", "") or "").strip() in {"1", "true", "yes", "on"}:
+            selected_types = [x for x in ["service", "product", "material", "other"]]
+    rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
+    from openpyxl.styles import Font, PatternFill
+
+    columns = ["№", "Тип", "Наименование", "Ед.", "Кол-во", "Цена за ед.", "Сумма", "Лист", "Строка Excel", "Раздел"]
+    export_rows: list[dict] = []
+    total_row_excel_numbers: list[int] = []
+    break_row_excel_numbers: list[int] = []
+    display_no = 0
+    current_sheet = None
+    current_sheet_total = 0.0
+    current_sheet_has_sum = False
+
+    def _append_sheet_total(sheet_name: str | None) -> None:
+        export_rows.append(
+            {
+                "№": "",
+                "Тип": "",
+                "Наименование": f"Итого по листу: {sheet_name or 'без названия'}",
+                "Ед.": "",
+                "Кол-во": None,
+                "Цена за ед.": None,
+                "Сумма": current_sheet_total if current_sheet_has_sum else None,
+                "Лист": sheet_name or "",
+                "Строка Excel": None,
+                "Раздел": "",
+            }
+        )
+        total_row_excel_numbers.append(len(export_rows) + 1)
+
+    def _append_break_row() -> None:
+        export_rows.append({c: "" for c in columns})
+        break_row_excel_numbers.append(len(export_rows) + 1)
+
+    for r in rows:
+        sheet = str(r.get("sheet") or "").strip()
+        if current_sheet is None:
+            current_sheet = sheet
+        elif sheet != current_sheet:
+            _append_sheet_total(current_sheet)
+            _append_break_row()
+            current_sheet = sheet
+            current_sheet_total = 0.0
+            current_sheet_has_sum = False
+
+        display_no += 1
+        total_num = _json_num(r.get("total"))
+        if total_num is not None:
+            current_sheet_total += total_num
+            current_sheet_has_sum = True
+        export_rows.append(
+            {
+                "№": display_no,
+                "Тип": str(r.get("type_label") or ""),
+                "Наименование": str(r.get("name") or ""),
+                "Ед.": str(r.get("unit") or ""),
+                "Кол-во": _json_num(r.get("qty")),
+                "Цена за ед.": _json_num(r.get("unit_price")),
+                "Сумма": total_num,
+                "Лист": sheet,
+                "Строка Excel": r.get("excel_row"),
+                "Раздел": _normalize_section_title(str(r.get("section") or "")),
+            }
+        )
+
+    if current_sheet is not None and rows:
+        _append_sheet_total(current_sheet)
+
+    df = pd.DataFrame(export_rows, columns=columns)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Смета")
+        ws = writer.book["Смета"]
+        total_fill = PatternFill(fill_type="solid", fgColor="2F4F6F")
+        total_font = Font(color="FFD7D7", bold=True)
+        break_fill = PatternFill(fill_type="solid", fgColor="6B2331")
+        for row_no in total_row_excel_numbers:
+            for cell in ws[row_no]:
+                cell.fill = total_fill
+                cell.font = total_font
+        for row_no in break_row_excel_numbers:
+            for cell in ws[row_no]:
+                cell.fill = break_fill
+            ws.row_dimensions[row_no].height = 12
+    buf.seek(0)
+    safe_stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", str(meta.get("title") or estimate_id)).strip(" ._") or estimate_id
+    filename = f"{safe_stem}.xlsx"
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+        max_age=0,
+    )
+
+
+@app.route("/estimates/<estimate_id>/market-sources.xlsx")
+def estimate_market_sources_download_xlsx(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    path = _estimate_market_raw_path(estimate_id)
+    meta = _load_estimate_meta(estimate_id) or {}
+    if not path.is_file():
+        abort(404)
+    filename = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", str(meta.get("title") or estimate_id)).strip(" ._") or estimate_id
+    return send_file(path, as_attachment=True, download_name=f"{filename} - источники рынка.xlsx", max_age=0)
+
+
+@app.route("/estimates/<estimate_id>/market-compare.xlsx")
+def estimate_market_compare_download_xlsx(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    path = _estimate_market_merged_path(estimate_id)
+    meta = _load_estimate_meta(estimate_id) or {}
+    if not path.is_file():
+        abort(404)
+    filename = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", str(meta.get("title") or estimate_id)).strip(" ._") or estimate_id
+    return send_file(path, as_attachment=True, download_name=f"{filename} - сравнение рынка.xlsx", max_age=0)
+
+
+@app.route("/api/estimates/<estimate_id>/market-status")
+def api_estimate_market_status(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id) or {}
+    with estimate_market_lock:
+        job = dict(estimate_market_jobs.get(estimate_id) or {})
+    payload = {
+        "ok": True,
+        "running": bool(job.get("running")),
+        "result_ok": bool(job.get("ok")),
+        "progress": int(job.get("progress") or 0),
+        "stage": str(job.get("stage") or ""),
+        "detail": str(job.get("detail") or ""),
+        "error": str(job.get("error") or ""),
+        "done": int(job.get("done") or 0),
+        "total": int(job.get("total") or 0),
+        "city": str(job.get("city") or meta.get("market_city") or ""),
+        "log_tail": list(job.get("log_lines") or []),
+        "started_at": job.get("started_at"),
+        "ended_at": job.get("ended_at"),
+        "has_raw": _estimate_market_raw_path(estimate_id).is_file(),
+        "has_merged": _estimate_market_merged_path(estimate_id).is_file(),
+    }
+    return jsonify(payload)
+
+
+@app.route("/api/estimates/<estimate_id>/market-start", methods=["POST"])
+def api_estimate_market_start(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id)
+    if not meta:
+        return jsonify({"ok": False, "message": "Смета не найдена."}), 404
+    rows = _load_estimate_rows(estimate_id)
+    if not rows:
+        return jsonify({"ok": False, "message": "У этой сметы нет строк для поиска рынка."}), 400
+    with estimate_market_lock:
+        cur = estimate_market_jobs.get(estimate_id)
+        if cur and cur.get("running"):
+            return jsonify({"ok": False, "message": "Поиск рынка уже выполняется."}), 409
+    data = request.get_json(silent=True) or {}
+    city = re.sub(r"\s+", " ", str(data.get("city") or "").strip())[:120]
+    sources = ["avito", "web"]
+    with estimate_market_lock:
+        estimate_market_jobs[estimate_id] = {
+            "running": True,
+            "ok": False,
+            "progress": 1,
+            "stage": "Старт",
+            "detail": "Запускаю поиск цен по строкам сметы",
+            "error": "",
+            "city": city,
+            "sources": ",".join(sources),
+            "done": 0,
+            "total": 0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "ended_at": None,
+            "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Старт поиска рынка" + (f" · город: {city}" if city else "")],
+        }
+    threading.Thread(
+        target=_run_estimate_market_worker,
+        kwargs={"estimate_id": estimate_id, "city": city, "sources": sources},
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "message": "Поиск рынка запущен."})
+
+
+@app.route("/api/estimates/upload", methods=["POST"])
+def api_estimates_upload():
+    f = request.files.get("file")
+    if not f or not getattr(f, "filename", None):
+        return jsonify({"ok": False, "message": "Выберите Excel-файл со сметой."}), 400
+    if not _estimate_upload_allowed(f.filename):
+        return jsonify({"ok": False, "message": "Нужен Excel-файл: .xlsx, .xls или .xlsm."}), 400
+    estimate_id = uuid.uuid4().hex[:16]
+    job_id = uuid.uuid4().hex[:16]
+    est_dir = USER_ESTIMATES_DIR / estimate_id
+    est_dir.mkdir(parents=True, exist_ok=True)
+    original_name = _safe_upload_filename(f.filename)
+    src_path = est_dir / original_name
+    f.save(src_path)
+    title_raw = (request.form.get("title", "") or "").strip()
+    with estimate_upload_lock:
+        estimate_upload_jobs[job_id] = {
+            "job_id": job_id,
+            "estimate_id": None,
+            "running": True,
+            "ok": False,
+            "progress": 26,
+            "stage": "Файл получен",
+            "detail": "Сохраняю Excel и запускаю разбор",
+            "error": "",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "ended_at": None,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Файл получен: {original_name}"],
+        }
+    threading.Thread(
+        target=_run_estimate_upload_worker,
+        kwargs={
+            "job_id": job_id,
+            "estimate_id": estimate_id,
+            "title_raw": title_raw,
+            "original_name": original_name,
+            "src_path": src_path,
+        },
+        daemon=True,
+    ).start()
+    return jsonify(
+        {
+            "ok": True,
+            "job_id": job_id,
+            "progress": 26,
+            "stage": "Файл получен",
+            "detail": "Сервер принял файл и начал разбор",
+            "message": "Смета загружена на сервер.",
+        }
+    )
+
+
+@app.route("/api/estimates/upload-status/<job_id>")
+def api_estimates_upload_status(job_id: str):
+    with estimate_upload_lock:
+        job = dict(estimate_upload_jobs.get(job_id) or {})
+    if not job:
+        return jsonify({"ok": False, "message": "Статус загрузки не найден."}), 404
+    return jsonify(
+        {
+            "ok": True,
+            "job_id": job_id,
+            "estimate_id": job.get("estimate_id"),
+            "running": bool(job.get("running")),
+            "result_ok": bool(job.get("ok")),
+            "progress": int(job.get("progress") or 0),
+            "stage": job.get("stage") or "",
+            "detail": job.get("detail") or "",
+            "error": job.get("error") or "",
+            "started_at": job.get("started_at"),
+            "ended_at": job.get("ended_at"),
+            "log_tail": list(job.get("log_lines") or [])[-12:],
+        }
     )
 
 
@@ -2759,7 +4217,7 @@ MISSING_MERGE_PAGE = """
 
 
 def _svodka_xlsx_tender_ids() -> list[str]:
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
 
     if not REPORTS_DIR.is_dir():
         return []
@@ -2788,7 +4246,7 @@ def _estimate_xlsx_tender_ids() -> list[str]:
 def _compute_reports_coverage() -> dict[str, int]:
     """Тендеры из tenders.json vs готовые веб-сводки и Excel СВОДКА_РЫНОК."""
     merge_root = REPO_ROOT / "data" / "reports_site"
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
 
     meta = load_tender_metadata()
     tender_ids = list(meta.keys())
@@ -2829,7 +4287,7 @@ def _merge_site_busy() -> bool:
 def _missing_or_error_tender_ids() -> list[str]:
     """Только тендеры из tenders.json, где нет HTML-сводки или нет/битая цепочка до неё."""
     merge_root = REPO_ROOT / "data" / "reports_site"
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
 
     out: list[str] = []
     for tid in sorted(load_tender_metadata().keys()):
@@ -2876,10 +4334,10 @@ def _truthy_env(name: str, default: str = "0") -> bool:
     return v in ("1", "true", "yes", "on")
 
 
-def _run_alice_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[int, str]:
+def _run_market_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[int, str]:
     rows_map = _estimate_rows_by_tender_id()
     max_rows_arg: str | None = None
-    max_rows_raw = (os.environ.get("ALICE_MAX_ROWS") or "").strip()
+    max_rows_raw = (os.environ.get("MARKET_MAX_ROWS") or os.environ.get("MARKET_MAX_ROWS") or "").strip()
     if max_rows_raw:
         try:
             cap_rows = int(max_rows_raw)
@@ -2890,31 +4348,31 @@ def _run_alice_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[i
             est_n = int(rows_map.get(tid, 0) or 0)
             use = cap_rows if est_n <= 0 else min(est_n, cap_rows)
             max_rows_arg = str(max(1, use))
-    pause = (os.environ.get("ALICE_PAUSE_SEC") or "18").strip() or "18"
+    pause = (os.environ.get("MARKET_PAUSE_SEC") or os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4"
+    sources = (os.environ.get("MARKET_SOURCES") or "avito,web").strip() or "avito,web"
+    max_results = (os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5"
     cmd = [
         sys.executable,
         str(_TOOLS_RUN_MODULE),
-        "autobot.alice_market_scraper",
+        "autobot.real_market_scraper",
         "--tender-id",
         tid,
         "--pause",
         pause,
+        "--sources",
+        sources,
+        "--max-results-per-row",
+        max_results,
     ]
     if max_rows_arg:
         cmd.extend(["--max-rows", max_rows_arg])
-    if _truthy_env("ALICE_TWO_STEP", "1"):
-        cmd.append("--two-step")
-    if _truthy_env("ALICE_HEADLESS", "1"):
-        cmd.append("--headless")
-    else:
-        cmd.append("--headed")
-    if force_no_resume or _truthy_env("ALICE_NO_RESUME"):
+    if force_no_resume or _truthy_env("MARKET_NO_RESUME") or _truthy_env("MARKET_NO_RESUME"):
         cmd.append("--no-resume")
-    timeout_raw = (os.environ.get("ALICE_TIMEOUT_SEC") or "1800").strip() or "1800"
+    timeout_raw = (os.environ.get("MARKET_TIMEOUT_SEC") or os.environ.get("MARKET_TIMEOUT_SEC") or "21600").strip() or "21600"
     try:
         timeout_sec = max(60, int(timeout_raw))
     except ValueError:
-        timeout_sec = 1800
+        timeout_sec = 21600
     try:
         r = subprocess.run(cmd, cwd=str(REPO_ROOT), timeout=timeout_sec)
         return int(r.returncode), " ".join(cmd)
@@ -3040,15 +4498,15 @@ def _run_merge_site_all_worker(
     only_missing: bool = False,
     ids_override: list[str] | None = None,
     tender_url_by_id: dict[str, str] | None = None,
-    force_alice_no_resume: bool = False,
+    force_market_no_resume: bool = False,
 ) -> None:
     errors: list[str] = []
     ok_html = 0
     ok_full = 0
     ids: list[str] = []
-    reason_counts = {"no_estimate": 0, "alice_failed": 0, "merge_failed": 0, "html_failed": 0}
+    reason_counts = {"no_estimate": 0, "market_failed": 0, "merge_failed": 0, "html_failed": 0}
     try:
-        from autobot.merge_estimate_alice import merge_estimate_and_alice
+        from autobot.merge_estimate_market import merge_estimate_and_market
         from autobot.report_merge_html import write_tender_report_site
 
         if ids_override is not None:
@@ -3061,9 +4519,9 @@ def _run_merge_site_all_worker(
             merge_site_state["total"] = len(ids)
             merge_site_state["done"] = 0
             merge_site_state["current_tid"] = ""
-            merge_site_state["alice_done"] = 0
-            merge_site_state["alice_total"] = 0
-            merge_site_state["last_alice_chat_done"] = 0
+            merge_site_state["market_done"] = 0
+            merge_site_state["market_total"] = 0
+            merge_site_state["last_market_chat_done"] = 0
             merge_site_state["started_at"] = datetime.now().isoformat(timespec="seconds")
             merge_site_state["ended_at"] = None
             merge_site_state["error_ids"] = []
@@ -3086,9 +4544,9 @@ def _run_merge_site_all_worker(
             pref = f"📊 <b>{i + 1}/{len(ids)}</b> · <code>{tid}</code>"
             with merge_site_lock:
                 merge_site_state["current_tid"] = tid
-                merge_site_state["alice_done"] = 0
-                merge_site_state["alice_total"] = 0
-                merge_site_state["last_alice_chat_done"] = 0
+                merge_site_state["market_done"] = 0
+                merge_site_state["market_total"] = 0
+                merge_site_state["last_market_chat_done"] = 0
                 merge_site_state["log_lines"].append(f"[{i + 1}/{len(ids)}] {tid}…")
                 merge_site_state["log_lines"] = merge_site_state["log_lines"][-cap:]
             _merge_chat_add("tender", f"📊 {i + 1}/{len(ids)} · тендер {tid}: старт", tender_id=tid)
@@ -3139,12 +4597,12 @@ def _run_merge_site_all_worker(
                 except Exception:
                     _cnt = 0
                 if _cnt > 0:
-                    _merge_chat_add("estimate", f"Смета: {_cnt} позиций. Запускаю Алису…", tender_id=tid)
+                    _merge_chat_add("estimate", f"Смета: {_cnt} позиций. Запускаю поиск рынка…", tender_id=tid)
                     _tg_send(f"{pref}\n🟡 Смета: <b>{_cnt}</b> поз.")
                     _tg_flush_spool()
-                    # «Запускаю Алису» — до тяжёлых проверок и до subprocess, иначе при spool сообщение
-                    # может уехать в конец и появиться после всех строк Алисы.
-                    _tg_send(f"{pref}\n🟡 Алиса…")
+                    # Старт поиска — до тяжёлых проверок и до subprocess, иначе при spool сообщение
+                    # может уехать в конец и появиться после всех строк прогресса.
+                    _tg_send(f"{pref}\n🟡 Поиск рынка…")
                     _tg_flush_spool()
                 else:
                     reason_counts["no_estimate"] += 1
@@ -3157,53 +4615,53 @@ def _run_merge_site_all_worker(
                     errors.append(tid)
                     continue
 
-                done_before, total_works = _alice_progress_for_tender(tid)
+                done_before, total_works = _market_progress_for_tender(tid)
                 rem_before = max(0, total_works - done_before)
                 with merge_site_lock:
-                    merge_site_state["alice_done"] = int(done_before)
-                    merge_site_state["alice_total"] = int(total_works)
+                    merge_site_state["market_done"] = int(done_before)
+                    merge_site_state["market_total"] = int(total_works)
                 if total_works > 0:
                     if rem_before > 0:
-                        _merge_chat_add("alice", f"Алиса: обработано строк сметы {done_before}/{total_works}, осталось {rem_before}", tender_id=tid, seq=done_before, total=total_works)
-                        _tg_send(f"{pref}\n🟡 Алиса: обработано строк сметы <b>{done_before}/{total_works}</b>…")
+                        _merge_chat_add("market", f"Рынок: обработано строк сметы {done_before}/{total_works}, осталось {rem_before}", tender_id=tid, seq=done_before, total=total_works)
+                        _tg_send(f"{pref}\n🟡 Рынок: обработано строк сметы <b>{done_before}/{total_works}</b>…")
                     else:
-                        _merge_chat_add("alice", f"Алиса уже обработала строки сметы: {done_before}/{total_works}", tender_id=tid, seq=done_before, total=total_works)
-                        _tg_send(f"{pref}\n🟢 Алиса уже обработала строки сметы: <b>{done_before}/{total_works}</b>")
+                        _merge_chat_add("market", f"Рынок уже обработал строки сметы: {done_before}/{total_works}", tender_id=tid, seq=done_before, total=total_works)
+                        _tg_send(f"{pref}\n🟢 Рынок уже обработал строки сметы: <b>{done_before}/{total_works}</b>")
                     _tg_flush_spool()
                 _tg_flush_spool()
-                alice_code, alice_cmd = _run_alice_for_tender(tid, force_no_resume=force_alice_no_resume)
+                market_code, market_cmd = _run_market_for_tender(tid, force_no_resume=force_market_no_resume)
                 with merge_site_lock:
-                    merge_site_state["log_lines"].append(f"  alice: {alice_cmd}")
-                if alice_code != 0:
-                    reason_counts["alice_failed"] += 1
+                    merge_site_state["log_lines"].append(f"  market: {market_cmd}")
+                if market_code != 0:
+                    reason_counts["market_failed"] += 1
                     with merge_site_lock:
-                        if alice_code == 124:
-                            merge_site_state["log_lines"].append("  → Алиса зависла и остановлена по таймауту")
+                        if market_code == 124:
+                            merge_site_state["log_lines"].append("  → поиск рынка завис и остановлен по таймауту")
                         else:
-                            merge_site_state["log_lines"].append(f"  → Алиса код {alice_code}")
-                    if alice_code == 124:
-                        _merge_chat_add("error", "⚠️ Алиса зависла и остановлена по таймауту", tender_id=tid)
-                        _tg_send(f"{pref}\n⚠️ Алиса зависла и остановлена по таймауту")
+                            merge_site_state["log_lines"].append(f"  → поиск рынка код {market_code}")
+                    if market_code == 124:
+                        _merge_chat_add("error", "⚠️ Поиск рынка завис и остановлен по таймауту", tender_id=tid)
+                        _tg_send(f"{pref}\n⚠️ Поиск рынка завис и остановлен по таймауту")
                     else:
-                        _merge_chat_add("error", f"⚠️ Алиса завершилась с кодом {alice_code}", tender_id=tid)
-                        _tg_send(f"{pref}\n⚠️ Алиса код <code>{alice_code}</code>")
+                        _merge_chat_add("error", f"⚠️ Поиск рынка завершился с кодом {market_code}", tender_id=tid)
+                        _tg_send(f"{pref}\n⚠️ Рынок код <code>{market_code}</code>")
                     errors.append(tid)
                     continue
 
-                done_after, total_after = _alice_progress_for_tender(tid)
+                done_after, total_after = _market_progress_for_tender(tid)
                 rem_after = max(0, total_after - done_after)
                 with merge_site_lock:
-                    merge_site_state["alice_done"] = int(done_after)
-                    merge_site_state["alice_total"] = int(total_after)
+                    merge_site_state["market_done"] = int(done_after)
+                    merge_site_state["market_total"] = int(total_after)
                 if total_after > 0:
                     if rem_after > 0:
-                        _merge_chat_add("alice", f"Алиса: обработано строк сметы {done_after}/{total_after}, осталось {rem_after}", tender_id=tid, seq=done_after, total=total_after)
-                        _tg_send(f"{pref}\n🟡 Алиса: обработано строк сметы <b>{done_after}/{total_after}</b>, осталось <b>{rem_after}</b>")
+                        _merge_chat_add("market", f"Рынок: обработано строк сметы {done_after}/{total_after}, осталось {rem_after}", tender_id=tid, seq=done_after, total=total_after)
+                        _tg_send(f"{pref}\n🟡 Рынок: обработано строк сметы <b>{done_after}/{total_after}</b>, осталось <b>{rem_after}</b>")
                     else:
-                        _merge_chat_add("alice", f"🟢 Алиса обработала строки сметы: {done_after}/{total_after}", tender_id=tid, seq=done_after, total=total_after)
-                        _tg_send(f"{pref}\n🟢 Алиса: строки сметы обработаны <b>{done_after}/{total_after}</b>")
+                        _merge_chat_add("market", f"🟢 Рынок обработал строки сметы: {done_after}/{total_after}", tender_id=tid, seq=done_after, total=total_after)
+                        _tg_send(f"{pref}\n🟢 Рынок: строки сметы обработаны <b>{done_after}/{total_after}</b>")
 
-                out = merge_estimate_and_alice(tid)
+                out = merge_estimate_and_market(tid)
                 _merge_chat_add("merge", "Собираю СВОДКА_РЫНОК и страницу сравнения…", tender_id=tid)
                 _tg_send(f"{pref}\n🟡 Merge…")
                 if not out or not out.is_file():
@@ -3222,7 +4680,7 @@ def _run_merge_site_all_worker(
                     site_url = get_report_site_public_base()
                     link = f"{site_url}/merge-report/{tid}/" if site_url else ""
                     with merge_site_lock:
-                        merge_site_state["log_lines"].append("  → OK (Алиса + merge + HTML)")
+                        merge_site_state["log_lines"].append("  → OK (рынок + merge + HTML)")
                     if link:
                         safe_link = html_mod.escape(link, quote=True)
                         _tg_send(
@@ -3256,18 +4714,18 @@ def _run_merge_site_all_worker(
                 errors.append(tid)
             with merge_site_lock:
                 merge_site_state["done"] = i + 1
-                merge_site_state["alice_done"] = 0
-                merge_site_state["alice_total"] = 0
-                merge_site_state["last_alice_chat_done"] = 0
+                merge_site_state["market_done"] = 0
+                merge_site_state["market_total"] = 0
+                merge_site_state["last_market_chat_done"] = 0
                 merge_site_state["log_lines"] = merge_site_state["log_lines"][-cap:]
 
         ended = datetime.now().isoformat(timespec="seconds")
         with merge_site_lock:
             merge_site_state["done"] = len(ids)
             merge_site_state["current_tid"] = ""
-            merge_site_state["alice_done"] = 0
-            merge_site_state["alice_total"] = 0
-            merge_site_state["last_alice_chat_done"] = 0
+            merge_site_state["market_done"] = 0
+            merge_site_state["market_total"] = 0
+            merge_site_state["last_market_chat_done"] = 0
             merge_site_state["running"] = False
             merge_site_state["ended_at"] = ended
             merge_site_state["error_ids"] = errors
@@ -3292,9 +4750,9 @@ def _run_merge_site_all_worker(
             if merge_site_state["running"]:
                 merge_site_state["running"] = False
                 merge_site_state["current_tid"] = ""
-                merge_site_state["alice_done"] = 0
-                merge_site_state["alice_total"] = 0
-                merge_site_state["last_alice_chat_done"] = 0
+                merge_site_state["market_done"] = 0
+                merge_site_state["market_total"] = 0
+                merge_site_state["last_market_chat_done"] = 0
                 t = datetime.now().isoformat(timespec="seconds")
                 merge_site_state["ended_at"] = t
                 if not merge_site_state.get("last_ended_at"):
@@ -3305,13 +4763,13 @@ def _run_merge_site_all_worker(
 @app.route("/merge-report/<tender_id>/")
 @app.route("/merge-report/<tender_id>/index.html")
 def merge_report_site(tender_id: str):
-    """Сводка смета + Алиса (report_merge_html → data/reports_site/<id>/index.html)."""
+    """Сводка смета + рынок (report_merge_html → data/reports_site/<id>/index.html)."""
     tid = (tender_id or "").strip()
     if not tid or "/" in tid or ".." in tid:
         abort(404)
     folder = MERGE_REPORTS_SITE_DIR / tid
     target = folder / "index.html"
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
 
     svodka = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
     # Всегда пересобираем HTML из сводки — иначе остаётся старый index.html без карточек/скриптов.
@@ -3697,51 +5155,51 @@ def api_merge_site_status():
         done = int(merge_site_state["done"] or 0)
         running = bool(merge_site_state["running"])
         current_tid = merge_site_state.get("current_tid") or ""
-        alice_done = int(merge_site_state.get("alice_done") or 0)
-        alice_total = int(merge_site_state.get("alice_total") or 0)
+        market_done = int(merge_site_state.get("market_done") or 0)
+        market_total = int(merge_site_state.get("market_total") or 0)
 
     if running and current_tid:
-        live_alice_done, live_alice_total = _alice_progress_for_tender(current_tid)
-        if live_alice_total > 0:
-            if live_alice_total == alice_total:
-                alice_done = max(alice_done, int(live_alice_done))
+        live_market_done, live_market_total = _market_progress_for_tender(current_tid)
+        if live_market_total > 0:
+            if live_market_total == market_total:
+                market_done = max(market_done, int(live_market_done))
             else:
-                alice_done = int(live_alice_done)
-            alice_total = int(live_alice_total)
+                market_done = int(live_market_done)
+            market_total = int(live_market_total)
             with merge_site_lock:
                 if merge_site_state.get("current_tid") == current_tid:
-                    merge_site_state["alice_done"] = alice_done
-                    merge_site_state["alice_total"] = alice_total
+                    merge_site_state["market_done"] = market_done
+                    merge_site_state["market_total"] = market_total
 
-    alice_percent = int(min(100, max(0, round(100.0 * alice_done / alice_total)))) if alice_total > 0 else 0
-    current_fraction = (alice_done / alice_total) if (running and alice_total > 0) else 0.0
+    market_percent = int(min(100, max(0, round(100.0 * market_done / market_total)))) if market_total > 0 else 0
+    current_fraction = (market_done / market_total) if (running and market_total > 0) else 0.0
     if running and total > 0:
         pct = int(min(99, max(0, round(100.0 * (done + current_fraction) / total))))
-        if alice_done > 0 and done < total:
+        if market_done > 0 and done < total:
             pct = max(1, pct)
     elif not running and total > 0 and done >= total:
         pct = 100
     else:
         pct = 0 if total == 0 else int(min(100, max(0, round(100.0 * done / total))))
 
-    alice_events = _read_alice_web_events(current_tid) if current_tid else []
-    alice_event_max_seq = max((int(e.get("seq") or 0) for e in alice_events), default=0)
-    if running and current_tid and alice_total > 0 and alice_done > 0 and alice_done > alice_event_max_seq:
+    market_events = _read_market_web_events(current_tid) if current_tid else []
+    market_event_max_seq = max((int(e.get("seq") or 0) for e in market_events), default=0)
+    if running and current_tid and market_total > 0 and market_done > 0 and market_done > market_event_max_seq:
         should_add_fallback = False
         with merge_site_lock:
-            last_chat_done = int(merge_site_state.get("last_alice_chat_done") or 0)
-            if alice_done > last_chat_done:
-                merge_site_state["last_alice_chat_done"] = alice_done
+            last_chat_done = int(merge_site_state.get("last_market_chat_done") or 0)
+            if market_done > last_chat_done:
+                merge_site_state["last_market_chat_done"] = market_done
                 should_add_fallback = True
         if should_add_fallback:
-            _merge_chat_add("done", f"✅ {alice_done}/{alice_total} · готово.", tender_id=current_tid, seq=alice_done, total=alice_total)
-            if alice_done < alice_total:
-                _merge_chat_add("begin", f"Работа {alice_done + 1} из {alice_total} началась.", tender_id=current_tid, seq=alice_done + 1, total=alice_total)
+            _merge_chat_add("done", f"✅ {market_done}/{market_total} · готово.", tender_id=current_tid, seq=market_done, total=market_total)
+            if market_done < market_total:
+                _merge_chat_add("begin", f"Работа {market_done + 1} из {market_total} началась.", tender_id=current_tid, seq=market_done + 1, total=market_total)
 
     with merge_site_lock:
         web_events = list(merge_site_state.get("chat_events") or [])
         chat_events = sorted(
-            web_events + alice_events,
+            web_events + market_events,
             key=lambda e: (str(e.get("ts") or ""), str(e.get("source") or ""), int(e.get("seq") or 0)),
         )[-140:]
         payload = {
@@ -3750,10 +5208,10 @@ def api_merge_site_status():
             "done": done,
             "percent": pct,
             "current_tid": merge_site_state.get("current_tid") or "",
-            "alice_done": alice_done,
-            "alice_total": alice_total,
-            "alice_left": max(0, alice_total - alice_done),
-            "alice_percent": alice_percent,
+            "market_done": market_done,
+            "market_total": market_total,
+            "market_left": max(0, market_total - market_done),
+            "market_percent": market_percent,
             "started_at": merge_site_state.get("started_at"),
             "ended_at": merge_site_state.get("ended_at"),
             "error_ids": list(merge_site_state.get("error_ids") or []),
@@ -3832,8 +5290,8 @@ def api_generate_merge_site_one():
     return jsonify({"ok": True, "tender_id": tid})
 
 
-@app.route("/api/generate-merge-site-one-rerun-alice", methods=["POST"])
-def api_generate_merge_site_one_rerun_alice():
+@app.route("/api/generate-merge-site-one-rerun-market", methods=["POST"])
+def api_generate_merge_site_one_rerun_market():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
     with parse_lock:
@@ -3845,10 +5303,10 @@ def api_generate_merge_site_one_rerun_alice():
         return jsonify({"ok": False, "message": "Нужен tender_id"}), 400
     threading.Thread(
         target=_run_merge_site_all_worker,
-        kwargs={"ids_override": [tid], "force_alice_no_resume": True},
+        kwargs={"ids_override": [tid], "force_market_no_resume": True},
         daemon=True,
     ).start()
-    return jsonify({"ok": True, "tender_id": tid, "mode": "rerun_alice_no_resume"})
+    return jsonify({"ok": True, "tender_id": tid, "mode": "rerun_market_no_resume"})
 
 
 @app.route("/api/generate-merge-site-by-link", methods=["POST"])
@@ -3878,7 +5336,7 @@ def api_tender_viability_refresh():
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
         return jsonify({"ok": False, "message": "Нужен tender_id"}), 400
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
 
     sv = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
     if not sv.is_file():

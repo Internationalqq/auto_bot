@@ -11,6 +11,10 @@
 
 Запуск веб-интерфейса:
   py -3 botctl.py web
+
+Справка по товару/услуге/материалу:
+  py -3 botctl.py info "бетон м300"
+  py -3 botctl.py tg-bot
 """
 
 from __future__ import annotations
@@ -112,6 +116,22 @@ def cmd_web() -> int:
     return _run([sys.executable, str(BASE_DIR / "tools" / "launch_web_ui.py")])
 
 
+def cmd_info(query: str, *, send_telegram: bool = False) -> int:
+    cmd = [
+        sys.executable,
+        str(BASE_DIR / "tools" / "run_module.py"),
+        "autobot.item_research",
+        query,
+    ]
+    if send_telegram:
+        cmd.append("--send-telegram")
+    return _run(cmd)
+
+
+def cmd_tg_bot() -> int:
+    return _run([sys.executable, str(BASE_DIR / "tools" / "run_module.py"), "autobot.telegram_research_bot"])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Управление пайплайном AutoBot одной командой")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -120,6 +140,10 @@ def main() -> int:
     sub.add_parser("remove", help="Удалить расписание")
     sub.add_parser("run-now", help="Запустить один прогон сейчас")
     sub.add_parser("web", help="Запустить веб-интерфейс (tools/launch_web_ui.py)")
+    p_info = sub.add_parser("info", help="Собрать краткую сводку по услуге, товару или материалу")
+    p_info.add_argument("query", nargs="+", help="Например: бетон м300")
+    p_info.add_argument("--send-telegram", action="store_true", help="Отправить сводку в TELEGRAM_CHAT_ID")
+    sub.add_parser("tg-bot", help="Запустить Telegram-обработчик команд /info и /research")
 
     args = ap.parse_args()
 
@@ -131,6 +155,10 @@ def main() -> int:
         return cmd_run_now()
     if args.cmd == "web":
         return cmd_web()
+    if args.cmd == "info":
+        return cmd_info(" ".join(args.query), send_telegram=bool(args.send_telegram))
+    if args.cmd == "tg-bot":
+        return cmd_tg_bot()
     return 2
 
 

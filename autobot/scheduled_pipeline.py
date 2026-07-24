@@ -5,7 +5,7 @@
 1) Тестовое сообщение в Telegram (время по Asia/Yekaterinburg в тексте).
 2) main.py — парсинг ЕИС, отчёты, уведомления о новых тендерах.
 3) Для каждого нового id (и при необходимости — для id из --with-tender-id):
-   alice_market_scraper.py → merge_estimate_alice → HTML-сайт + (опц.) Excel в беседу.
+   real_market_scraper.py → merge_estimate_market → HTML-сайт + (опц.) Excel в беседу.
 
 Сайт: data/reports_site/<id>/index.html; отдаётся через тот же Flask, что и UI: py -3 tools/launch_web_ui.py
 Путь в браузере: /merge-report/<id>/  В .env: REPORT_SITE_PUBLIC_BASE_URL или WEB_UI_PUBLIC_HOST+WEB_UI_PORT
@@ -14,7 +14,7 @@ TELEGRAM_SEND_MERGE_EXCEL=1 — дополнительно прикрепить 
 
 Проверка цепочки без «новых» тендеров в tenders.json:
   py scheduled_pipeline.py --with-tender-id 0171200001926001291
-  (main всё равно отработает; Алиса пойдёт и по этому id, даже если он не новый.)
+  (main всё равно отработает; сравнение цен пойдёт и по этому id, даже если он не новый.)
 
 Время запуска:
 - Windows: install_scheduled_tasks.ps1 (локальное время Windows).
@@ -23,10 +23,10 @@ TELEGRAM_SEND_MERGE_EXCEL=1 — дополнительно прикрепить 
 Переменные (.env):
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (id группы)
   SKIP_PERPLEXITY_TXT=1 — не слать .txt для Perplexity
-  RUN_ALICE=1 — после main запускать Алису по новым id (0 — пропустить)
-  ALICE_MAX_ROWS=0 — без лимита позиций на тендер (или задайте число)
-  ALICE_HEADLESS=1 — браузер без окна (нужен залогиненный профиль Яндекса)
-  ALICE_TWO_STEP=1 — второе сообщение Алисе про сайты/телефоны
+  RUN_MARKET=1 — после main запускать Алису по новым id (0 — пропустить)
+  MARKET_MAX_ROWS=0 — без лимита позиций на тендер (или задайте число)
+  MARKET_AVITO_HEADLESS=1 — браузер без окна (нужен залогиненный профиль Яндекса)
+  MARKET_SOURCES=1 — второе сообщение Алисе про сайты/телефоны
 """
 
 from __future__ import annotations
@@ -154,27 +154,30 @@ def _merge_tender_id_lists(primary: list[str], extra: list[str]) -> list[str]:
     return merged
 
 
-def _run_alice(tender_id: str) -> int:
-    max_rows_raw = (os.environ.get("ALICE_MAX_ROWS") or "").strip()
-    pause = os.environ.get("ALICE_PAUSE_SEC", "18").strip() or "18"
+def _run_market(tender_id: str) -> int:
+    max_rows_raw = (os.environ.get("MARKET_MAX_ROWS") or os.environ.get("MARKET_MAX_ROWS") or "").strip()
+    pause = (os.environ.get("MARKET_PAUSE_SEC") or os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4"
+    sources = (os.environ.get("MARKET_SOURCES") or "avito,web").strip() or "avito,web"
+    max_results = (os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5"
     cmd = [
         sys.executable,
         str(_RUN_MODULE),
-        "autobot.alice_market_scraper",
+        "autobot.real_market_scraper",
         "--tender-id",
         tender_id,
         "--pause",
         pause,
+        "--sources",
+        sources,
+        "--max-results-per-row",
+        max_results,
     ]
     if max_rows_raw:
         cmd.extend(["--max-rows", max_rows_raw])
-    if os.environ.get("ALICE_TWO_STEP", "1").strip() in ("1", "true", "yes", "on"):
-        cmd.append("--two-step")
-    if os.environ.get("ALICE_HEADLESS", "").strip().lower() in ("1", "true", "yes", "on"):
-        cmd.append("--headless")
-    else:
-        cmd.append("--headed")
-    if os.environ.get("ALICE_NO_RESUME", "").strip().lower() in ("1", "true", "yes", "on"):
+    if (
+        os.environ.get("MARKET_NO_RESUME", "").strip().lower() in ("1", "true", "yes", "on")
+        or os.environ.get("MARKET_NO_RESUME", "").strip().lower() in ("1", "true", "yes", "on")
+    ):
         cmd.append("--no-resume")
     print(">>>", " ".join(cmd))
     r = subprocess.run(cmd, cwd=str(REPO_ROOT))
@@ -182,9 +185,9 @@ def _run_alice(tender_id: str) -> int:
 
 
 def _run_merge(tender_id: str) -> Path | None:
-    from autobot.merge_estimate_alice import merge_estimate_and_alice
+    from autobot.merge_estimate_market import merge_estimate_and_market
 
-    return merge_estimate_and_alice(tender_id)
+    return merge_estimate_and_market(tender_id)
 
 
 def _send_file(path: Path, caption: str) -> None:
@@ -350,7 +353,7 @@ def main() -> None:
 
     _tg_send_test()
     if test_only and not extra_ids:
-        print("Режим --test-only: main.py и Алиса не запускались.")
+        print("Режим --test-only: main.py и сравнение цен не запускались.")
         return
 
     emit = NEW_IDS_FILE
@@ -438,19 +441,19 @@ def main() -> None:
                 ids = _merge_tender_id_lists(ids, backfill_recovered)
                 print(f"Backfill recovered ids: {backfill_recovered}")
 
-    run_alice = os.environ.get("RUN_ALICE", "1").strip().lower() not in ("0", "false", "no", "off")
-    if not run_alice:
-        print("RUN_ALICE отключён — пропуск alice/merge.")
+    run_market = os.environ.get("RUN_MARKET", "1").strip().lower() not in ("0", "false", "no", "off")
+    if not run_market:
+        print("RUN_MARKET отключён — пропуск market/merge.")
         return
     if not ids:
-        print("Нет id для Алисы: список новых пуст и --with-tender-id не задан.")
+        print("Нет id для рынка: список новых пуст и --with-tender-id не задан.")
         from autobot.telegram_notify import telegram_config
 
         _safe_tg_send(
             telegram_config(),
-            "ℹ️ <b>Алиса и сводка</b> не запускались: в этом прогоне нет <b>новых</b> id "
+            "ℹ️ <b>Рынок и сводка</b> не запускались: в этом прогоне нет <b>новых</b> id "
             "(файл новых id пуст — все найденные тендеры уже были в tenders.json).\n"
-            "<i>Чтобы прогнать Алису по конкретному номеру: сайт → меню у тендера или "
+            "<i>Чтобы прогнать рынок по конкретному номеру: сайт → меню у тендера или "
             "<code>scheduled_pipeline.py --with-tender-id …</code>.</i>",
         )
         return
@@ -460,7 +463,7 @@ def main() -> None:
     cfg = telegram_config()
     total = len(ids)
     for i, tid in enumerate(ids, start=1):
-        print(f"--- Алиса: {tid} ---")
+        print(f"--- Рынок: {tid} ---")
         pref = _progress_prefix(i, total, tid)
         pub_date = _tender_publish_date(tid)
         date_line = f"\n📅 Дата публикации: <code>{html.escape(pub_date)}</code>" if pub_date else ""
@@ -474,12 +477,12 @@ def main() -> None:
         else:
             _safe_tg_send(cfg, f"{pref}\n🟡 Смета не найдена — продолжаю")
 
-        _safe_tg_send(cfg, f"{pref}\n🟡 Алиса…")
-        ac = _run_alice(tid)
+        _safe_tg_send(cfg, f"{pref}\n🟡 Поиск рынка…")
+        ac = _run_market(tid)
         if ac != 0:
             if cfg:
                 try:
-                    send_message(cfg[0], cfg[1], f"⚠️ Алиса код <code>{ac}</code> · <code>{tid}</code>", parse_mode="HTML")
+                    send_message(cfg[0], cfg[1], f"⚠️ Рынок код <code>{ac}</code> · <code>{tid}</code>", parse_mode="HTML")
                 except Exception:
                     pass
             continue
@@ -559,7 +562,7 @@ def main() -> None:
                     send_message(
                         cfg[0],
                         cfg[1],
-                        f"ℹ️ Для № <code>{tid}</code> нет пары отчёт+Алиса для merge (проверь файлы в data/reports/).",
+                        f"ℹ️ Для № <code>{tid}</code> нет пары отчёт+рынок для merge (проверь файлы в data/reports/).",
                         parse_mode="HTML",
                     )
                 except Exception:

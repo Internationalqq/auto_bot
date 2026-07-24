@@ -1472,7 +1472,7 @@ def _lsr_best_qty_unit_pair(
     return (qty, up)
 
 
-def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> list[dict]:
+def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, sheet_name: str = "") -> list[dict]:
     items: list[dict] = []
     header_row = detect_lsr_layout(df)
     if header_row is None:
@@ -1485,10 +1485,15 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> lis
     total_col = min(15, df.shape[1] - 1)
     price_per_unit_candidates = [c for c in (9, 10, 11, 12, 13, 14) if c < df.shape[1]]
 
-    position_rows: list[tuple[int, int, str, str, float | None]] = []
+    position_rows: list[tuple[int, int, str, str, float | None, str]] = []
+    current_section = ""
     # header_row — уже строка первой позиции (шапка с № в A), не пропускаем её.
     for r in range(header_row, len(df)):
         row_values = df.iloc[r].tolist()
+        row_text = " ".join(_cell_text(x) for x in row_values if _cell_text(x)).strip()
+        row_low = row_text.lower()
+        if "раздел" in row_low and 4 <= len(row_text) <= 220:
+            current_section = row_text[:220]
         if len(row_values) < 9:
             continue
 
@@ -1526,14 +1531,14 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> lis
         qty_val = row_values[qty_col] if qty_col < len(row_values) else None
         qty = to_float(qty_val)
 
-        position_rows.append((r, int(round(item_no)), work_text, unit_text, qty))
+        position_rows.append((r, int(round(item_no)), work_text, unit_text, qty, current_section))
 
     if not position_rows:
         return items
 
     # Берем сумму позиции как последнее числовое значение в колонке P
     # между текущей позицией и началом следующей.
-    for idx, (row_idx, item_no, work_text, unit_text, qty) in enumerate(position_rows):
+    for idx, (row_idx, item_no, work_text, unit_text, qty, section_text) in enumerate(position_rows):
         next_row_idx = position_rows[idx + 1][0] if idx + 1 < len(position_rows) else len(df)
         last_total = pick_lsr_position_total(df, row_idx, next_row_idx, total_col)
         if last_total is None:
@@ -1579,6 +1584,9 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> lis
                 "tender_title": tender.title,
                 "tender_url": tender.url,
                 "source_file": str(source_file),
+                "sheet_name": str(sheet_name or ""),
+                "excel_row": int(row_idx + 1),
+                "section": section_text,
                 "extract_source": "LSR",
                 "item_no": item_no,
                 "work_name": work_text,
@@ -1592,11 +1600,18 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> lis
     return items
 
 
-def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> list[dict]:
+def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, sheet_name: str = "") -> list[dict]:
     items: list[dict] = []
     header_row, work_col, price_col = find_header_row(df)
     if header_row is not None:
+        current_section = ""
         for r in range(header_row + 1, len(df)):
+            row_vals = df.iloc[r].tolist()
+            row_text = " ".join(_cell_text(x) for x in row_vals if _cell_text(x)).strip()
+            row_low = row_text.lower()
+            if "раздел" in row_low and 4 <= len(row_text) <= 220:
+                current_section = row_text[:220]
+                continue
             work_val = df.iat[r, work_col] if work_col < df.shape[1] else None
             price_val = df.iat[r, price_col] if price_col < df.shape[1] else None
             work_text = str(work_val).strip() if work_val is not None else ""
@@ -1617,6 +1632,9 @@ def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> li
                     "tender_title": tender.title,
                     "tender_url": tender.url,
                     "source_file": str(source_file),
+                    "sheet_name": str(sheet_name or ""),
+                    "excel_row": int(r + 1),
+                    "section": current_section,
                     "extract_source": "Excel fallback",
                     "work_name": work_text,
                     "price_from_estimate_rub": price,
@@ -1625,10 +1643,15 @@ def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path) -> li
     return items
 
 
-def extract_work_rows_fallback(df: pd.DataFrame, tender: Tender, source_file: Path) -> list[dict]:
+def extract_work_rows_fallback(df: pd.DataFrame, tender: Tender, source_file: Path, *, sheet_name: str = "") -> list[dict]:
     items: list[dict] = []
+    current_section = ""
     for r in range(len(df)):
         row = df.iloc[r].tolist()
+        row_text_full = " ".join(_cell_text(x) for x in row if _cell_text(x)).strip()
+        row_low_full = row_text_full.lower()
+        if "раздел" in row_low_full and 4 <= len(row_text_full) <= 220:
+            current_section = row_text_full[:220]
         text_candidates: list[str] = []
         numeric_candidates: list[tuple[int, float]] = []
 
@@ -1670,6 +1693,9 @@ def extract_work_rows_fallback(df: pd.DataFrame, tender: Tender, source_file: Pa
                 "tender_title": tender.title,
                 "tender_url": tender.url,
                 "source_file": str(source_file),
+                "sheet_name": str(sheet_name or ""),
+                "excel_row": int(r + 1),
+                "section": current_section,
                 "extract_source": "Excel deep fallback",
                 "work_name": work_name,
                 "price_from_estimate_rub": rightmost_price,
@@ -1689,14 +1715,14 @@ def extract_rows_from_excel(path: Path, tender: Tender) -> list[dict]:
 
     fallback_enabled = _truthy_env("ESTIMATE_EXCEL_FALLBACK", "1")
     deep_fallback_enabled = _truthy_env("ESTIMATE_EXCEL_DEEP_FALLBACK", "0")
-    for _, df in data.items():
+    for sheet_name, df in data.items():
         if df.empty:
             continue
-        part = extract_lsr_rows(df, tender, path)
+        part = extract_lsr_rows(df, tender, path, sheet_name=str(sheet_name))
         if not part and fallback_enabled:
-            part = extract_work_rows(df, tender, path)
+            part = extract_work_rows(df, tender, path, sheet_name=str(sheet_name))
         if not part and deep_fallback_enabled:
-            part = extract_work_rows_fallback(df, tender, path)
+            part = extract_work_rows_fallback(df, tender, path, sheet_name=str(sheet_name))
         rows.extend(part)
     # Убираем дубли строк в рамках одного файла.
     uniq = {}
@@ -1812,6 +1838,9 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
                 "Файл ЛСР",
                 "Источник извлечения",
                 "№ п/п",
+                "Лист",
+                "Строка Excel",
+                "Раздел",
                 "Название работы/услуги",
                 "Ед. изм.",
                 "Кол-во",
@@ -1826,6 +1855,9 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
             "source_file",
             "extract_source",
             "item_no",
+            "sheet_name",
+            "excel_row",
+            "section",
             "work_name",
             "unit",
             "qty",
@@ -1838,6 +1870,9 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
             "source_file": "Файл ЛСР",
             "extract_source": "Источник извлечения",
             "item_no": "№ п/п",
+            "sheet_name": "Лист",
+            "excel_row": "Строка Excel",
+            "section": "Раздел",
             "work_name": "Название работы/услуги",
             "unit": "Ед. изм.",
             "qty": "Кол-во",
@@ -1866,7 +1901,7 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
         subset=["Название работы/услуги", "Сумма, руб"],
         keep="first",
     )
-    clean_df = clean_df.sort_values(by=["Файл ЛСР", "№ п/п"], ascending=[True, True])
+    clean_df = clean_df.sort_values(by=["Файл ЛСР", "Лист", "№ п/п", "Строка Excel"], ascending=[True, True, True, True])
     return clean_df
 
 
@@ -2434,7 +2469,7 @@ def main():
                     f"В текущей выборке после фильтров: <b>{len(filtered)}</b> тендер(ов). "
                     f"Новых (ещё нет в <code>tenders.json</code>): <b>0</b> — все уже в системе.\n"
                     "<i>Поиск отработал; ниже в этом прогоне при необходимости обновятся сметы по этим номерам. "
-                    "Алиса по расписанию пойдёт только если в этом запуске появятся новые id.</i>",
+                    "Сравнение цен по расписанию пойдёт только если в этом запуске появятся новые id.</i>",
                 )
         except Exception as e:
             print(f"Telegram: не удалось отправить сводку в начале прогона ({e})")

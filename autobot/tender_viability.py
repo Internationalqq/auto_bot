@@ -332,7 +332,7 @@ def format_viability_for_telegram(tender_id: str) -> str | None:
     HTML для Telegram (parse_mode=HTML) по сводке СВОДКА_РЫНОК после merge.
     Возвращает None, если файла нет или не прочитался.
     """
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
     from autobot.report_prompt import REPORTS_DIR
 
     tid = (tender_id or "").strip()
@@ -379,7 +379,7 @@ def format_viability_for_telegram(tender_id: str) -> str | None:
 if __name__ == "__main__":
     import argparse
 
-    from autobot.merge_estimate_alice import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX
     from autobot.report_prompt import REPORTS_DIR
 
     ap = argparse.ArgumentParser(description="Viability metrics from merged estimate+market XLSX")

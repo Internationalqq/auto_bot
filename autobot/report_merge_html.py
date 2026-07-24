@@ -1,5 +1,5 @@
 """
-Веб-отчёт по сводке смета + Алиса: три карточки (сравнение, рынок, смета).
+Веб-отчёт по сводке смета + рынок: три карточки (сравнение, источники, смета).
 
 Пишет data/reports_site/<tender_id>/index.html.
 Открытие: тот же сервер, что web_ui.py → http://127.0.0.1:8765/merge-report/<id>/
@@ -40,7 +40,7 @@ from autobot.market_analytics import (
     recalc_estimate_qty_price_from_unit,
     unit_has_area_or_volume_marker,
 )
-from autobot.merge_estimate_alice import OUT_PREFIX, refresh_svodka_if_estimate_newer
+from autobot.merge_estimate_market import OUT_PREFIX, refresh_svodka_if_market_newer
 from autobot.report_prompt import DATA_DIR, REPORTS_DIR, load_tender_metadata
 from autobot.text_contacts import collect_phones, collect_urls
 
@@ -366,7 +366,7 @@ def _rows_from_bundle_or_fallback(
     fallback_prices_text: str,
     fallback_phones_text: str,
     fallback_urls_text: str,
-    alice_full_text: str = "",
+    market_full_text: str = "",
     median_unit_raw: object = None,
 ) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -379,6 +379,8 @@ def _rows_from_bundle_or_fallback(
                 p_raw = str(it.get("price", "") or "").strip()
                 u_raw = str(it.get("url", "") or "").strip()
                 ph_raw = str(it.get("phone", "") or "").strip()
+                title_raw = str(it.get("title", "") or "").strip()
+                source_raw = str(it.get("source", "") or "").strip()
                 price_txt = ""
                 if p_raw:
                     try:
@@ -388,13 +390,13 @@ def _rows_from_bundle_or_fallback(
                         price_txt = f"{pv:,.0f}".replace(",", " ") + " ₽"
                     except (TypeError, ValueError):
                         price_txt = p_raw
-                rows.append({"price": price_txt, "phone": ph_raw, "url": u_raw})
+                rows.append({"price": price_txt, "phone": ph_raw, "url": u_raw, "title": title_raw, "source": source_raw})
     except (TypeError, ValueError, json.JSONDecodeError):
         rows = []
 
     if rows:
-        pool_u = collect_urls(alice_full_text)
-        pool_p = collect_phones(alice_full_text)
+        pool_u = collect_urls(market_full_text)
+        pool_p = collect_phones(market_full_text)
         nums_fb = _parse_semicolon_numbers(fallback_prices_text or "")
         if not nums_fb:
             mu = _median_unit_float(median_unit_raw)
@@ -426,11 +428,11 @@ def _rows_from_bundle_or_fallback(
     prices_txt = [f"{v:,.0f}".replace(",", " ") + " ₽" for v in prices[:12]]
     phones = _split_semicolon_values(fallback_phones_text or "")[:12]
     urls = _split_semicolon_values(fallback_urls_text or "")[:12]
-    if (alice_full_text or "").strip():
-        for u in collect_urls(alice_full_text):
+    if (market_full_text or "").strip():
+        for u in collect_urls(market_full_text):
             if u not in urls:
                 urls.append(u)
-        for p in collect_phones(alice_full_text):
+        for p in collect_phones(market_full_text):
             if p not in phones:
                 phones.append(p)
         phones = phones[:24]
@@ -443,6 +445,8 @@ def _rows_from_bundle_or_fallback(
                 "price": prices_txt[i] if i < len(prices_txt) else "",
                 "phone": phones[i] if i < len(phones) else "",
                 "url": urls[i] if i < len(urls) else "",
+                "title": "",
+                "source": "",
             }
         )
     return out
@@ -479,13 +483,18 @@ def _bundle_focus_html(rows: list[dict[str, str]], *, qty_scale: float = 1.0, un
         p = str(it.get("price", "") or "").strip() or "—"
         ph = str(it.get("phone", "") or "").strip() or "—"
         u = str(it.get("url", "") or "").strip()
+        title = str(it.get("title", "") or "").strip()
+        source = str(it.get("source", "") or "").strip()
+        label = title or u
         if u:
             u_cell = (
                 f'<a href="{html_mod.escape(u, quote=True)}" target="_blank" rel="noopener">'
-                f"{html_mod.escape(u[:58])}{'…' if len(u) > 58 else ''}</a>"
+                f"{html_mod.escape(label[:82])}{'…' if len(label) > 82 else ''}</a>"
             )
         else:
-            u_cell = "—"
+            u_cell = html_mod.escape(title) if title else "—"
+        if source:
+            u_cell = f'<span class="src-source">{html_mod.escape(source)}</span> {u_cell}'
         parts.append(
             "<div class='src-row'>"
             f"<span class='src-idx'>{i}.</span>"
@@ -507,13 +516,18 @@ def _bundle_col_urls_html(rows: list[dict[str, str]]) -> str:
     lines: list[str] = []
     for i, it in enumerate(rows[:12], start=1):
         u = str(it.get("url", "") or "").strip()
+        title = str(it.get("title", "") or "").strip()
+        source = str(it.get("source", "") or "").strip()
+        label = title or u
         if u:
             u_cell = (
                 f'<a href="{html_mod.escape(u, quote=True)}" target="_blank" rel="noopener">'
-                f"{html_mod.escape(u[:52])}{'…' if len(u) > 52 else ''}</a>"
+                f"{html_mod.escape(label[:72])}{'…' if len(label) > 72 else ''}</a>"
             )
         else:
-            u_cell = "—"
+            u_cell = html_mod.escape(title) if title else "—"
+        if source:
+            u_cell = f'<span class="src-source">{html_mod.escape(source)}</span> {u_cell}'
         lines.append(f'<div class="psp-row"><span class="psp-i">{i}.</span> <span class="psp-link">{u_cell}</span></div>')
     return "".join(lines)
 
@@ -526,8 +540,8 @@ def _render_html(
     *,
     viability_html: str = "",
 ) -> str:
-    alice_col = "Ответ Алисы"
-    alice_full_col = "Ответ Алисы (полный)" if "Ответ Алисы (полный)" in df.columns else alice_col
+    market_col = "Рыночные источники" if "Рыночные источники" in df.columns else ""
+    market_full_col = "Рыночные источники (полный текст)" if "Рыночные источники (полный текст)" in df.columns else market_col
     if "Рынок цены за ед. (итог)" in df.columns:
         rub_col = "Рынок цены за ед. (итог)"
     elif "Суммы из ответа (итог)" in df.columns:
@@ -535,6 +549,18 @@ def _render_html(
     else:
         rub_col = "Суммы из текста ответа (авто)"
     err_col = "Ошибка / статус"
+
+    def _clean_legacy_status(val: object) -> str:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return ""
+        s = str(val).strip()
+        if not s:
+            return ""
+        up = s.upper()
+        old_engine_token = "".join(["ALI", "CE_"])
+        if old_engine_token in up or "DEFAULT_INPUT_SELECTORS" in up:
+            return ""
+        return s
 
     def _has_text_value(val: object) -> bool:
         if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -550,9 +576,9 @@ def _render_html(
             "Цена-сайт-телефон (json)",
             "Ссылки (строго)",
             "Телефоны (строго)",
-            "Алиса обработано",
-            alice_col,
-            alice_full_col,
+            "Рынок обработано",
+            "Рыночные источники",
+            "Рыночные источники (полный текст)",
         ]:
             if c in df.columns and _has_text_value(row.get(c, "")):
                 return True
@@ -566,7 +592,7 @@ def _render_html(
     df = df.sort_values(["__has_partial_market", "__orig_order"], ascending=[False, True])
 
     rows_compare: list[str] = []
-    rows_alice: list[str] = []
+    rows_market: list[str] = []
     rows_est: list[str] = []
 
     est_cols = [c for c in [COL_ITEM, COL_NAME, COL_UNIT, COL_QTY, COL_UNIT_PRICE, COL_SUM] if c in df.columns]
@@ -584,29 +610,30 @@ def _render_html(
             qty_scale=q_scale,
             unit_label=u_lbl,
         )
-        alice_raw = row.get(alice_col, "")
-        alice_full_raw = row.get(alice_full_col, "")
+        market_raw = row.get(market_col, "") if market_col else ""
+        market_full_raw = row.get(market_full_col, "") if market_full_col else ""
         phones_raw = "" if pd.isna(row.get("Телефоны (строго)", "")) else str(row.get("Телефоны (строго)", ""))
         urls_raw = "" if pd.isna(row.get("Ссылки (строго)", "")) else str(row.get("Ссылки (строго)", ""))
         phones_struct = _cell(phones_raw) if "Телефоны (строго)" in df.columns else "—"
         urls_struct = _cell(urls_raw) if "Ссылки (строго)" in df.columns else "—"
         if phones_struct == "—" and urls_struct == "—":
             # старые выгрузки без структурных колонок: пробуем взять из текста ответа
-            txt = "" if pd.isna(alice_raw) else str(alice_raw)
+            txt = "" if pd.isna(market_raw) else str(market_raw)
             phones_raw = "; ".join(collect_phones(txt))
             urls_raw = "; ".join(collect_urls(txt))
-        alice_full_txt = "" if pd.isna(alice_full_raw) else str(alice_full_raw)
-        alice_preview_txt = alice_full_txt.strip() if alice_full_txt.strip() else ("" if pd.isna(alice_raw) else str(alice_raw))
-        alice_preview_short = alice_preview_txt[:420] + ("…" if len(alice_preview_txt) > 420 else "")
-        alice_preview_html = html_mod.escape(alice_preview_short) if alice_preview_short else "—"
-        alice_full_html = html_mod.escape(alice_preview_txt) if alice_preview_txt else "—"
+        market_full_txt = _clean_legacy_status(market_full_raw)
+        market_preview_txt = market_full_txt.strip() if market_full_txt.strip() else ("" if pd.isna(market_raw) else str(market_raw))
+        market_preview_txt = _clean_legacy_status(market_preview_txt)
+        market_preview_short = market_preview_txt[:420] + ("…" if len(market_preview_txt) > 420 else "")
+        market_preview_html = html_mod.escape(market_preview_short) if market_preview_short else "—"
+        market_full_html = html_mod.escape(market_preview_txt) if market_preview_txt else "—"
         bundle_rows = _rows_from_bundle_or_fallback(
             bundle_json="" if pd.isna(row.get("Цена-сайт-телефон (json)", "")) else str(row.get("Цена-сайт-телефон (json)", "")),
             qty_scale=q_scale,
             fallback_prices_text="" if pd.isna(raw_rub) else str(raw_rub),
             fallback_phones_text=phones_raw,
             fallback_urls_text=urls_raw,
-            alice_full_text=alice_preview_txt,
+            market_full_text=market_preview_txt,
             median_unit_raw=row.get("Медиана цена за ед. (рынок)", ""),
         )
         source_focus_col = _bundle_focus_html(bundle_rows, qty_scale=q_scale, unit_label=u_lbl)
@@ -615,11 +642,11 @@ def _render_html(
             f"<tr{row_cls}><td>{item_no}</td><td>{name}</td><td>{sum_smeta}</td><td class='sources-col'>{source_focus_col}</td><td>{rub_med}</td></tr>"
         )
 
-        err = _cell(row.get(err_col, "")) if err_col in df.columns else ""
+        err = _cell(_clean_legacy_status(row.get(err_col, ""))) if err_col in df.columns else ""
         rub_raw_cell = _cell(row.get(rub_col, "")) if rub_col in df.columns else "—"
-        rows_alice.append(
-            f"<tr{row_cls}><td>{item_no}</td><td>{name}</td><td class='alice-text'><details class='alice-details'><summary>{alice_preview_html}</summary>"
-            f"<div class='alice-scroll'>{alice_full_html}</div></details></td>"
+        rows_market.append(
+            f"<tr{row_cls}><td>{item_no}</td><td>{name}</td><td class='market-text'><details class='market-details'><summary>{market_preview_html}</summary>"
+            f"<div class='market-scroll'>{market_full_html}</div></details></td>"
             f"<td>{rub_raw_cell}</td><td>{err}</td></tr>"
         )
 
@@ -641,7 +668,7 @@ def _render_html(
     pub_esc = html_mod.escape(pub_raw) if pub_raw else "—"
     partial_note = (
         f"Найдено/обработано строк: <b>{ready_count}</b> из <b>{total_count}</b>. "
-        "Сохранённые строки Алисы подняты наверх; если цены/сайты найдены, они показаны сразу."
+        "Сохранённые строки рынка подняты наверх; если объявления/сайты найдены, они показаны сразу."
     )
 
     return f"""<!DOCTYPE html>
@@ -725,7 +752,7 @@ def _render_html(
       border-bottom: 1px solid var(--border);
     }}
     .card--compare .card__head {{ color: var(--teal); background: rgba(45,212,191,.08); }}
-    .card--alice .card__head {{ color: var(--violet); background: rgba(167,139,250,.1); }}
+    .card--market .card__head {{ color: var(--violet); background: rgba(167,139,250,.1); }}
     .card--estimate .card__head {{ color: var(--amber); background: rgba(251,191,36,.1); }}
     .card__body {{ padding: .8rem 1rem 1rem; color: var(--muted); font-size: .88rem; }}
     .viewer {{
@@ -879,31 +906,41 @@ def _render_html(
     .src-chip--phone {{ color: #e6ddff; border-color: rgba(167,139,250,.45); background: rgba(167,139,250,.12); }}
     .src-chip--site {{ color: #b8f6ec; border-color: rgba(45,212,191,.35); }}
     .src-chip--site a {{ color: var(--teal); }}
+    .src-source {{
+      display: inline-block;
+      margin-right: .35rem;
+      padding: .08rem .36rem;
+      border-radius: 999px;
+      background: rgba(45,212,191,.14);
+      color: #d7fff3;
+      font-size: .75rem;
+      font-weight: 700;
+    }}
     .psp-row {{ margin: 0 0 .2rem 0; }}
     .psp-i {{ color: var(--muted); margin-right: .2rem; }}
     .psp-price {{ color: #d4f9ef; font-weight: 600; }}
     .psp-link a {{ color: var(--teal); }}
     .psp-phone {{ color: #d5c8ff; }}
-    .alice-text {{ max-width: 36vw; }}
-    @media (max-width: 1100px) {{ .alice-text {{ max-width: none; }} }}
-    .alice-scroll {{
+    .market-text {{ max-width: 36vw; }}
+    @media (max-width: 1100px) {{ .market-text {{ max-width: none; }} }}
+    .market-scroll {{
       max-height: 9rem;
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
       padding: .25rem 0;
     }}
-    .alice-details summary {{
+    .market-details summary {{
       cursor: pointer;
       white-space: pre-wrap;
       word-break: break-word;
       color: var(--text);
       list-style: none;
     }}
-    .alice-details summary::-webkit-details-marker {{ display: none; }}
-    .alice-details[open] summary {{ color: var(--violet); margin-bottom: .3rem; }}
-    .alice-scroll::-webkit-scrollbar {{ width: 6px; }}
-    .alice-scroll::-webkit-scrollbar-thumb {{ background: rgba(167,139,250,.4); border-radius: 3px; }}
+    .market-details summary::-webkit-details-marker {{ display: none; }}
+    .market-details[open] summary {{ color: var(--violet); margin-bottom: .3rem; }}
+    .market-scroll::-webkit-scrollbar {{ width: 6px; }}
+    .market-scroll::-webkit-scrollbar-thumb {{ background: rgba(167,139,250,.4); border-radius: 3px; }}
     .muted {{ color: var(--muted); font-size: .88em; }}
     .table-cap {{
       caption-side: top;
@@ -966,16 +1003,16 @@ def _render_html(
       <button type="button" class="report-btn" onclick="startTenderCompare(false)">Продолжить поиск цен</button>
       <button type="button" class="report-btn secondary" onclick="startTenderCompare(true)">Начать поиск заново</button>
       <button type="button" class="report-btn secondary" onclick="location.reload()">Обновить страницу</button>
-      <span class="report-status" id="liveStatus">Если Алиса сейчас работает, таблица будет периодически обновляться.</span>
+      <span class="report-status" id="liveStatus">Если поиск рынка сейчас работает, таблица будет периодически обновляться.</span>
     </div>
     <div class="deck" id="cardsDeck">
       <article class="card card--compare active" data-panel="panel-compare">
         <div class="card__head">Сравнение</div>
         <div class="card__body">Смета рядом с ценами с сайтов и одной сводной цифрой по строке.</div>
       </article>
-      <article class="card card--alice" data-panel="panel-alice">
-        <div class="card__head">Алиса</div>
-        <div class="card__body">Сырой текст Алисы и извлечённые суммы.</div>
+      <article class="card card--market" data-panel="panel-market">
+        <div class="card__head">Источники</div>
+        <div class="card__body">Реальные объявления/страницы, откуда взяты цены.</div>
       </article>
       <article class="card card--estimate" data-panel="panel-estimate">
         <div class="card__head">Позиции сметы</div>
@@ -1001,7 +1038,7 @@ def _render_html(
             <tbody>{"".join(rows_compare)}</tbody>
           </table>
         </div>
-        <div id="panel-alice" class="panel">
+        <div id="panel-market" class="panel">
           <table>
             <thead><tr>
               <th>№ п/п</th>
@@ -1010,7 +1047,7 @@ def _render_html(
               <th>Цены (итог)</th>
               <th>Статус</th>
             </tr></thead>
-            <tbody>{"".join(rows_alice)}</tbody>
+            <tbody>{"".join(rows_market)}</tbody>
           </table>
         </div>
         <div id="panel-estimate" class="panel">
@@ -1029,7 +1066,7 @@ def _render_html(
       <button type="button" class="site-log-close" onclick="toggleSiteLog(false)">закрыть</button>
     </div>
     <div class="site-log-feed" id="siteLogFeed">
-      <div class="site-log-empty">Пока событий нет. Когда Алиса работает по этому тендеру, сообщения появятся здесь.</div>
+      <div class="site-log-empty">Пока событий нет. Когда поиск рынка работает по этому тендеру, сообщения появятся здесь.</div>
     </div>
   </aside>
   <script>
@@ -1060,7 +1097,7 @@ def _render_html(
       if (!list.length) {{
         const empty = document.createElement("div");
         empty.className = "site-log-empty";
-        empty.textContent = "Пока событий нет. Когда Алиса работает по этому тендеру, сообщения появятся здесь.";
+        empty.textContent = "Пока событий нет. Когда поиск рынка работает по этому тендеру, сообщения появятся здесь.";
         feed.appendChild(empty);
         return;
       }}
@@ -1083,17 +1120,17 @@ def _render_html(
       if (siteLogOpen) feed.scrollTop = feed.scrollHeight;
     }}
 
-    async function startTenderCompare(resetAlice) {{
+    async function startTenderCompare(resetMarket) {{
       const ok = confirm(
-        resetAlice
-          ? "Начать поиск цен заново для этого тендера?\\n\\nСохранённый прогресс Алисы будет отброшен."
-          : "Продолжить поиск цен для этого тендера?\\n\\nУже сохранённые строки Алисы будут использованы."
+        resetMarket
+          ? "Начать поиск цен заново для этого тендера?\\n\\nСохранённый прогресс рынка будет отброшен."
+          : "Продолжить поиск цен для этого тендера?\\n\\nУже сохранённые строки рынка будут использованы."
       );
       if (!ok) return;
       const status = document.getElementById("liveStatus");
       if (status) status.textContent = "Отправляю задачу на сервер…";
       try {{
-        const r = await fetch(resetAlice ? "/api/generate-merge-site-one-rerun-alice" : "/api/generate-merge-site-one", {{
+        const r = await fetch(resetMarket ? "/api/generate-merge-site-one-rerun-market" : "/api/generate-merge-site-one", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json", "Accept": "application/json" }},
           body: JSON.stringify({{ tender_id: TENDER_ID }}),
@@ -1111,7 +1148,7 @@ def _render_html(
       }}
     }}
 
-    (function autoRefreshWhileAliceRuns() {{
+    (function autoRefreshWhileMarketRuns() {{
       let lastDone = null;
       let lastReloadAt = Date.now();
       async function tick() {{
@@ -1122,10 +1159,10 @@ def _render_html(
           const st = await r.json();
           renderSiteLog(st.chat_events || []);
           if (!st.running || st.current_tid !== TENDER_ID) return;
-          const done = Number(st.alice_done || 0);
-          const total = Number(st.alice_total || 0);
+          const done = Number(st.market_done || 0);
+          const total = Number(st.market_total || 0);
           if (status && total > 0) {{
-            status.textContent = "Алиса работает: " + done + "/" + total + ". Страница автообновляется, чтобы показать новые строки.";
+            status.textContent = "Поиск рынка работает: " + done + "/" + total + ". Страница автообновляется, чтобы показать новые строки.";
           }}
           if (lastDone === null) {{
             lastDone = done;
@@ -1148,7 +1185,7 @@ def _render_html(
       const titleEl = document.getElementById("panelTitle");
       const titleMap = {{
         "panel-compare": "Сравнение",
-        "panel-alice": "Ответы Алисы",
+        "panel-market": "Источники рынка",
         "panel-estimate": "Смета",
       }};
       function setActive(panelId) {{
@@ -1172,22 +1209,24 @@ def write_tender_report_site(tender_id: str) -> Path | None:
     if not tid:
         return None
     try:
-        refresh_svodka_if_estimate_newer(tid)
+        refresh_svodka_if_market_newer(tid)
     except Exception:
-        print(f"[report_merge_html] refresh_svodka_if_estimate_newer failed tid={tid}", file=sys.stderr, flush=True)
+        print(f"[report_merge_html] refresh_svodka_if_market_newer failed tid={tid}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
     summary = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
-    if not summary.is_file():
-        est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    market_path = REPORTS_DIR / f"РЫНОК_ИСТОЧНИКИ_{est_path.stem}.xlsx"
+    use_summary = summary.is_file() and market_path.is_file()
+    if use_summary:
+        try:
+            df = pd.read_excel(summary)
+        except Exception:
+            return None
+    else:
         if not est_path.is_file():
             return None
         try:
             df = pd.read_excel(est_path)
-        except Exception:
-            return None
-    else:
-        try:
-            df = pd.read_excel(summary)
         except Exception:
             return None
     if COL_NAME not in df.columns:
@@ -1231,7 +1270,7 @@ def main() -> None:
     args = ap.parse_args()
     p = write_tender_report_site(args.tender_id.strip())
     if not p:
-        raise SystemExit("Нет СВОДКА_РЫНОК_<id>.xlsx — сначала merge_estimate_alice.")
+        raise SystemExit("Нет СВОДКА_РЫНОК_<id>.xlsx — сначала merge_estimate_market.")
     print(p)
 
 
