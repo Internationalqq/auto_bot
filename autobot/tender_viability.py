@@ -171,6 +171,16 @@ class ViabilityStats:
     smeta_above_market: int
     median_ratio: float | None
     share_sum_smeta_where_cheaper_than_median: float | None
+    comparable_estimate_total: float | None
+    comparable_market_total: float | None
+    comparable_gap_total: float | None
+    comparable_gap_percent: float | None
+
+
+def _fmt_rub(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"{float(v):,.0f}".replace(",", " ") + " ₽"
 
 
 def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
@@ -184,6 +194,9 @@ def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
     ratios: list[float] = []
     sum_smeta_cheap = 0.0
     sum_smeta_all = 0.0
+    comparable_est_total = 0.0
+    comparable_market_total = 0.0
+    comparable_has_sum = False
 
     for _, row in df.iterrows():
         if str(row.get(COL_DUP, "")).strip() == "Да":
@@ -204,6 +217,14 @@ def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
         comparable += 1
         r = est / mkt
         ratios.append(r)
+        qty = _safe_float(row.get(COL_QTY))
+        sm_row = _safe_float(row.get(COL_SUM))
+        est_total_row = sm_row if sm_row is not None else (est * qty if qty is not None and qty > 0 else est)
+        market_total_row = (mkt * qty) if qty is not None and qty > 0 else mkt
+        if est_total_row is not None and market_total_row is not None and est_total_row > 0 and market_total_row > 0:
+            comparable_est_total += float(est_total_row)
+            comparable_market_total += float(market_total_row)
+            comparable_has_sum = True
         if sm is not None and sm > 0:
             sum_smeta_all += sm
             if r < 0.97:
@@ -217,6 +238,11 @@ def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
 
     med_r = float(statistics.median(ratios)) if ratios else None
     share = (sum_smeta_cheap / sum_smeta_all) if sum_smeta_all > 0 else None
+    gap_total = None
+    gap_pct = None
+    if comparable_has_sum and comparable_market_total > 0:
+        gap_total = comparable_est_total - comparable_market_total
+        gap_pct = gap_total / comparable_market_total
 
     return ViabilityStats(
         rows_total=rows_total,
@@ -228,27 +254,31 @@ def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
         smeta_above_market=above,
         median_ratio=med_r,
         share_sum_smeta_where_cheaper_than_median=share,
+        comparable_estimate_total=(comparable_est_total if comparable_has_sum else None),
+        comparable_market_total=(comparable_market_total if comparable_has_sum else None),
+        comparable_gap_total=gap_total,
+        comparable_gap_percent=gap_pct,
     )
 
 
 def _verdict_label(st: ViabilityStats) -> tuple[str, str]:
     """(краткая оценка, css-класс)."""
     if st.comparable < 3:
-        return "Мало строк с рынком — вывод осторожный.", "viability--warn"
+        return "🟡 Недостаточно данных: пока нельзя уверенно сказать, выгодный тендер или нет.", "viability--warn"
     if st.median_ratio is None:
-        return "Нет пар «смета / рынок» для сравнения.", "viability--warn"
+        return "🟡 Нет нормального сравнения сметы с рынком: вывод пока неясный.", "viability--warn"
     if st.median_ratio < 0.92:
         return (
-            "Лимит сметы в среднем ниже рынка — маржа может быть узкой.",
+            "🔴 Тендер, скорее всего, невыгодный: сметные цены в среднем ниже рынка.",
             "viability--tight",
         )
     if st.median_ratio > 1.08:
         return (
-            "Лимит сметы в среднем выше рынка — больше запас по цене.",
+            "✅ Тендер выглядит выгодным: сметные цены в среднем выше рынка, запас есть.",
             "viability--room",
         )
     return (
-        "Смета и рынок в среднем близки — маржу смотрите по строкам.",
+        "🟡 Тендер на грани: смета и рынок близки, нужна ручная проверка ключевых позиций.",
         "viability--neutral",
     )
 
@@ -266,6 +296,14 @@ def build_viability_section_html(
         if st.share_sum_smeta_where_cheaper_than_median is not None
         else "—"
     )
+    est_total_s = _fmt_rub(st.comparable_estimate_total)
+    market_total_s = _fmt_rub(st.comparable_market_total)
+    gap_total_s = _fmt_rub(abs(st.comparable_gap_total) if st.comparable_gap_total is not None else None)
+    gap_pct_s = (
+        f"{abs(st.comparable_gap_percent or 0.0) * 100.0:.0f}%".replace(".", ",")
+        if st.comparable_gap_percent is not None
+        else "—"
+    )
     narr_block = ""
     if narrative and narrative.strip():
         narr_block = (
@@ -274,6 +312,20 @@ def build_viability_section_html(
 
     tid_esc = html_std.escape((tender_id or "").strip())
     title_esc = html_std.escape(title)
+    why_line = "По сумме сравнение пока неполное."
+    if st.comparable_gap_total is not None and st.comparable_gap_percent is not None:
+        if st.comparable_gap_total < 0:
+            why_line = (
+                f"По строкам, где рынок найден, смета даёт {est_total_s}, "
+                f"а рынок показывает примерно {market_total_s}. Не хватает около {gap_total_s} ({gap_pct_s})."
+            )
+        elif st.comparable_gap_total > 0:
+            why_line = (
+                f"По строкам, где рынок найден, смета даёт {est_total_s}, "
+                f"а рынок показывает примерно {market_total_s}. Запас около {gap_total_s} ({gap_pct_s})."
+            )
+        else:
+            why_line = f"По строкам, где рынок найден, смета и рынок почти равны: {est_total_s} против {market_total_s}."
 
     dyn_pro = ""
     if st.smeta_above_market > st.smeta_below_market:
@@ -290,8 +342,10 @@ def build_viability_section_html(
     return f"""<section class="viability {cls}" aria-label="Смета и рынок">
   <div class="viability__head">Быстрый разбор · <code>{tid_esc}</code></div>
   <p class="viability__verdict"><strong>{title_esc}</strong></p>
+  <p class="viability__muted" style="margin-top:-.2rem;margin-bottom:.8rem;">{html_std.escape(why_line)}</p>
   <ul class="viability__facts">
     <li>Строк в смете: <b>{st.rows_considered}</b> · с рынком: <b>{st.comparable}</b></li>
+    <li>Сумма по сравнимым строкам: <b>{est_total_s}</b> · рынок: <b>{market_total_s}</b></li>
     <li>Смета дешевле рынка (&lt;92%): <b>{st.smeta_below_market}</b> · рядом: <b>{st.smeta_near_market}</b> · дороже (&gt;108%): <b>{st.smeta_above_market}</b></li>
     <li>Медиана «цена в таблице / медиана рынка»: <b>{med_s}</b></li>
     <li>Доля суммы, где отношение &lt;0,97: <b>{share_s}</b></li>

@@ -276,6 +276,163 @@ def _session_get(url: str, timeout: int = 25) -> str:
     return r.text
 
 
+def _decode_avito_escapes(text: str) -> str:
+    s = str(text or "")
+    if not s:
+        return ""
+    return (
+        s.replace("\\u002F", "/")
+        .replace("\\u002f", "/")
+        .replace("\\u003A", ":")
+        .replace("\\u003a", ":")
+        .replace("\\u0026", "&")
+        .replace("\\u0026amp;", "&")
+        .replace("\\/", "/")
+    )
+
+
+def _normalize_avito_url(raw_url: str, base_url: str) -> str:
+    href = _decode_avito_escapes(html.unescape(raw_url or "")).strip()
+    if not href or href.startswith("#"):
+        return ""
+    if "avito.ru" not in href and not href.startswith("/"):
+        return ""
+    url = urljoin(base_url, href.split("?")[0])
+    parsed = urlparse(url)
+    if "avito.ru" not in parsed.netloc:
+        return ""
+    if not re.search(r"_\d{6,}(?:$|/)", parsed.path):
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _extract_avito_title(fragment: str) -> str:
+    patterns = [
+        r'"(?:title|name|itemTitle)"\s*:\s*"([^"]+)"',
+        r"\btitle=[\"']([^\"']+)[\"']",
+        r"<h3[^>]*>(.*?)</h3>",
+        r"<a\b[^>]*>(.*?)</a>",
+    ]
+    for pat in patterns:
+        m = re.search(pat, fragment or "", flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        title = _clean_text(_decode_avito_escapes(m.group(1)))
+        if len(title) >= 3:
+            return title[:220]
+    text = _clean_text(fragment)
+    if len(text) >= 3:
+        return " ".join(text.split()[:12])[:220]
+    return ""
+
+
+def _extract_avito_price_from_json_node(node: object) -> float | None:
+    if isinstance(node, (int, float)) and 10 <= float(node) <= 500_000_000:
+        return float(node)
+    if isinstance(node, str):
+        parsed = _parse_price(_decode_avito_escapes(node))
+        if parsed is not None:
+            return parsed
+        raw = re.sub(r"[^\d.,]", "", node)
+        if raw:
+            try:
+                value = float(raw.replace(",", "."))
+            except ValueError:
+                value = 0
+            if 10 <= value <= 500_000_000:
+                return value
+        return None
+    if isinstance(node, dict):
+        for key in ("price", "priceRub", "amount", "value"):
+            if key in node:
+                parsed = _extract_avito_price_from_json_node(node.get(key))
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+def _extract_avito_json_offers(page_html: str, base_url: str, *, max_results: int) -> list[MarketOffer]:
+    offers: list[MarketOffer] = []
+    seen: set[str] = set()
+    script_re = re.compile(
+        r"<script\b[^>]*type=[\"']application/ld\+json[\"'][^>]*>(?P<body>.*?)</script>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    def visit(node: object) -> None:
+        if len(offers) >= max_results * 4:
+            return
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+
+        raw_url = ""
+        for key in ("url", "itemUrl", "urlPath", "uri", "href"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                raw_url = value
+                break
+        url = _normalize_avito_url(raw_url, base_url) if raw_url else ""
+        if url and url not in seen:
+            title = ""
+            for key in ("title", "name", "itemTitle"):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    title = _clean_text(_decode_avito_escapes(value))[:220]
+                    break
+            price = _extract_avito_price_from_json_node(node)
+            if title and price is not None:
+                seen.add(url)
+                snippet = _clean_text(json.dumps(node, ensure_ascii=False))[:500]
+                offers.append(MarketOffer(source="Авито", title=title, price=price, url=url, snippet=snippet))
+
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                visit(value)
+
+    for match in script_re.finditer(page_html or ""):
+        body = (match.group("body") or "").strip()
+        if not body or "avito" not in body.lower():
+            continue
+        try:
+            visit(json.loads(_decode_avito_escapes(body)))
+        except Exception:
+            continue
+
+    return offers
+
+
+def _extract_avito_fragment_offers(page_html: str, base_url: str, *, max_results: int) -> list[MarketOffer]:
+    offers: list[MarketOffer] = []
+    seen: set[str] = set()
+    decoded = _decode_avito_escapes(page_html)
+    url_re = re.compile(
+        r"(https?://(?:www\.)?avito\.ru/[^\"'<>\\\s]+?_\d{6,}(?:/)?(?:\?[^\"'<>\\\s]*)?|/[^\"'<>\\\s]+?_\d{6,}(?:/)?(?:\?[^\"'<>\\\s]*)?)",
+        flags=re.IGNORECASE,
+    )
+    for match in url_re.finditer(decoded):
+        url = _normalize_avito_url(match.group(1), base_url)
+        if not url or url in seen:
+            continue
+        frag = decoded[max(0, match.start() - 1600) : min(len(decoded), match.end() + 2400)]
+        title = _extract_avito_title(frag)
+        if len(title) < 3:
+            continue
+        price = _parse_price(_clean_text(frag))
+        if price is None:
+            price = _extract_avito_price_from_json_node({"price": frag})
+        if price is None:
+            continue
+        seen.add(url)
+        offers.append(MarketOffer(source="Авито", title=title, price=price, url=url, snippet=_clean_text(frag)[:500]))
+        if len(offers) >= max_results * 4:
+            break
+    return offers
+
+
 def _parse_avito_html(page_html: str, base_url: str, *, max_results: int) -> list[MarketOffer]:
     offers: list[MarketOffer] = []
     seen: set[str] = set()
@@ -287,17 +444,8 @@ def _parse_avito_html(page_html: str, base_url: str, *, max_results: int) -> lis
         flags=re.IGNORECASE | re.DOTALL,
     )
     for m in link_re.finditer(page_html or ""):
-        href = html.unescape(m.group("href") or "").strip()
-        if not href or href.startswith("#"):
-            continue
-        if "avito.ru" not in href and not href.startswith("/"):
-            continue
-        url = urljoin(base_url, href.split("?")[0])
-        parsed = urlparse(url)
-        if "avito.ru" not in parsed.netloc:
-            continue
-        # Объявления обычно заканчиваются числовым id. Служебные ссылки пропускаем.
-        if not re.search(r"_\d{6,}(?:$|/)", parsed.path):
+        url = _normalize_avito_url(m.group("href") or "", base_url)
+        if not url:
             continue
         if url in seen:
             continue
@@ -318,6 +466,16 @@ def _parse_avito_html(page_html: str, base_url: str, *, max_results: int) -> lis
         offers.append(MarketOffer(source="Авито", title=title[:220], price=price, url=url, snippet=text[:500]))
         if len(offers) >= max_results * 4:
             break
+
+    for extra in (
+        _extract_avito_json_offers(page_html, base_url, max_results=max_results),
+        _extract_avito_fragment_offers(page_html, base_url, max_results=max_results),
+    ):
+        for offer in extra:
+            if offer.url in seen:
+                continue
+            seen.add(offer.url)
+            offers.append(offer)
 
     return _dedupe_and_sort(offers, max_results=max_results)
 
@@ -444,6 +602,40 @@ def search_avito(
     return [], err
 
 
+def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer], str]:
+    try:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+    except ImportError:
+        return [], "DDGS не установлен"
+
+    offers: list[MarketOffer] = []
+    seen: set[str] = set()
+    last_err = ""
+    for region in ("ru-ru", "wt-wt"):
+        try:
+            with DDGS(timeout=25) as ddgs:
+                for item in ddgs.text(query, region=region, max_results=max(max_results * 3, 10)):
+                    title = _clean_text(str(item.get("title") or ""))[:220]
+                    snippet = _clean_text(str(item.get("body") or item.get("snippet") or ""))[:700]
+                    url = str(item.get("href") or item.get("url") or "").strip()
+                    if not title and not snippet:
+                        continue
+                    key = url or f"{title}|{snippet[:80]}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    price = _parse_price(f"{title} {snippet}") or 0
+                    offers.append(MarketOffer(source="Интернет", title=title or "Источник", price=float(price), url=url, snippet=snippet))
+                    if len(offers) >= max_results:
+                        return _dedupe_and_sort(offers, max_results=max_results), ""
+        except Exception as e:
+            last_err = f"DDGS: {type(e).__name__}: {e}"[:300]
+    return _dedupe_and_sort(offers, max_results=max_results), last_err
+
+
 def search_web(query: str, *, region: str = "", max_results: int = 3) -> list[MarketOffer]:
     q = f"{query} {region} цена руб"
     errors: list[str] = []
@@ -464,6 +656,12 @@ def search_web(query: str, *, region: str = "", max_results: int = 3) -> list[Ma
             return offers
     except Exception as e:
         errors.append(f"Bing: {type(e).__name__}: {e}")
+
+    ddgs_offers, ddgs_err = _search_web_ddgs(q, max_results=max_results)
+    if ddgs_offers:
+        return ddgs_offers
+    if ddgs_err:
+        errors.append(ddgs_err)
     if errors:
         raise RuntimeError("; ".join(errors))
     return []

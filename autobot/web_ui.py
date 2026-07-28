@@ -3,8 +3,10 @@ from __future__ import annotations
 from autobot.paths import REPO_ROOT
 import io
 import json
+import math
 import os
 import re
+import shutil
 import subprocess
 import uuid
 import sys
@@ -28,12 +30,14 @@ except ImportError:
 from flask import (
     Flask,
     abort,
+    redirect,
     jsonify,
     make_response,
     render_template_string,
     request,
     send_file,
     send_from_directory,
+    url_for,
 )
 
 from autobot.site_public_url import get_report_site_public_base
@@ -55,6 +59,21 @@ except ModuleNotFoundError as e:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 26 * 1024 * 1024  # загрузка Excel обоснования НМЦК
+
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<defs>
+  <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#5ea2ff"/>
+    <stop offset="100%" stop-color="#5ecf8a"/>
+  </linearGradient>
+</defs>
+<rect x="6" y="6" width="52" height="52" rx="14" fill="#0f1830"/>
+<path d="M20 16h16l8 8v20a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4V20a4 4 0 0 1 4-4z" fill="url(#g)"/>
+<path d="M36 16v8h8" fill="none" stroke="#e8eefc" stroke-width="3" stroke-linejoin="round"/>
+<path d="M24 30h12M24 36h10" stroke="#e8eefc" stroke-width="3" stroke-linecap="round"/>
+<circle cx="42" cy="42" r="8" fill="#0f1830" stroke="#e8eefc" stroke-width="3"/>
+<path d="M47.5 47.5L53 53" stroke="#e8eefc" stroke-width="3" stroke-linecap="round"/>
+</svg>"""
 
 # Совпадает с NEEDED_STAGE в main.py — единственная стадия, которую подсвечиваем зелёным.
 STAGE_SUBMISSION = "Подача заявок"
@@ -151,13 +170,8 @@ def _market_web_events_path(tender_id: str) -> Path:
     return REPO_ROOT / "data" / "logs" / f"market_web_events_{safe}.jsonl"
 
 
-def _market_web_events_path(tender_id: str) -> Path:
-    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", (tender_id or "unknown").strip())[:80] or "unknown"
-    return REPO_ROOT / "data" / "logs" / f"market_web_events_{safe}.jsonl"
-
-
 def _read_market_web_events(tender_id: str, *, limit: int = 80) -> list[dict]:
-    paths = [_market_web_events_path(tender_id), _market_web_events_path(tender_id)]
+    paths = [_market_web_events_path(tender_id)]
     raw_lines: list[str] = []
     for path in paths:
         if not path.is_file():
@@ -232,29 +246,32 @@ INDEX_TEMPLATE = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  {% if embed_mode %}<base target="_top" />{% endif %}
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Помощник по госзакупкам</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='8' y='10' width='34' height='44' rx='8' fill='%23121a30' stroke='%236db7ff' stroke-width='3'/%3E%3Cpath d='M18 22h14M18 30h14M18 38h10' stroke='%239fd2ff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='45' cy='42' r='10' fill='none' stroke='%235ecf8a' stroke-width='4'/%3E%3Cpath d='M52 49l6 6' stroke='%235ecf8a' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
   <style>
     :root {
-      --bg: #0b1020;
-      --panel: #121a30;
-      --panel-soft: #10172b;
-      --border: #27355d;
-      --border-soft: #223154;
-      --text: #e8ecf1;
-      --muted: #9fb0d6;
-      --muted-soft: #8a9bc4;
-      --accent: #397ed1;
-      --accent-2: #285da4;
-      --accent-bright: #6db7ff;
-      --ok: #5ecf8a;
-      --danger: #a04048;
-      --shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --panel-soft: #f7fafe;
+      --border: #d8e2ef;
+      --border-soft: #e7edf5;
+      --text: #172235;
+      --muted: #61748c;
+      --muted-soft: #75859a;
+      --accent: #1f72dc;
+      --accent-2: #195fba;
+      --accent-bright: #4d9bff;
+      --ok: #2e8b57;
+      --danger: #cf5a5a;
+      --shadow: 0 16px 42px rgba(28, 49, 84, 0.08);
     }
     html, body { min-height: 100%; margin: 0; box-sizing: border-box; }
     *, *::before, *::after { box-sizing: inherit; }
-    body { font-family: "Segoe UI", Arial, sans-serif; background: radial-gradient(1200px 700px at 20% -200px, #1c2b56 0%, var(--bg) 45%); color: var(--text); }
-    .page { max-width: 960px; margin: 0 auto; padding: 22px 18px 40px; display: flex; flex-direction: column; }
+    body { font-family: "Segoe UI", Arial, sans-serif; background: linear-gradient(180deg, #ffffff 0%, var(--bg) 100%); color: var(--text); }
+    .page { max-width: 1220px; margin: 0 auto; padding: 26px 18px 44px; display: flex; flex-direction: column; }
     .page > .hero-title, .page > h1, .page > .sub { order: 0; }
     .page > .action-hub { order: 1; }
     .page > #reportCoverageBanner { order: 2; }
@@ -454,17 +471,28 @@ INDEX_TEMPLATE = """
     .tender-card {
       display: flex;
       flex-direction: column;
-      padding: 10px 11px;
-      border-radius: 10px;
-      border: 1px solid #2a3962;
-      background: linear-gradient(145deg, #1a2442, #141d34);
+      gap: 2px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid #35508d;
+      background:
+        linear-gradient(180deg, rgba(109, 183, 255, 0.12), rgba(109, 183, 255, 0) 32%),
+        linear-gradient(145deg, #1d294a, #141d34);
       color: var(--text);
-      transition: transform .15s ease, border-color .15s, box-shadow .15s;
+      transition: transform .15s ease, border-color .15s, box-shadow .15s, background .15s ease;
       min-height: 0;
       min-width: 0;
       overflow: hidden;
+      box-shadow: 0 10px 26px rgba(0,0,0,.22);
     }
-    .tender-card:hover { transform: translateY(-2px); border-color: #607dce; box-shadow: 0 8px 20px rgba(0,0,0,.28); }
+    .tender-card:hover {
+      transform: translateY(-2px);
+      border-color: #81b8ff;
+      box-shadow: 0 14px 30px rgba(5, 10, 25, 0.34);
+      background:
+        linear-gradient(180deg, rgba(109, 183, 255, 0.18), rgba(109, 183, 255, 0.02) 32%),
+        linear-gradient(145deg, #212f56, #17213b);
+    }
     .tender-card[data-href] { cursor: pointer; }
     .tender-card.no-data { border-left: 3px solid var(--danger); }
     .tender-card-link {
@@ -472,9 +500,19 @@ INDEX_TEMPLATE = """
       min-width: 0;
       text-decoration: none;
       color: inherit;
+      padding-right: 34px;
     }
     .tender-card-link--more { flex: 1 1 auto; margin-top: 2px; }
-    .tender-card .title { font-size: 13px; font-weight: 650; line-height: 1.3; max-height: 3.9em; overflow: hidden; word-break: break-word; }
+    .tender-card .title {
+      font-size: 14px;
+      font-weight: 750;
+      line-height: 1.35;
+      max-height: 4.05em;
+      overflow: hidden;
+      word-break: break-word;
+      color: #f4f8ff;
+      text-shadow: 0 1px 0 rgba(0,0,0,.18);
+    }
     .tender-card-row {
       display: flex;
       align-items: center;
@@ -499,10 +537,11 @@ INDEX_TEMPLATE = """
     }
     .tender-meta-item {
       min-width: 0;
-      padding: 8px 9px;
+      padding: 9px 10px;
       border-radius: 10px;
-      background: rgba(10, 18, 34, 0.52);
-      border: 1px solid rgba(109, 183, 255, 0.12);
+      background: linear-gradient(180deg, rgba(17, 28, 53, 0.92), rgba(9, 16, 31, 0.86));
+      border: 1px solid rgba(109, 183, 255, 0.2);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
     }
     .tender-meta-item--wide { grid-column: 1 / -1; }
     .tender-meta-label {
@@ -510,16 +549,17 @@ INDEX_TEMPLATE = """
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #7d8fbb;
-      margin-bottom: 4px;
+      letter-spacing: 0.07em;
+      color: #92a7d6;
+      margin-bottom: 5px;
     }
     .tender-meta-value {
       display: block;
-      font-size: 12px;
+      font-size: 13px;
       color: #edf3ff;
       line-height: 1.35;
       word-break: break-word;
+      font-weight: 650;
     }
     .tender-meta-value--mono { font-variant-numeric: tabular-nums; color: #d9e7ff; }
     .tender-card-pub {
@@ -527,7 +567,11 @@ INDEX_TEMPLATE = """
       flex-wrap: wrap;
       align-items: center;
       gap: 6px 10px;
-      margin-top: 10px;
+      margin-top: 11px;
+      padding: 8px 10px;
+      border-radius: 11px;
+      background: rgba(10, 18, 34, 0.46);
+      border: 1px solid rgba(109, 183, 255, 0.14);
     }
     .tender-card-pub-label {
       font-size: 9px;
@@ -559,29 +603,29 @@ INDEX_TEMPLATE = """
     }
     .tender-status-row .eis-in-card { margin-left: auto; }
     .tender-progress {
-      margin-top: 10px;
-      padding: 9px 10px;
-      border-radius: 10px;
-      background: rgba(10, 18, 34, 0.58);
-      border: 1px solid rgba(109, 183, 255, 0.16);
+      margin-top: 8px;
+      padding: 7px 8px;
+      border-radius: 9px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(140, 172, 220, 0.2);
     }
     .tender-progress-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      font-size: 11px;
-      color: #b7c8ea;
-      margin-bottom: 7px;
+      gap: 8px;
+      font-size: 10px;
+      color: #c7d6ef;
+      margin-bottom: 5px;
     }
     .tender-progress-label { font-weight: 700; letter-spacing: 0.02em; }
     .tender-progress-value { color: #ecf2ff; font-weight: 700; font-variant-numeric: tabular-nums; }
     .tender-progress-track {
-      height: 8px;
+      height: 6px;
       border-radius: 999px;
       overflow: hidden;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.05);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.04);
     }
     .tender-progress-fill {
       height: 100%;
@@ -589,9 +633,9 @@ INDEX_TEMPLATE = """
       background: linear-gradient(90deg, #4b7dff, #5ecf8a);
     }
     .tender-progress-note {
-      margin-top: 7px;
-      font-size: 11px;
-      color: #92a6d2;
+      margin-top: 5px;
+      font-size: 10px;
+      color: #9fb2d7;
       line-height: 1.35;
     }
     .eis-in-card {
@@ -616,18 +660,55 @@ INDEX_TEMPLATE = """
     .tag-stage-closed { background: #5a1a22; color: #ffc9cc; border: 1px solid #a04048; }
     .tender-menu-wrap { position: absolute; top: 7px; right: 7px; z-index: 3; }
     .tender-menu-btn {
-      width: 28px; height: 28px; border-radius: 7px; border: 1px solid #3a4677; background: rgba(15,19,36,.85);
-      color: #c8d8f8; cursor: pointer; font-weight: 700; line-height: 1;
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid #d7e2ec;
+      background: #ffffff;
+      color: #1f334d;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 16px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
     }
+    .tender-menu-btn:hover { background: #f7fafc; border-color: #c3d4e6; color: #10263d; }
+    .tender-menu-wrap > summary {
+      list-style: none;
+      display: block;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tender-menu-wrap > summary::-webkit-details-marker { display: none; }
     .tender-menu {
-      display: none; position: absolute; top: 31px; right: 0; min-width: 260px; background: #13182b; border: 1px solid #2b365e;
-      border-radius: 8px; padding: 6px; box-shadow: 0 10px 28px rgba(0,0,0,.45);
+      display: none;
+      position: absolute;
+      top: 34px;
+      right: 0;
+      min-width: 260px;
+      background: #ffffff;
+      border: 1px solid #d7e2ec;
+      border-radius: 10px;
+      padding: 6px;
+      box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14);
     }
+    .tender-menu-wrap[open] .tender-menu,
     .tender-menu-wrap.menu-open .tender-menu { display: block; }
     .tender-menu button {
-      width: 100%; text-align: left; background: transparent; color: #e8ecf1; border: none; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 12px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: #1f334d;
+      border: none;
+      padding: 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 12px;
     }
-    .tender-menu button:hover { background: rgba(255,255,255,.08); }
+    .tender-menu button:hover { background: #f4f8fc; }
     .parse-progress-panel {
       margin-top: 18px; padding: 18px 20px; border-radius: 15px;
       background: linear-gradient(135deg, rgba(34, 57, 101, 0.96), rgba(18, 29, 53, 0.98));
@@ -788,43 +869,75 @@ INDEX_TEMPLATE = """
     .action-card > .btn.btn-lg { width: 100%; }
     .action-card .btn-row .btn-lg { flex: 1 1 260px; }
     .tender-actions {
-      display: flex; flex-direction: column; gap: 7px;
+      display: flex; flex-direction: column; gap: 8px;
       margin-top: 12px; padding-top: 12px;
-      border-top: 1px solid rgba(42, 57, 98, 0.65);
+      border-top: 1px solid rgba(76, 108, 181, 0.45);
     }
     .tender-act {
       display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid #3a4677; background: rgba(15, 19, 36, 0.85);
-      color: #c8d8f8; border-radius: 9px; padding: 8px 10px;
-      font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none;
+      color: #d5e4ff; border-radius: 11px; padding: 9px 11px;
+      font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none;
       line-height: 1.25; text-align: center;
     }
     .tender-act:hover { background: rgba(75, 101, 187, 0.35); color: #fff; border-color: rgba(140, 175, 255, 0.55); }
     .tender-act:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
     .tender-act--primary { border-color: var(--accent); background: linear-gradient(180deg, #334b93, #2a3f82); color: #ecf2ff; }
     .tender-act--main { width: 100%; min-height: 43px; font-size: 13px; padding: 10px 12px; }
-    .tender-next {
-      margin: 0; font-size: 12px; color: var(--muted-soft); line-height: 1.45;
+    .tender-act--crm {
+      width: 100%;
+      min-height: 46px;
+      font-size: 14px;
+      border-color: #ffb64d;
+      background: linear-gradient(180deg, #ffb84f, #ea8e1f);
+      color: #241300;
+      box-shadow: 0 10px 22px rgba(234, 142, 31, 0.28);
     }
-    details.tender-more {
-      border: 1px solid rgba(58, 70, 119, 0.72);
-      border-radius: 8px;
-      background: rgba(10, 14, 28, 0.38);
-    }
-    details.tender-more > summary {
-      list-style: none; cursor: pointer; padding: 7px 9px;
-      color: #a8b8e6; font-size: 12px; font-weight: 600; user-select: none;
-    }
-    details.tender-more > summary::-webkit-details-marker { display: none; }
-    details.tender-more > summary::after { content: " +"; color: #7891cc; }
-    details.tender-more[open] > summary::after { content: " -"; }
-    details.tender-more[open] > summary {
-      border-bottom: 1px solid rgba(58, 70, 119, 0.55); color: #d2defa;
+    .tender-act--crm:hover {
+      background: linear-gradient(180deg, #ffc364, #f39b27);
+      border-color: #ffd089;
+      color: #1b0f00;
+      box-shadow: 0 12px 24px rgba(243, 155, 39, 0.34);
     }
     .tender-more-actions {
       display: grid; grid-template-columns: 1fr; gap: 5px; padding: 7px;
     }
     .tender-more-actions .tender-act { width: 100%; justify-content: flex-start; text-align: left; }
+    .tender-menu .tender-act,
+    .tender-menu .tender-act--primary,
+    .tender-menu .tender-act--crm,
+    .tender-menu .tender-act--main,
+    .tender-menu .tender-act-btn {
+      width: 100%;
+      min-height: 0;
+      justify-content: flex-start;
+      text-align: left;
+      padding: 9px 10px;
+      border-radius: 8px;
+      border: 1px solid #d7e2ec;
+      background: #ffffff;
+      color: #1f334d;
+      box-shadow: none;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .tender-menu .tender-act:hover,
+    .tender-menu .tender-act--primary:hover,
+    .tender-menu .tender-act--crm:hover,
+    .tender-menu .tender-act--main:hover,
+    .tender-menu .tender-act-btn:hover {
+      background: #f4f8fc;
+      border-color: #c3d4e6;
+      color: #10263d;
+    }
+    .tender-menu .tender-act:focus,
+    .tender-menu .tender-act-btn:focus,
+    .tender-menu-btn:focus {
+      outline: 2px solid #c9ddff;
+      outline-offset: 1px;
+    }
+    .tender-next { display: none; }
+    details.tender-more { display: none; }
     .tender-card-link--disabled { cursor: default; }
     .tag-merge { background: #2a3a6e; color: #b8d4ff; border: 1px solid #4a67b8; }
     .tag-nomerge { background: #3a3048; color: #d0c4e8; border: 1px solid #5a4a72; }
@@ -891,6 +1004,183 @@ INDEX_TEMPLATE = """
     }
     details.action-options .opts,
     details.action-options .rebuild-row { margin: 0; padding: 10px; }
+    .hero-mark {
+      background: linear-gradient(180deg, #eef5ff, #f8fbff);
+      border-color: #bfd4ef;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 10px 24px rgba(35, 74, 135, 0.08);
+    }
+    .section-title,
+    .help-section .section-title,
+    .glossary-term,
+    .region-title,
+    .tender-card .title,
+    .tender-meta-value,
+    .parse-progress-head,
+    .parse-summary-value,
+    .site-chat-text,
+    .action-card-title,
+    .help-steps strong,
+    .tender-meta-value--mono {
+      color: #1b2a41;
+    }
+    .controls,
+    .filters,
+    .action-card,
+    .parse-progress,
+    .region-card,
+    .tender-card,
+    .tender-meta-item,
+    .tender-card-pub,
+    .tender-progress,
+    .merge-status-card,
+    .site-chat,
+    .workflow-note,
+    .help-note,
+    .glossary-card,
+    .btn-effect,
+    .card-legend,
+    details.advanced,
+    details.action-options,
+    .tender-menu,
+    .merge-logs,
+    .status,
+    .logs {
+      background: #ffffff;
+      border-color: var(--border);
+      box-shadow: var(--shadow);
+      color: var(--text);
+    }
+    .filters,
+    .meta,
+    .sub,
+    .section-lead,
+    .controls-hint,
+    .page-footer,
+    .tender-next,
+    .parse-progress-hint,
+    .parse-status-line,
+    .parse-summary-label,
+    .tender-card .tid,
+    .tender-card-pub-label,
+    .tender-meta-label,
+    .site-chat-meta,
+    .help-steps,
+    .card-legend,
+    .btn-effect,
+    .status-line,
+    .market-links-note {
+      color: var(--muted);
+    }
+    .filters select,
+    .opts input,
+    .link-row input,
+    .rebuild-row select,
+    .tender-filter-row select,
+    .tender-filter-row input,
+    .type-picker,
+    textarea,
+    input[type="text"],
+    input[type="file"],
+    select {
+      background: #ffffff;
+      border-color: #cfd9e8;
+      color: var(--text);
+    }
+    .btn,
+    .main-tab.is-active,
+    .tender-act--primary,
+    .market-link-chip,
+    .chip.is-active {
+      background: linear-gradient(180deg, #2e80e8, #1d6fdc);
+      border-color: #2e80e8;
+      color: #ffffff;
+    }
+    .btn.secondary,
+    .main-tab,
+    .tender-act,
+    .chip,
+    .eis-in-card,
+    .offer-source,
+    .workflow-pill,
+    .upload-step,
+    .tag,
+    .tag-merge,
+    .tag-nomerge {
+      background: #f4f8fd;
+      border-color: #cfd9e8;
+      color: #35506f;
+    }
+    .main-tab:hover,
+    .tender-act:hover,
+    .market-link-chip:hover,
+    .chip:hover,
+    .eis-in-card:hover {
+      background: #eaf2fd;
+      border-color: #9ec0ef;
+      color: #173a65;
+    }
+    .tender-card,
+    .tender-meta-item,
+    .tender-card-pub,
+    .parse-summary-item,
+    .action-card {
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+      border-color: #d9e4f1;
+    }
+    .tender-card:hover {
+      background: linear-gradient(180deg, #ffffff, #f2f7fd);
+      border-color: #9ec0ef;
+      box-shadow: 0 18px 34px rgba(43, 78, 131, 0.12);
+    }
+    .tag-ok,
+    .tag-stage-open,
+    .cov-ok {
+      background: #e9f8ef;
+      color: #257347;
+      border-color: #bfe5cc;
+    }
+    .tag-nodata,
+    .tag-stage-closed,
+    .cov-warn {
+      background: #fff1f1;
+      color: #a94444;
+      border-color: #f0c5c5;
+    }
+    .cov-partial {
+      background: #fff8e8;
+      color: #91621c;
+      border-color: #f0deb1;
+    }
+    .parse-bar-wrap,
+    .merge-bar-wrap {
+      background: #edf3fa;
+      border-color: #d6e0ee;
+    }
+    .merge-logs,
+    .logs,
+    .site-chat-msg,
+    .parse-summary-item,
+    .status-box {
+      background: #f8fbff;
+      border-color: #dfe7f1;
+      color: var(--text);
+    }
+    .opts,
+    .link-row,
+    .rebuild-row,
+    .status {
+      color: var(--muted);
+    }
+    details.advanced > summary,
+    details.action-options > summary {
+      color: #35506f;
+    }
+    details.action-options > summary::before,
+    details.advanced[open] > summary,
+    .wf-arrow,
+    .where {
+      color: #5f7ca5;
+    }
     @media (max-width: 980px) {
       .action-grid { grid-template-columns: 1fr; }
       .action-card, .action-card--wide, .action-card:last-child { grid-column: 1 / -1; }
@@ -930,8 +1220,9 @@ INDEX_TEMPLATE = """
     </div>
     <p class="sub" style="max-width:none;">Программа ищет закупки на <strong>zakupki.gov.ru</strong>, вытаскивает из документов <strong>смету</strong> (список работ и цен), ищет <strong>рыночные источники</strong> в интернете и показывает, где заказчик завысил или занизил.</p>
     <nav class="main-tabs" aria-label="Разделы сайта">
-      <a class="main-tab is-active" href="/">📋 Тендеры</a>
+      <a class="main-tab is-active" href="/tenders">📋 Тендеры</a>
       <a class="main-tab" href="/estimates">📊 Сметы</a>
+      <a class="main-tab" href="/research">🔎 Поиск по позиции</a>
     </nav>
 
     <section class="help-section" aria-labelledby="helpTitle">
@@ -983,7 +1274,7 @@ INDEX_TEMPLATE = """
     <section class="tenders-section" aria-labelledby="tendersTitle">
       <h2 class="section-title" id="tendersTitle">Список тендеров</h2>
       <p class="section-lead">В каждой карточке показан один рекомендуемый следующий шаг. Повторные и служебные операции находятся в «Дополнительных действиях».</p>
-      <form class="tender-filter-row" method="get" action="/">
+      <form class="tender-filter-row" method="get" action="/tenders">
         {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
         <input type="hidden" name="sort" value="{{ sort_mode }}">
         <label>
@@ -996,7 +1287,7 @@ INDEX_TEMPLATE = """
           </select>
         </label>
         {% if selected_region %}
-        <a href="/?sort={{ sort_mode }}{% if show_all %}&all=1{% endif %}">сбросить регион</a>
+        <a href="/tenders?sort={{ sort_mode }}{% if show_all %}&all=1{% endif %}">сбросить регион</a>
         {% endif %}
       </form>
       <p class="section-lead" style="margin-top:-4px;">
@@ -1006,21 +1297,38 @@ INDEX_TEMPLATE = """
         {% endif %}
         {% if show_all %}
         · все этапы
-        · <a href="/?sort={{ sort_mode }}{% if selected_region %}&region={{ selected_region|urlencode }}{% endif %}" style="color:#87bbff;">показать только «Подача заявок»</a>
+        · <a href="/tenders?sort={{ sort_mode }}{% if selected_region %}&region={{ selected_region|urlencode }}{% endif %}" style="color:#87bbff;">показать только «Подача заявок»</a>
         {% else %}
         · только этап «Подача заявок»
-        · <a href="/?all=1&sort={{ sort_mode }}{% if selected_region %}&region={{ selected_region|urlencode }}{% endif %}" style="color:#87bbff;">показать все этапы</a>
+        · <a href="/tenders?all=1&sort={{ sort_mode }}{% if selected_region %}&region={{ selected_region|urlencode }}{% endif %}" style="color:#87bbff;">показать все этапы</a>
         {% endif %}
       </p>
 
-      {% for group in grouped %}
-      <div class="tender-group">
-        <div class="tender-group-title">{{ group.title }}</div>
-        <div class="tender-group-body">
-          <div class="tender-grid-main">
-        {% for t in group.tenders %}
+      <div class="tender-grid-main">
+        {% for t in items %}
           <div class="tender-cell">
           <div class="tender-card{% if not t.has_estimate %} no-data{% endif %}" data-href="/merge-report/{{ t.tender_id }}/">
+            <details class="tender-menu-wrap">
+              <summary class="tender-menu-btn" title="Дополнительные действия">&#9776;</summary>
+              <div class="tender-menu">
+                <div class="tender-more-actions">
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')" title="Продолжить поиск недостающих рыночных цен и заново собрать страницу сравнения.">Продолжить или обновить поиск цен</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="exportTenderToCrm('{{ t.tender_id }}')" title="Создать объект в PM.bi CRM и перенести туда строки сметы как материалы.">Добавить в объекты</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rerunMarketForTender('{{ t.tender_id }}')" title="Удалить прогресс поиска цен и опросить Алису по всем позициям заново.">Начать поиск цен заново</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rebuildReportForTender('{{ t.tender_id }}')" title="Повторно прочитать уже скачанные документы. Поиск рыночных цен не запускается.">Повторно извлечь смету из файлов</button>
+                  {% if t.has_estimate %}
+                  <a class="tender-act" href="/tenders/{{ t.tender_id }}/estimate.xlsx">Скачать Excel сметы</a>
+                  {% endif %}
+                  {% if t.has_market_partial %}
+                  <a class="tender-act" href="/tenders/{{ t.tender_id }}/market-sources.xlsx">Скачать источники рынка</a>
+                  {% endif %}
+                  {% if t.has_svodka %}
+                  <a class="tender-act" href="/tenders/{{ t.tender_id }}/svodka.xlsx">Скачать Excel выгодности</a>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runViabilityOnly('{{ t.tender_id }}')" title="Обновить вывод о выгодности и отправить его в настроенный Telegram-чат.">Отправить вывод в Telegram</button>
+                  {% endif %}
+                </div>
+              </div>
+            </details>
             {% if t.has_merge_report %}
             <a class="tender-card-link" href="/merge-report/{{ t.tender_id }}/">
               <div class="title">{{ t.display_title }}</div>
@@ -1030,26 +1338,27 @@ INDEX_TEMPLATE = """
               <div class="title">{{ t.display_title }}</div>
             </div>
             {% endif %}
+            <div class="tid">{{ t.tender_id }}</div>
 
             <div class="tender-card-meta">
-              <div class="tender-meta-item tender-meta-item--wide">
-                <span class="tender-meta-label">&#1058;&#1077;&#1085;&#1076;&#1077;&#1088;</span>
-                <span class="tender-meta-value tender-meta-value--mono">{{ t.tender_id }}</span>
+              <div class="tender-meta-item">
+                <span class="tender-meta-label">&#1062;&#1077;&#1085;&#1072; &#1090;&#1077;&#1085;&#1076;&#1077;&#1088;&#1072;</span>
+                <span class="tender-meta-value">{{ t.price_fmt }}</span>
               </div>
               <div class="tender-meta-item">
-                <span class="tender-meta-label">&#1057;&#1084;&#1077;&#1090;&#1072;</span>
-                <span class="tender-meta-value">{% if t.has_estimate %}{{ t.estimate_rows }} &#1089;&#1090;&#1088;&#1086;&#1082;{% else %}&#1077;&#1097;&#1105; &#1085;&#1077; &#1089;&#1086;&#1073;&#1088;&#1072;&#1085;&#1072;{% endif %}</span>
+                <span class="tender-meta-label">&#1056;&#1077;&#1075;&#1080;&#1086;&#1085;</span>
+                <span class="tender-meta-value">{{ t.region }}</span>
               </div>
               <div class="tender-meta-item">
                 <span class="tender-meta-label">&#1069;&#1090;&#1072;&#1087;</span>
-                <span class="tender-meta-value">{{ t.stage_display }}</span>
+                <span class="tender-meta-value{% if t.stage_open %} tone-good{% elif not t.stage_display or t.stage_display == '—' %} muted{% endif %}">{{ t.stage_display }}</span>
               </div>
             </div>
 
             {% if t.market_progress_total > 0 %}
             <div class="tender-progress">
               <div class="tender-progress-head">
-                <span class="tender-progress-label">&#1055;&#1086;&#1080;&#1089;&#1082; &#1094;&#1077;&#1085;</span>
+                <span class="tender-progress-label">&#1055;&#1088;&#1086;&#1072;&#1085;&#1072;&#1083;&#1080;&#1079;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1086;</span>
                 <span class="tender-progress-value">{{ t.market_progress_done }}/{{ t.market_progress_total }}</span>
               </div>
               <div class="tender-progress-track">
@@ -1070,6 +1379,8 @@ INDEX_TEMPLATE = """
             <div class="tender-card-pub">
               <span class="tender-card-pub-label">&#1055;&#1091;&#1073;&#1083;&#1080;&#1082;&#1072;&#1094;&#1080;&#1103;</span>
               <span class="tender-card-pub-date">{{ t.publish_date or "&#1044;&#1072;&#1090;&#1072; &#1085;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;&#1072;" }}</span>
+              <span class="tender-card-pub-label">&#1054;&#1082;&#1086;&#1085;&#1095;&#1072;&#1085;&#1080;&#1077;</span>
+              <span class="tender-card-pub-date">{{ t.deadline_date }}</span>
             </div>
 
             <div class="tender-status-row">
@@ -1089,12 +1400,15 @@ INDEX_TEMPLATE = """
             <div class="tender-actions">
               {% if t.has_svodka %}
               <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть сравнение цен</a>
+              <button type="button" class="tender-act tender-act--crm tender-act-btn" data-tid="{{ t.tender_id }}" onclick="exportTenderToCrm('{{ t.tender_id }}')" title="Создать объект в PM.bi CRM и перенести туда строки сметы как материалы.">+ Добавить в объекты</button>
               <p class="tender-next">Готово или частично готово: сохранённые строки Алисы будут вверху таблицы.</p>
               {% elif t.has_market_partial %}
               <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Посмотреть частичные цены</a>
+              <button type="button" class="tender-act tender-act--crm tender-act-btn" data-tid="{{ t.tender_id }}" onclick="exportTenderToCrm('{{ t.tender_id }}')" title="Создать объект в PM.bi CRM и перенести туда строки сметы как материалы.">+ Добавить в объекты</button>
               <p class="tender-next">Есть сохранённый прогресс Алисы. Можно открыть карточку и продолжить поиск.</p>
               {% elif t.has_estimate %}
               <a class="tender-act tender-act--primary tender-act--main" href="/merge-report/{{ t.tender_id }}/">Открыть карточку тендера</a>
+              <button type="button" class="tender-act tender-act--crm tender-act-btn" data-tid="{{ t.tender_id }}" onclick="exportTenderToCrm('{{ t.tender_id }}')" title="Создать объект в PM.bi CRM и перенести туда строки сметы как материалы.">+ Добавить в объекты</button>
               <p class="tender-next">Смета готова. В карточке можно запустить поиск цен и смотреть сохранённые строки.</p>
               {% else %}
               <button type="button" class="tender-act tender-act--primary tender-act--main tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')">Скачать документы и подготовить сравнение</button>
@@ -1104,8 +1418,18 @@ INDEX_TEMPLATE = """
                 <summary>Дополнительные действия</summary>
                 <div class="tender-more-actions">
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runFullForTender('{{ t.tender_id }}')" title="Продолжить поиск недостающих рыночных цен и заново собрать страницу сравнения.">Продолжить или обновить поиск цен</button>
+                  <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="exportTenderToCrm('{{ t.tender_id }}')" title="Создать объект в PM.bi CRM и перенести туда строки сметы как материалы.">Добавить в объекты</button>
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rerunMarketForTender('{{ t.tender_id }}')" title="Удалить прогресс поиска цен и опросить Алису по всем позициям заново.">Начать поиск цен заново</button>
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="rebuildReportForTender('{{ t.tender_id }}')" title="Повторно прочитать уже скачанные документы. Поиск рыночных цен не запускается.">Повторно извлечь смету из файлов</button>
+                  {% if t.has_estimate %}
+                  <a class="tender-act" href="/tenders/{{ t.tender_id }}/estimate.xlsx">Скачать Excel сметы</a>
+                  {% endif %}
+                  {% if t.has_market_partial %}
+                  <a class="tender-act" href="/tenders/{{ t.tender_id }}/market-sources.xlsx">Скачать источники рынка</a>
+                  {% endif %}
+                  {% if t.has_svodka %}
+                  <a class="tender-act" href="/tenders/{{ t.tender_id }}/svodka.xlsx">Скачать Excel выгодности</a>
+                  {% endif %}
                   {% if t.has_svodka %}
                   <button type="button" class="tender-act tender-act-btn" data-tid="{{ t.tender_id }}" onclick="runViabilityOnly('{{ t.tender_id }}')" title="Обновить вывод о выгодности и отправить его в настроенный Telegram-чат.">Отправить вывод в Telegram</button>
                   {% endif %}
@@ -1116,9 +1440,7 @@ INDEX_TEMPLATE = """
         </div>
         {% endfor %}
       </div>
-      </div>
-    {% endfor %}
-    {% if not grouped %}
+    {% if not items %}
     {% if tender_count == 0 %}
     <p class="sub" style="margin:0;">База пуста — нажмите «Найти новые закупки» в верхней панели.</p>
     {% elif not show_all %}
@@ -1284,6 +1606,11 @@ INDEX_TEMPLATE = """
     </div>
   </aside>
   <script>
+    function switchMarketSection(key) {
+      document.querySelectorAll("[data-market-tab]").forEach(el => el.classList.toggle("is-active", el.getAttribute("data-market-tab") === key));
+      document.querySelectorAll("[data-market-pane]").forEach(el => el.classList.toggle("is-active", el.getAttribute("data-market-pane") === key));
+    }
+
     document.addEventListener("click", function(e) {
       const card = e.target && e.target.closest ? e.target.closest(".tender-card[data-href]") : null;
       if (!card) return;
@@ -1727,6 +2054,39 @@ INDEX_TEMPLATE = """
       }
       refreshStatus();
       refreshCoverage();
+    }
+
+    async function exportTenderToCrm(tid) {
+      const t = String(tid || "").trim();
+      if (!t) return;
+      if (!confirm("Добавить закупку " + t + " в CRM?\\n\\nБудет создан объект, а строки сметы уйдут в материалы объекта.")) return;
+      try {
+        const r = await fetch("/api/export-to-crm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ tender_id: t }),
+        });
+        let data = {};
+        try { data = await r.json(); } catch (e) {}
+        if (!r.ok || !data.ok) {
+          alert(data.message || ("CRM-экспорт не прошёл (HTTP " + r.status + ")"));
+          return;
+        }
+        const summary = data.summary || {};
+        if (data.already_exists) {
+          alert("Эта закупка уже есть в CRM: объект #" + data.project_id + ".");
+          if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+          return;
+        }
+        alert(
+          "Готово: объект #" + data.project_id + " создан в CRM.\\n"
+          + "Материалов отправлено: " + (data.materials_sent || 0) + ".\\n"
+          + "В CRM сейчас материалов: " + (summary.materials == null ? "?" : summary.materials) + "."
+        );
+        if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+      } catch (e) {
+        alert("Не удалось отправить закупку в CRM: " + e);
+      }
     }
 
     async function rerunMarketForTender(tid) {
@@ -2205,6 +2565,226 @@ INDEX_TEMPLATE = """
 """
 
 
+TENDERS_SHELL_TEMPLATE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>Тендеры</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: rgba(255,255,255,.94);
+      --line: #dbe5f0;
+      --text: #172235;
+      --muted: #64748b;
+      --accent: #2d6fd2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(92, 149, 224, 0.12), transparent 34%),
+        linear-gradient(180deg, #ffffff 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    .page {
+      width: 100%;
+      max-width: none;
+      margin: 0;
+      padding: 18px 18px 0;
+    }
+    .tabs {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+      padding: 6px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.82);
+      box-shadow: 0 16px 36px rgba(40, 70, 118, 0.08);
+      backdrop-filter: blur(14px);
+    }
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 0 14px;
+      border-radius: 12px;
+      color: #35506f;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .tab.is-active {
+      background: linear-gradient(180deg, #ffffff, #eef5ff);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px #cfe0f7;
+    }
+    .shell {
+      position: relative;
+      min-height: calc(100vh - 86px);
+      border-radius: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      overflow: visible;
+    }
+    .loader {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(246,249,253,.96));
+      transition: opacity .32s ease, visibility .32s ease;
+      z-index: 3;
+    }
+    .loader.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .loader-card {
+      width: min(780px, 100%);
+      padding: 26px;
+      border-radius: 24px;
+      border: 1px solid #e0e8f3;
+      background: var(--panel);
+      box-shadow: 0 24px 48px rgba(40, 69, 110, 0.10);
+    }
+    .loader-card h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      line-height: 1.15;
+    }
+    .loader-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .bar {
+      margin-top: 18px;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #e6eef8;
+    }
+    .bar-fill {
+      width: 36%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #4d8be6, #8abbff);
+      animation: loadbar 1.4s ease-in-out infinite;
+      transform-origin: left center;
+    }
+    .skeleton-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .sk {
+      border-radius: 16px;
+      background: linear-gradient(90deg, #eef3fa 20%, #f8fbff 50%, #eef3fa 80%);
+      background-size: 220% 100%;
+      animation: shimmer 1.35s linear infinite;
+    }
+    .sk.big { height: 112px; }
+    .sk.small { height: 68px; }
+    .loader-note {
+      margin-top: 14px;
+      color: #50657f;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .loader-note strong { color: #173050; }
+    iframe {
+      display: block;
+      width: 100%;
+      min-height: calc(100vh - 86px);
+      border: 0;
+      background: transparent;
+      opacity: 0;
+      transition: opacity .28s ease;
+    }
+    iframe.is-ready { opacity: 1; }
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    @keyframes loadbar {
+      0% { transform: translateX(-105%) scaleX(.85); }
+      55% { transform: translateX(150%) scaleX(1.08); }
+      100% { transform: translateX(210%) scaleX(.9); }
+    }
+    @media (max-width: 760px) {
+      .page { padding: 16px 12px 0; }
+      .shell,
+      iframe { min-height: calc(100vh - 78px); }
+      .loader-card { padding: 18px; border-radius: 18px; }
+      .loader-card h1 { font-size: 22px; }
+      .skeleton-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav class="tabs">
+      <a class="tab is-active" href="/tenders">Тендеры</a>
+      <a class="tab" href="/estimates">Сметы</a>
+      <a class="tab" href="/research">Поиск по позиции</a>
+    </nav>
+
+    <section class="shell">
+      <div class="loader" id="tendersLoader">
+        <div class="loader-card">
+          <h1>Загружаем тендеры</h1>
+          <p>Страница тяжёлая: здесь много карточек, статусов, ссылок на Excel и прогресса по рынку. Сначала показываем оболочку, потом подтягиваем содержимое без белого экрана.</p>
+          <div class="bar"><div class="bar-fill"></div></div>
+          <div class="skeleton-grid" aria-hidden="true">
+            <div class="sk big"></div>
+            <div class="sk big"></div>
+            <div class="sk small"></div>
+            <div class="sk small"></div>
+          </div>
+          <div class="loader-note" id="tendersLoaderNote">Если карточек много, это может занять несколько секунд. <strong>Сметы открываются быстрее</strong> и доступны сразу по умолчанию.</div>
+        </div>
+      </div>
+      <iframe id="tendersFrame" src="{{ iframe_src }}" title="Тендеры" loading="eager"></iframe>
+    </section>
+  </div>
+  <script>
+    (function() {
+      const frame = document.getElementById("tendersFrame");
+      const loader = document.getElementById("tendersLoader");
+      const note = document.getElementById("tendersLoaderNote");
+      let watchdog = setTimeout(function() {
+        if (note) {
+          note.innerHTML = 'Загрузка идет дольше обычного. Страница всё еще собирается, это не зависание. Можно подождать или открыть <strong>Сметы</strong>.';
+        }
+      }, 6000);
+
+      frame.addEventListener("load", function() {
+        window.clearTimeout(watchdog);
+        frame.classList.add("is-ready");
+        loader.classList.add("is-hidden");
+      });
+    })();
+  </script>
+</body>
+</html>
+"""
+
+
 def _html_reports_by_tender_id() -> dict[str, str]:
     """Номер тендера → имя файла ОТЧЕТ_ПО_СМЕТАМ_<id>.html (без общих сводок)."""
     out: dict[str, str] = {}
@@ -2251,6 +2831,18 @@ def _estimate_rows_by_tender_id() -> dict[str, int]:
         except Exception:
             out[tid] = 0
     return out
+
+
+def _live_market_progress_by_tender() -> dict[str, tuple[int, int]]:
+    """Только живой прогресс активного запуска, без чтения всех Excel при открытии списка тендеров."""
+    with merge_site_lock:
+        running = bool(merge_site_state.get("running"))
+        current_tid = str(merge_site_state.get("current_tid") or "").strip()
+        done = int(merge_site_state.get("market_done") or 0)
+        total = int(merge_site_state.get("market_total") or 0)
+    if not running or not current_tid or total <= 0:
+        return {}
+    return {current_tid: (max(0, done), max(0, total))}
 
 
 def _market_progress_for_tender(tid: str) -> tuple[int, int]:
@@ -2312,6 +2904,22 @@ def _market_progress_for_tender(tid: str) -> tuple[int, int]:
         done += 1
     return min(done, total), total
 
+
+def _tender_deadline_text(meta: dict) -> str:
+    for key in (
+        "deadline_date",
+        "end_date",
+        "close_date",
+        "finish_date",
+        "submission_end",
+        "application_end",
+        "bidding_end_date",
+    ):
+        txt = str(meta.get(key) or "").strip()
+        if txt:
+            return txt
+    return ""
+
 def _legacy_price_output_path_for_tender(tid: str) -> Path:
     est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
     return REPORTS_DIR / f"РЫНОК_ИСТОЧНИКИ_{est_path.stem}.xlsx"
@@ -2329,6 +2937,442 @@ def _price_output_path_for_tender(tid: str) -> Path:
     return _legacy_price_output_path_for_tender(tid)
 
 
+def _safe_download_stem(title: str, fallback: str) -> str:
+    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", str(title or fallback)).strip(" ._") or str(fallback or "report")
+
+
+def _crm_base_url() -> str:
+    return (os.environ.get("PMBI_CRM_URL") or "http://127.0.0.1:8080").strip().rstrip("/")
+
+
+def _crm_credentials() -> tuple[str, str] | None:
+    login = (os.environ.get("PMBI_CRM_LOGIN") or "").strip()
+    password = os.environ.get("PMBI_CRM_PASSWORD") or ""
+    if login and password:
+        return login, password
+    return None
+
+
+def _float_or_none(value) -> float | None:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out != out:
+        return None
+    return out
+
+
+def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
+    from autobot.market_analytics import COL_DUP, COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
+
+    tid = (tender_id or "").strip()
+    if not tid:
+        return []
+    path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    if not path.is_file():
+        return []
+    try:
+        df = pd.read_excel(path)
+    except Exception:
+        return []
+    if COL_NAME not in df.columns:
+        return []
+
+    try:
+        max_rows = int(os.environ.get("PMBI_CRM_MAX_MATERIALS", "2000") or "2000")
+    except ValueError:
+        max_rows = 2000
+    max_rows = max(1, min(max_rows, 10000))
+
+    materials: list[dict] = []
+    for _, row in df.iterrows():
+        if COL_DUP in df.columns and str(row.get(COL_DUP, "")).strip().casefold() in {"да", "yes", "true", "1"}:
+            continue
+        title = str(row.get(COL_NAME, "") or "").strip()
+        if len(title) < 4:
+            continue
+        qty = _float_or_none(row.get(COL_QTY))
+        unit_price = _float_or_none(row.get(COL_UNIT_PRICE))
+        total = _float_or_none(row.get(COL_SUM))
+        if qty is None or qty <= 0:
+            qty = 1.0
+        if unit_price is None or unit_price < 0:
+            unit_price = (total / qty) if total is not None and qty > 0 else 0.0
+        notes = [f"Тендер: {tid}"]
+        item_no = str(row.get(COL_ITEM, "") or "").strip()
+        if item_no:
+            notes.append(f"Позиция: {item_no}")
+        if total is not None and total > 0:
+            notes.append(f"Сумма по смете: {total:.2f} руб.")
+        materials.append(
+            {
+                "title": title[:500],
+                "unit": str(row.get(COL_UNIT, "") or "").strip() or "шт",
+                "planned_qty": max(0.01, float(qty)),
+                "planned_price": max(0.0, float(unit_price or 0)),
+                "notes": "; ".join(notes),
+            }
+        )
+        if len(materials) >= max_rows:
+            break
+    return materials
+
+
+def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    if not estimate_id:
+        return []
+    rows = _load_estimate_rows(estimate_id)
+    if not rows:
+        return []
+
+    try:
+        max_rows = int(os.environ.get("PMBI_CRM_MAX_MATERIALS", "2000") or "2000")
+    except ValueError:
+        max_rows = 2000
+    max_rows = max(1, min(max_rows, 10000))
+
+    materials: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("name") or "").strip()
+        if len(title) < 4:
+            continue
+        qty = _float_or_none(row.get("qty"))
+        unit_price = _float_or_none(row.get("unit_price"))
+        total = _float_or_none(row.get("total"))
+        if qty is None or qty <= 0:
+            qty = 1.0
+        if unit_price is None or unit_price < 0:
+            unit_price = (total / qty) if total is not None and qty > 0 else 0.0
+        notes = [f"?????: {estimate_id}"]
+        item_no = str(row.get("item_no") or "").strip()
+        if item_no:
+            notes.append(f"???????: {item_no}")
+        section = _normalize_section_title(str(row.get("section") or ""))
+        if section:
+            notes.append(f"??????: {section}")
+        sheet = str(row.get("sheet") or "").strip()
+        if sheet:
+            notes.append(f"????: {sheet}")
+        excel_row = row.get("excel_row")
+        if excel_row not in (None, ""):
+            notes.append(f"?????? Excel: {excel_row}")
+        type_key = str(row.get("type") or "").strip().lower()
+        type_label = str(row.get("type_label") or "").strip()
+        if type_label:
+            notes.append(f"???: {type_label}")
+        if total is not None and total > 0:
+            notes.append(f"????? ?? ?????: {total:.2f} ???.")
+        item_kind = type_key if type_key in {"work", "material", "service", "product", "other"} else (type_label or "")
+        materials.append(
+            {
+                "title": title[:500],
+                "unit": str(row.get("unit") or "").strip() or "??",
+                "planned_qty": max(0.01, float(qty)),
+                "planned_price": max(0.0, float(unit_price or 0.0)),
+                "item_kind": item_kind,
+                "type": type_key or item_kind,
+                "type_label": type_label,
+                "section_title": section or None,
+                "section": section or "",
+                "notes": "; ".join(notes),
+            }
+        )
+        if len(materials) >= max_rows:
+            break
+    return materials
+
+
+def _estimate_crm_prefill(estimate_id: str) -> dict:
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id) or {}
+    rows = _load_estimate_rows(estimate_id)
+    summary = _summarize_estimate_rows(rows)
+    type_counts = summary.get("type_counts") or {}
+    type_labels = {
+        "material": "материалы",
+        "work": "работы",
+        "service": "услуги",
+        "product": "товары",
+        "other": "прочее",
+    }
+    type_bits = [f"{type_labels.get(key, key)}: {int(val)}" for key, val in type_counts.items() if int(val or 0) > 0]
+    estimate_title = str(meta.get("title") or f"Смета {estimate_id}").strip()[:240]
+    original_name = str(meta.get("original_filename") or "").strip()
+    created_at = str(meta.get("created_at") or "").strip()
+    budget = _float_or_none(summary.get("total_sum")) or 0.0
+    description_lines = [
+        "Импортировано из auto_bot по отдельной смете.",
+        f"Смета: {estimate_title}",
+        f"Файл: {original_name}" if original_name else "",
+        f"Дата загрузки: {created_at}" if created_at else "",
+        f"Строк в смете: {int(summary.get('row_count') or 0)}",
+        f"Состав: {', '.join(type_bits)}" if type_bits else "",
+    ]
+    return {
+        "estimate_id": estimate_id,
+        "estimate_title": estimate_title,
+        "original_filename": original_name,
+        "created_at": created_at,
+        "row_count": int(summary.get("row_count") or 0),
+        "total_sum": budget if budget > 0 else None,
+        "total_sum_fmt": _fmt_money(budget) if budget > 0 else "—",
+        "project": {
+            "title": estimate_title,
+            "client_name": "Объект по смете",
+            "address": "Адрес уточнить по смете",
+            "region": "",
+            "contract_no": f"ESTIMATE-{estimate_id}",
+            "budget": budget,
+            "description": "\n".join(x for x in description_lines if x),
+        },
+    }
+
+
+def _build_estimate_crm_project_payload(estimate_id: str, overrides: dict | None = None) -> tuple[dict, list[dict], dict]:
+    prefill = _estimate_crm_prefill(estimate_id)
+    base_project = dict(prefill.get("project") or {})
+    data = overrides if isinstance(overrides, dict) else {}
+
+    def _txt(key: str, default: str, limit: int) -> str:
+        raw = str(data.get(key) if key in data else default).strip()
+        return raw[:limit]
+
+    budget_raw = data.get("budget")
+    if isinstance(budget_raw, str):
+        budget_raw = budget_raw.replace(" ", "").replace("\xa0", "").replace(",", ".")
+    budget = _float_or_none(budget_raw)
+    if budget is None:
+        budget = _float_or_none(base_project.get("budget")) or 0.0
+
+    title = _txt("title", str(base_project.get("title") or f"Смета {estimate_id}"), 240) or f"Смета {estimate_id}"
+    client_name = _txt("client_name", str(base_project.get("client_name") or "Объект по смете"), 240) or "Объект по смете"
+    address = _txt("address", str(base_project.get("address") or "Адрес уточнить по смете"), 500) or "Адрес уточнить по смете"
+    region = _txt("region", str(base_project.get("region") or ""), 160)
+    contract_no = _txt("contract_no", str(base_project.get("contract_no") or f"ESTIMATE-{estimate_id}"), 120) or f"ESTIMATE-{estimate_id}"
+    description = _txt("description", str(base_project.get("description") or ""), 5000)
+
+    project = {
+        "title": title,
+        "client_name": client_name,
+        "address": address,
+        "region": region or None,
+        "contract_no": contract_no,
+        "budget": max(0.0, float(budget or 0.0)),
+        "description": description,
+    }
+    materials = _estimate_materials_for_crm(estimate_id)
+    return project, materials, prefill
+
+
+def _build_crm_project_payload(tender_id: str) -> tuple[dict, list[dict]]:
+    meta = load_tender_metadata().get(tender_id, {}) or {}
+    title = str(meta.get("title") or f"Тендер {tender_id}").strip()
+    region = str(meta.get("region") or "").strip()
+    eis_url = eis_notice_url(tender_id, meta.get("url"))
+    stage = str(meta.get("stage") or "").strip()
+    publish_date = str(meta.get("publish_date") or "").strip()
+    price = _float_or_none(meta.get("price_rub")) or 0.0
+    description_lines = [
+        f"Импортировано из auto_bot по тендеру {tender_id}.",
+        f"ЕИС: {eis_url}" if eis_url else "",
+        f"Этап закупки: {stage}" if stage else "",
+        f"Дата публикации: {publish_date}" if publish_date else "",
+        f"Регион: {region}" if region else "",
+    ]
+    project = {
+        "title": title[:240],
+        "client_name": "Заказчик из ЕИС",
+        "address": region or f"Адрес уточнить по тендеру {tender_id}",
+        "region": region or None,
+        "contract_no": tender_id,
+        "budget": price,
+        "description": "\n".join(x for x in description_lines if x),
+    }
+    materials = _tender_estimate_materials_for_crm(tender_id)
+    return project, materials
+
+
+def export_tender_to_crm(tender_id: str) -> dict:
+    creds = _crm_credentials()
+    if not creds:
+        raise RuntimeError("В .env auto_bot нужно задать PMBI_CRM_LOGIN и PMBI_CRM_PASSWORD.")
+
+    project_payload, materials = _build_crm_project_payload(tender_id)
+    base = _crm_base_url()
+
+    import requests
+
+    with requests.Session() as session:
+        login_resp = session.post(
+            f"{base}/api/auth/login",
+            json={"login": creds[0], "password": creds[1]},
+            timeout=15,
+        )
+        if login_resp.status_code >= 400:
+            raise RuntimeError(f"CRM не приняла логин: HTTP {login_resp.status_code}.")
+
+        existing_resp = session.get(f"{base}/api/projects", timeout=30)
+        if existing_resp.status_code < 400:
+            for row in existing_resp.json().get("projects") or []:
+                if str(row.get("contract_no") or row.get("contractNo") or "").strip() == tender_id:
+                    project_id = int(row.get("id") or 0)
+                    if project_id > 0:
+                        return {
+                            "project_id": project_id,
+                            "project_url": f"{base}/app/projects",
+                            "materials_sent": 0,
+                            "summary": {"materials": 0, "tasks": 0, "stages": 0},
+                            "already_exists": True,
+                        }
+
+        create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
+        if create_resp.status_code >= 400:
+            raise RuntimeError(f"CRM не создала объект: HTTP {create_resp.status_code} {create_resp.text[:300]}")
+        created = create_resp.json()
+        project = created.get("project") or {}
+        project_id = int(project.get("id") or 0)
+        if project_id <= 0:
+            raise RuntimeError("CRM создала объект, но не вернула project.id.")
+
+        bootstrap_payload = {
+            "replace_existing": False,
+            "materials": materials,
+            "tasks": [
+                {
+                    "title": "Проверить тендер и решение об участии",
+                    "description": f"Проверить условия закупки {tender_id}, смету, сроки и риски перед дальнейшей работой.",
+                    "priority": "high",
+                }
+            ],
+        }
+        bootstrap_summary = {"materials": 0, "tasks": 0, "stages": 0}
+        if materials or bootstrap_payload["tasks"]:
+            boot_resp = session.post(
+                f"{base}/api/projects/{project_id}/bootstrap",
+                json=bootstrap_payload,
+                timeout=60,
+            )
+            if boot_resp.status_code >= 400:
+                raise RuntimeError(f"Объект создан, но импорт сметы не прошел: HTTP {boot_resp.status_code} {boot_resp.text[:300]}")
+            bootstrap_summary = (boot_resp.json().get("summary") or bootstrap_summary)
+
+    return {
+        "project_id": project_id,
+        "project_url": f"{base}/app/projects",
+        "materials_sent": len(materials),
+        "summary": bootstrap_summary,
+    }
+
+
+def export_estimate_to_crm(estimate_id: str, overrides: dict | None = None) -> dict:
+    creds = _crm_credentials()
+    if not creds:
+        raise RuntimeError("В .env auto_bot нужно задать PMBI_CRM_LOGIN и PMBI_CRM_PASSWORD.")
+
+    project_payload, materials, prefill = _build_estimate_crm_project_payload(estimate_id, overrides=overrides)
+    base = _crm_base_url()
+
+    import requests
+
+    with requests.Session() as session:
+        login_resp = session.post(
+            f"{base}/api/auth/login",
+            json={"login": creds[0], "password": creds[1]},
+            timeout=15,
+        )
+        if login_resp.status_code >= 400:
+            raise RuntimeError(f"CRM не приняла логин: HTTP {login_resp.status_code}.")
+
+        existing_resp = session.get(f"{base}/api/projects", timeout=30)
+        contract_no = str(project_payload.get("contract_no") or "").strip()
+        if contract_no and existing_resp.status_code < 400:
+            for row in existing_resp.json().get("projects") or []:
+                if str(row.get("contract_no") or row.get("contractNo") or "").strip() == contract_no:
+                    project_id = int(row.get("id") or 0)
+                    if project_id > 0:
+                        return {
+                            "project_id": project_id,
+                            "project_url": f"{base}/app/projects",
+                            "materials_sent": 0,
+                            "summary": {"materials": 0, "tasks": 0, "stages": 0},
+                            "already_exists": True,
+                        }
+
+        create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
+        if create_resp.status_code >= 400:
+            raise RuntimeError(f"CRM не создала объект: HTTP {create_resp.status_code} {create_resp.text[:300]}")
+        created = create_resp.json()
+        project = created.get("project") or {}
+        project_id = int(project.get("id") or 0)
+        if project_id <= 0:
+            raise RuntimeError("CRM создала объект, но не вернула project.id.")
+
+        bootstrap_payload = {
+            "replace_existing": False,
+            "materials": materials,
+            "tasks": [
+                {
+                    "title": "Проверить смету и подготовить объект",
+                    "description": f"Проверить импортированную смету «{prefill.get('estimate_title') or estimate_id}», уточнить материалы, объёмы и план работ.",
+                    "priority": "high",
+                }
+            ],
+        }
+        bootstrap_summary = {"materials": 0, "tasks": 0, "stages": 0}
+        if materials or bootstrap_payload["tasks"]:
+            boot_resp = session.post(
+                f"{base}/api/projects/{project_id}/bootstrap",
+                json=bootstrap_payload,
+                timeout=60,
+            )
+            if boot_resp.status_code >= 400:
+                raise RuntimeError(f"Объект создан, но импорт сметы не прошёл: HTTP {boot_resp.status_code} {boot_resp.text[:300]}")
+            bootstrap_summary = (boot_resp.json().get("summary") or bootstrap_summary)
+
+    return {
+        "project_id": project_id,
+        "project_url": f"{base}/app/projects",
+        "materials_sent": len(materials),
+        "summary": bootstrap_summary,
+    }
+
+
+def delete_estimate(estimate_id: str) -> None:
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    if not estimate_id:
+        raise RuntimeError("Нужен estimate_id.")
+    meta = _load_estimate_meta(estimate_id)
+    if not meta:
+        raise RuntimeError("Смета не найдена.")
+
+    with estimate_market_lock:
+        cur = estimate_market_jobs.get(estimate_id)
+        if cur and cur.get("running"):
+            raise RuntimeError("Нельзя удалить смету, пока по ней идёт поиск рынка.")
+        estimate_market_jobs.pop(estimate_id, None)
+
+    est_dir = _estimate_dir_path(estimate_id)
+    try:
+        resolved_root = USER_ESTIMATES_DIR.resolve()
+        resolved_dir = est_dir.resolve()
+    except Exception:
+        resolved_root = USER_ESTIMATES_DIR
+        resolved_dir = est_dir
+    if resolved_dir == resolved_root or resolved_root not in resolved_dir.parents:
+        raise RuntimeError("Небезопасный путь удаления сметы.")
+
+    index_items = [x for x in _read_estimates_index() if str(x.get("id") or "") != estimate_id]
+    _write_estimates_index(index_items)
+    if est_dir.is_dir():
+        shutil.rmtree(est_dir)
+
+
 def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
     """
     Все тендеры из tenders.json + признаки: есть файл отчёта и есть ли в нём блоки позиций
@@ -2338,7 +3382,8 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
 
     meta = load_tender_metadata()
     reports_map = _html_reports_by_tender_id()
-    rows_map = _estimate_rows_by_tender_id()
+    estimate_ids = set(_estimate_xlsx_tender_ids())
+    live_market_progress = _live_market_progress_by_tender()
     merge_root = REPO_ROOT / "data" / "reports_site"
     items: list[dict] = []
     for tid, tmeta in meta.items():
@@ -2348,11 +3393,16 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
             report_file = ""
         rp = REPORTS_DIR / report_file if report_file else None
         has_display_data = bool(rp) and _smet_report_html_has_position_groups(rp)
-        estimate_rows = int(rows_map.get(tid, 0))
+        has_estimate = tid in estimate_ids
         market_partial_exists = _price_output_path_for_tender(tid).is_file()
         merge_html_exists = (merge_root / tid / "index.html").is_file()
         svodka_exists = (REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx").is_file()
-        market_done, market_total = _market_progress_for_tender(tid) if estimate_rows > 0 else (0, 0)
+        saved_market_done, saved_market_total = _market_progress_for_tender(tid)
+        live_market_done, live_market_total = live_market_progress.get(tid, (0, 0))
+        if live_market_total > 0:
+            market_done, market_total = live_market_done, live_market_total
+        else:
+            market_done, market_total = saved_market_done, saved_market_total
         market_left = max(0, market_total - market_done)
         market_pct = int(min(100, max(0, round(100.0 * market_done / market_total)))) if market_total > 0 else 0
         stage_raw = (tmeta.get("stage") or "").strip()
@@ -2366,14 +3416,14 @@ def collect_sidebar_tenders() -> tuple[list[dict], int, int, int]:
                 "eis_url": eis_notice_url(tid, tmeta.get("url")),
                 "has_report": has_report,
                 "has_display_data": has_display_data,
-                "has_estimate": estimate_rows > 0,
-                "has_merge_report": merge_html_exists or svodka_exists or market_partial_exists or estimate_rows > 0,
+                "has_estimate": has_estimate,
+                "has_merge_report": merge_html_exists or svodka_exists or market_partial_exists or has_estimate,
                 "has_svodka": svodka_exists,
                 "has_market_partial": market_partial_exists,
                 "report_file": report_file,
                 "stage_open": stage_open,
                 "stage_display": stage_display,
-                "estimate_rows": estimate_rows,
+                "estimate_rows": None,
                 "market_progress_done": market_done,
                 "market_progress_total": market_total,
                 "market_progress_left": market_left,
@@ -2416,14 +3466,15 @@ SIMPLE_INDEX_TEMPLATE = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Тендеры</title>
   <style>
-    :root { color-scheme: dark; }
-    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#0f1724; color:#e8eefc; }
+    :root { color-scheme: light; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:#172235; }
     .wrap { max-width: 1180px; margin: 0 auto; padding: 24px; }
     .top { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom: 18px; }
-    .card { background:#182235; border:1px solid #2a3852; border-radius:16px; padding:18px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
-    .muted { color:#9fb0d0; }
+    .card { background:#ffffff; border:1px solid #d9e3ef; border-radius:16px; padding:18px; box-shadow: 0 10px 30px rgba(28,49,84,.08); }
+    .muted { color:#62748b; }
     .stats { display:flex; flex-wrap:wrap; gap:12px; }
     .stat { min-width:140px; }
     .stat b { display:block; font-size:22px; margin-top:4px; }
@@ -2434,16 +3485,16 @@ SIMPLE_INDEX_TEMPLATE = """
     .meta { display:grid; gap:6px; margin-bottom:12px; font-size:14px; }
     .progress { margin: 12px 0; }
     .progress-row { display:flex; justify-content:space-between; gap:8px; font-size:13px; margin-bottom:6px; }
-    .track { width:100%; height:10px; background:#0d1420; border-radius:999px; overflow:hidden; border:1px solid #2d3a52; }
+    .track { width:100%; height:10px; background:#edf3fa; border-radius:999px; overflow:hidden; border:1px solid #d6e0ee; }
     .fill { height:100%; background:linear-gradient(90deg, #4f8cff, #63d1ff); }
     .tags { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 14px; }
-    .tag { font-size:12px; padding:5px 9px; border-radius:999px; background:#23314a; border:1px solid #32445f; }
-    .tag.ok { background:#183725; border-color:#2b6842; color:#b8f0ca; }
-    .tag.warn { background:#3b2e13; border-color:#7b5f17; color:#ffe08a; }
-    .tag.bad { background:#3a1f24; border-color:#74404a; color:#ffb8c2; }
+    .tag { font-size:12px; padding:5px 9px; border-radius:999px; background:#f4f8fd; border:1px solid #cfd9e8; color:#35506f; }
+    .tag.ok { background:#e9f8ef; border-color:#bfe5cc; color:#257347; }
+    .tag.warn { background:#fff8e8; border-color:#f0deb1; color:#a06b18; }
+    .tag.bad { background:#fff1f1; border-color:#f0c5c5; color:#b04e4e; }
     .actions { display:flex; flex-wrap:wrap; gap:8px; }
-    .btn { border:0; border-radius:10px; padding:10px 14px; cursor:pointer; font-size:14px; background:#305baf; color:#fff; }
-    .btn.secondary { background:#26364f; color:#dce7ff; }
+    .btn { border:0; border-radius:10px; padding:10px 14px; cursor:pointer; font-size:14px; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:#fff; }
+    .btn.secondary { background:#f4f8fd; color:#35506f; border:1px solid #cfd9e8; }
     .btn[disabled] { opacity:.55; cursor:not-allowed; }
     a.btn { text-decoration:none; display:inline-block; }
     .empty { padding:18px; text-align:center; }
@@ -2528,10 +3579,29 @@ SIMPLE_INDEX_TEMPLATE = """
   </div>
 
   <script>
+    function primeTenderMarketProgress(tenderId, startMessage) {
+      const panel = document.getElementById("mergeSitePanel");
+      const fill = document.getElementById("mergeBarFill");
+      const ptext = document.getElementById("mergePercentText");
+      const det = document.getElementById("mergeSiteDetail");
+      const logs = document.getElementById("mergeSiteLogs");
+      if (panel) panel.hidden = false;
+      if (fill) fill.style.width = "3%";
+      if (ptext) ptext.textContent = "0% ? ??????? 0 / 1" + (tenderId ? (" ? ??????: " + tenderId) : "");
+      if (det) det.textContent = startMessage || "???????? ????? ??? ? ??????? ???????? ??????????";
+      if (logs) logs.textContent = (tenderId ? ("????? ?? ??????? " + tenderId) : "????? ???????");
+    }
+
     async function runAction(url, tenderId, startMessage) {
       try {
         const body = tenderId ? { tender_id: tenderId } : {};
-        if (startMessage) alert(startMessage);
+        const isMarketRun = String(url || "").includes("generate-merge-site-one");
+        if (isMarketRun) {
+          primeTenderMarketProgress(tenderId, startMessage);
+          if (typeof refreshStatus === "function") refreshStatus();
+        } else if (startMessage) {
+          alert(startMessage);
+        }
         const resp = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2539,25 +3609,28 @@ SIMPLE_INDEX_TEMPLATE = """
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || data.message || ("HTTP " + resp.status));
-        alert(data.message || "Команда отправлена.");
+        if (isMarketRun) {
+          if (typeof refreshStatus === "function") refreshStatus();
+          if (typeof refreshCoverage === "function") refreshCoverage();
+          return;
+        }
+        alert(data.message || "??????? ??????????.");
         location.reload();
       } catch (err) {
-        alert("Ошибка: " + (err.message || err));
+        alert("??????: " + (err.message || err));
       }
     }
   </script>
-</body>
+/body>
 </html>
 """
 
 
-@app.route("/")
-def index():
+def _render_tenders_index(*, embed_mode: bool = False):
     sidebar_items, tender_count, report_count, display_report_count = collect_sidebar_tenders()
+    meta_by_id = load_tender_metadata()
     show_all = (request.args.get("all", "") or "").strip().lower() in ("1", "true", "yes", "on")
-    sort_mode = (request.args.get("sort", "") or "publish_desc").strip().lower()
-    if sort_mode not in ("publish_desc", "publish_asc"):
-        sort_mode = "publish_desc"
+    sort_mode = "publish_desc"
     region_options = sorted({str(x.get("region") or "Без региона") for x in sidebar_items})
     selected_region = (request.args.get("region", "") or "").strip()
     if selected_region not in region_options:
@@ -2574,22 +3647,19 @@ def index():
             str(x.get("tender_id") or ""),
         )
     )
+    for item in visible_items:
+        meta_row = meta_by_id.get(str(item.get("tender_id") or ""), {}) or {}
+        price_rub = _float_or_none(meta_row.get("price_rub"))
+        item["price_fmt"] = _fmt_money(price_rub) if price_rub else "—"
+        item["deadline_date"] = _tender_deadline_text(meta_row) or "не указано"
     visible_count = len(visible_items)
-    grouped_map: dict[str, list[dict]] = {}
-    for r in visible_items:
-        grouped_map.setdefault(r["region"], []).append(r)
-
-    grouped = [
-        {"title": region, "tenders": items}
-        for region, items in sorted(grouped_map.items(), key=lambda x: x[0])
-    ]
     rebuild_options = [
         {"tender_id": x["tender_id"], "display_title": x["display_title"]} for x in sidebar_items
     ]
     coverage = _compute_reports_coverage()
     return render_template_string(
         INDEX_TEMPLATE,
-        grouped=grouped,
+        items=visible_items,
         rebuild_options=rebuild_options,
         tender_count=tender_count,
         report_count=report_count,
@@ -2600,7 +3670,35 @@ def index():
         visible_count=visible_count,
         region_options=region_options,
         selected_region=selected_region,
+        embed_mode=embed_mode,
     )
+
+
+@app.route("/")
+def root_index():
+    return redirect(url_for("estimates_page"))
+
+
+@app.route("/tenders")
+def index():
+    query = request.query_string.decode("utf-8", errors="ignore").strip()
+    iframe_src = "/tenders/content"
+    if query:
+        iframe_src = f"{iframe_src}?{query}"
+    return render_template_string(TENDERS_SHELL_TEMPLATE, iframe_src=iframe_src)
+
+
+@app.route("/tenders/content")
+def tenders_content():
+    return _render_tenders_index(embed_mode=True)
+
+
+@app.route("/favicon.svg")
+def favicon_svg():
+    resp = make_response(FAVICON_SVG)
+    resp.headers["Content-Type"] = "image/svg+xml"
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 USER_ESTIMATES_DIR = REPO_ROOT / "data" / "user_estimates"
@@ -2650,6 +3748,37 @@ def _estimate_market_raw_path(estimate_id: str) -> Path:
 
 def _estimate_market_merged_path(estimate_id: str) -> Path:
     return USER_ESTIMATES_DIR / estimate_id / "market_compare.xlsx"
+
+
+def _estimate_dir_path(estimate_id: str) -> Path:
+    return USER_ESTIMATES_DIR / estimate_id
+
+
+def _estimate_market_progress_for_card(estimate_id: str, rows: list[dict] | None = None) -> tuple[int, int]:
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    rows = list(rows or [])
+    total = len(rows)
+    if total <= 0:
+        return 0, 0
+
+    saved_done = 0
+    market_path = _estimate_market_raw_path(estimate_id)
+    if not market_path.is_file():
+        market_path = _estimate_market_merged_path(estimate_id)
+    if market_path.is_file():
+        try:
+            df = pd.read_excel(market_path)
+            saved_done = int(len(df.index))
+        except Exception:
+            saved_done = 0
+
+    with estimate_market_lock:
+        job = dict(estimate_market_jobs.get(estimate_id) or {})
+    live_total = int(job.get("total") or 0)
+    live_done = int(job.get("done") or 0)
+    if job.get("running") and live_total > 0:
+        return max(0, min(live_done, live_total)), max(0, live_total)
+    return max(0, min(saved_done, total)), total
 
 
 def _load_estimate_meta(estimate_id: str) -> dict | None:
@@ -2877,6 +4006,506 @@ def _merge_uploaded_estimate_market_df(est_df: pd.DataFrame, market_df: pd.DataF
     return merged
 
 
+def _estimate_market_sections(estimate_id: str, rows_filtered: list[dict], selected_types: list[str] | None = None) -> list[dict]:
+    from autobot.market_analytics import COL_NAME
+    from autobot.merge_estimate_market import _norm_key
+
+    path = _estimate_market_merged_path(estimate_id)
+    if not path.is_file() or not rows_filtered:
+        return []
+    try:
+        df = pd.read_excel(path)
+    except Exception:
+        return []
+    if df.empty or COL_NAME not in df.columns:
+        return []
+
+    by_key: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        key = _norm_key(str(row.get(COL_NAME) or ""))
+        if key and key not in by_key:
+            by_key[key] = {str(k): row.get(k) for k in df.columns}
+
+    labels_full = {"work": "Работы", "service": "Услуги", "product": "Товары/изделия", "material": "Материалы", "other": "Другое"}
+    groups: dict[str, list[dict]] = {}
+    for src in rows_filtered:
+        key = _norm_key(str(src.get("name") or ""))
+        merged = by_key.get(key)
+        if not merged:
+            continue
+        offers_raw = merged.get("Цена-сайт-телефон (json)")
+        offers: list[dict] = []
+        if isinstance(offers_raw, str) and offers_raw.strip():
+            try:
+                parsed = json.loads(offers_raw)
+                if isinstance(parsed, list):
+                    for item in parsed[:5]:
+                        if not isinstance(item, dict):
+                            continue
+                        price_num = _json_num(item.get("price"))
+                        offers.append(
+                            {
+                                "source": str(item.get("source") or "Интернет"),
+                                "title": str(item.get("title") or "Источник"),
+                                "price": price_num,
+                                "price_fmt": _fmt_money(price_num) if price_num else "—",
+                                "url": str(item.get("url") or ""),
+                                "snippet": str(item.get("snippet") or "")[:320],
+                            }
+                        )
+            except Exception:
+                offers = []
+        if not offers:
+            for i in range(1, 6):
+                title = str(merged.get(f"Название объявления {i}") or "").strip()
+                url = str(merged.get(f"Ссылка объявления {i}") or "").strip()
+                if not title and not url:
+                    continue
+                price_num = _json_num(merged.get(f"Цена объявления {i}"))
+                offers.append(
+                    {
+                        "source": str(merged.get(f"Источник {i}") or "Интернет"),
+                        "title": title or "Источник",
+                        "price": price_num,
+                        "price_fmt": _fmt_money(price_num) if price_num else "—",
+                        "url": url,
+                        "snippet": "",
+                    }
+                )
+        if not offers and not str(merged.get("Ошибка / статус") or "").strip():
+            continue
+        type_key = str(src.get("type") or "other")
+        groups.setdefault(type_key, []).append(
+            {
+                "name": str(src.get("name") or ""),
+                "type": type_key,
+                "type_label": str(src.get("type_label") or labels_full.get(type_key, type_key)),
+                "unit": str(src.get("unit") or ""),
+                "qty_fmt": _fmt_qty(_json_num(src.get("qty"))),
+                "estimate_price_fmt": _fmt_money(_json_num(src.get("unit_price"))),
+                "estimate_total_fmt": _fmt_money(_json_num(src.get("total"))),
+                "market_prices": str(merged.get("Рынок цены за ед. (итог)") or merged.get("Цены за ед. (рынок, руб)") or "").strip(),
+                "status": str(merged.get("Ошибка / статус") or "").strip(),
+                "offers": offers,
+            }
+        )
+
+    order = selected_types or ["work", "service", "product", "material", "other"]
+    sections: list[dict] = []
+    for key in order:
+        items = groups.get(key) or []
+        if not items:
+            continue
+        sections.append({"key": key, "label": labels_full.get(key, key), "count": len(items), "items": items})
+    if sections:
+        return sections
+    for key, items in groups.items():
+        sections.append({"key": key, "label": labels_full.get(key, key), "count": len(items), "items": items})
+    return sections
+
+
+def _estimate_market_links(estimate_id: str, market_sections: list[dict], *, q: str = "", selected_types: list[str] | None = None) -> list[dict]:
+    selected_types = _normalize_selected_estimate_types(selected_types)
+    out: list[dict] = []
+    for sec in market_sections:
+        params: list[tuple[str, str]] = []
+        if q:
+            params.append(("q", q))
+        for t in selected_types:
+            params.append(("types", t))
+        params.append(("market_type", str(sec.get("key") or "")))
+        out.append(
+            {
+                "key": str(sec.get("key") or ""),
+                "label": str(sec.get("label") or ""),
+                "count": int(sec.get("count") or 0),
+                "href": f"/estimates/{estimate_id}/market-view?{urlencode(params, doseq=True)}",
+            }
+        )
+    return out
+
+
+def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict]) -> pd.DataFrame:
+    from autobot.market_analytics import COL_NAME
+    from autobot.merge_estimate_market import _norm_key, _normalize_market_columns
+
+    if not path.is_file():
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame()
+    if getattr(df, "empty", True):
+        return pd.DataFrame()
+    df = _normalize_market_columns(df)
+    if not rows_filtered or COL_NAME not in df.columns:
+        return df
+    allowed_keys = {_norm_key(str(r.get("name") or "")) for r in rows_filtered if str(r.get("name") or "").strip()}
+    if not allowed_keys:
+        return df
+    try:
+        filtered = df[df[COL_NAME].fillna("").astype(str).map(_norm_key).isin(allowed_keys)].copy()
+    except Exception:
+        filtered = df.copy()
+    return filtered
+
+
+def _table_cell_text(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        fv = float(value)
+        if not math.isfinite(fv):
+            return "—"
+        if abs(fv - round(fv)) < 1e-9:
+            return f"{int(round(fv)):,}".replace(",", " ")
+        return f"{fv:,.2f}".replace(",", " ").replace(".", ",")
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return "—"
+    if len(text) > 900:
+        text = text[:900].rstrip() + "…"
+    return text
+
+
+def _build_table_view_from_df(
+    df: pd.DataFrame,
+    *,
+    preferred_columns: list[str],
+    fallback_limit: int = 10,
+    max_rows: int = 300,
+) -> dict:
+    if getattr(df, "empty", True):
+        return {"available": False, "columns": [], "rows": [], "truncated": False}
+    columns = [c for c in preferred_columns if c in df.columns]
+    if not columns:
+        columns = [str(c) for c in list(df.columns)[:fallback_limit]]
+    rows: list[list[str]] = []
+    for _, row in df[columns].head(max_rows).iterrows():
+        rows.append([_table_cell_text(row.get(col)) for col in columns])
+    return {
+        "available": bool(rows),
+        "columns": columns,
+        "rows": rows,
+        "truncated": len(df.index) > len(rows),
+    }
+
+
+def _estimate_table_views(estimate_id: str, rows_filtered: list[dict]) -> dict[str, dict]:
+    from autobot.market_analytics import COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
+
+    compare_df = _estimate_market_df_for_rows(_estimate_market_merged_path(estimate_id), rows_filtered)
+    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows_filtered)
+
+    compare_view = _build_table_view_from_df(
+        compare_df,
+        preferred_columns=[
+            COL_ITEM,
+            "Тип",
+            COL_NAME,
+            COL_UNIT,
+            COL_QTY,
+            COL_UNIT_PRICE,
+            COL_SUM,
+            "Рынок цены за ед. (итог)",
+            "Медиана цена за ед. (рынок)",
+            "Ошибка / статус",
+        ],
+    )
+    raw_view = _build_table_view_from_df(
+        raw_df,
+        preferred_columns=[
+            COL_ITEM,
+            "Тип",
+            COL_NAME,
+            "Поисковый запрос рынка",
+            "Цены за ед. (рынок, руб)",
+            "Рыночные источники",
+            "Ошибка / статус",
+        ],
+    )
+    return {
+        "estimate": {"available": bool(rows_filtered)},
+        "compare": compare_view,
+        "sources": raw_view,
+    }
+
+
+def _pick_estimate_active_table_view(requested: str, table_views: dict[str, dict]) -> str:
+    requested_key = str(requested or "").strip().lower()
+    if requested_key in ("estimate", "compare", "sources") and table_views.get(requested_key, {}).get("available"):
+        return requested_key
+    return "estimate"
+
+
+def _first_url_from_text(text: object) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    m = re.search(r"https?://[^\s<>'\"]+", raw)
+    return m.group(0).strip() if m else ""
+
+
+def _estimate_compare_rows(rows_filtered: list[dict], compare_df: pd.DataFrame) -> list[dict]:
+    from autobot.market_analytics import COL_NAME
+    from autobot.merge_estimate_market import _norm_key
+    from autobot.tender_viability import _estimate_numeric_for_compare, _market_median_for_row, _rub_col
+
+    by_key: dict[str, dict] = {}
+    if not getattr(compare_df, "empty", True) and COL_NAME in compare_df.columns:
+        for _, row in compare_df.iterrows():
+            key = _norm_key(str(row.get(COL_NAME) or ""))
+            if key and key not in by_key:
+                by_key[key] = {str(k): row.get(k) for k in compare_df.columns}
+
+    rc = _rub_col(compare_df) if not getattr(compare_df, "empty", True) else None
+    out: list[dict] = []
+    for src in rows_filtered:
+        key = _norm_key(str(src.get("name") or ""))
+        merged = by_key.get(key, {})
+        section = _normalize_section_title(str(src.get("section") or "")) or "Без раздела"
+        market_num = None
+        est_num = None
+        ratio = None
+        if merged and rc:
+            row_series = pd.Series(merged)
+            est_num = _estimate_numeric_for_compare(row_series)
+            market_num = _market_median_for_row(row_series, rc)
+            if est_num and market_num and market_num > 0:
+                ratio = est_num / market_num
+        status = str(merged.get("Ошибка / статус") or "").strip()
+        if market_num is None and not status:
+            status = "Рынок пока не найден"
+        first_url = ""
+        if merged:
+            first_url = _first_url_from_text(merged.get("Ссылки (строго)") or merged.get("Источники (ссылки/телефоны)") or "")
+            if not first_url:
+                bundle = merged.get("Цена-сайт-телефон (json)")
+                if isinstance(bundle, str) and bundle.strip():
+                    try:
+                        parsed = json.loads(bundle)
+                    except Exception:
+                        parsed = []
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            if isinstance(item, dict) and str(item.get("url") or "").strip():
+                                first_url = str(item.get("url") or "").strip()
+                                break
+            if not first_url:
+                for i in range(1, 6):
+                    maybe = str(merged.get(f"Ссылка объявления {i}") or "").strip()
+                    if maybe:
+                        first_url = maybe
+                        break
+        site = urlparse(first_url).netloc.replace("www.", "") if first_url else ""
+        if not site:
+            site = str(merged.get("Источник 1") or merged.get("Источник") or "").strip()
+        if ratio is None:
+            compare_label = "Нет данных"
+            compare_class = "muted"
+        elif ratio < 0.92:
+            compare_label = "Ниже рынка"
+            compare_class = "bad"
+        elif ratio > 1.08:
+            compare_label = "Выше рынка"
+            compare_class = "good"
+        else:
+            compare_label = "Около рынка"
+            compare_class = "warn"
+        out.append(
+            {
+                "section": section,
+                "type_label": str(src.get("type_label") or ""),
+                "name": str(src.get("name") or ""),
+                "estimate_price": _fmt_money(est_num) if est_num else _fmt_money(_json_num(src.get("unit_price"))),
+                "market_price": _fmt_money(market_num) if market_num else "—",
+                "site": site or "—",
+                "site_url": first_url,
+                "status": status or compare_label,
+                "compare_label": compare_label,
+                "compare_class": compare_class,
+                "ratio": ratio,
+                "has_market": market_num is not None,
+            }
+        )
+    return out
+
+
+def _estimate_source_rows(rows_filtered: list[dict], raw_df: pd.DataFrame) -> list[dict]:
+    from autobot.market_analytics import COL_NAME
+    from autobot.merge_estimate_market import _norm_key
+
+    by_key: dict[str, dict] = {}
+    if not getattr(raw_df, "empty", True) and COL_NAME in raw_df.columns:
+        for _, row in raw_df.iterrows():
+            key = _norm_key(str(row.get(COL_NAME) or ""))
+            if key and key not in by_key:
+                by_key[key] = {str(k): row.get(k) for k in raw_df.columns}
+    out: list[dict] = []
+    for src in rows_filtered:
+        key = _norm_key(str(src.get("name") or ""))
+        merged = by_key.get(key, {})
+        text = str(merged.get("Рыночные источники") or "").strip()
+        query = str(merged.get("Поисковый запрос рынка") or "").strip()
+        status = str(merged.get("Ошибка / статус") or "").strip() or ("Есть источники" if text else "Нет источников")
+        first_url = _first_url_from_text(text) or _first_url_from_text(merged.get("Ссылки (строго)") or "")
+        site = urlparse(first_url).netloc.replace("www.", "") if first_url else ""
+        out.append(
+            {
+                "section": _normalize_section_title(str(src.get("section") or "")) or "Без раздела",
+                "name": str(src.get("name") or ""),
+                "market_price": str(merged.get("Цены за ед. (рынок, руб)") or merged.get("Рынок цены за ед. (итог)") or "—").strip() or "—",
+                "site": site or "—",
+                "status": status,
+                "query": query or "—",
+            }
+        )
+    return out
+
+
+def _estimate_viability_overview(compare_df: pd.DataFrame, compare_rows: list[dict], scope_info: dict | None = None) -> dict:
+    from autobot.tender_viability import build_viability_section_html, compute_viability_stats
+
+    scope_info = scope_info or {}
+    if getattr(compare_df, "empty", True):
+        if scope_info.get("has_notice"):
+            return {
+                "available": False,
+                "title": "РЫНОК НЕ СОБРАН ДЛЯ ЭТОГО ТИПА",
+                "subtitle": str(scope_info.get("text") or ""),
+                "tone": "warn",
+                "facts": [],
+                "groups": [],
+                "html": "",
+            }
+        return {
+            "available": False,
+            "title": "Недостаточно данных",
+            "subtitle": "Сначала нужен поиск рынка хотя бы по части позиций.",
+            "tone": "warn",
+            "facts": [],
+            "groups": [],
+            "html": "",
+        }
+    stats = compute_viability_stats(compare_df)
+    if stats.comparable < 3 and scope_info.get("has_notice"):
+        title = "РЫНОК НЕ СОБРАН ДЛЯ ЭТОГО ТИПА"
+        tone = "warn"
+    elif stats.comparable < 3:
+        title = "НЕДОСТАТОЧНО ДАННЫХ"
+        tone = "warn"
+    elif stats.median_ratio is not None and stats.median_ratio > 1.08:
+        title = "ВЫГОДНО"
+        tone = "good"
+    elif stats.median_ratio is not None and stats.median_ratio < 0.92:
+        title = "НЕВЫГОДНО"
+        tone = "bad"
+    else:
+        title = "ПОГРАНИЧНО"
+        tone = "warn"
+
+    types_seen = []
+    for row in compare_rows:
+        label = str(row.get("type_label") or "").strip()
+        if row.get("has_market") and label and label not in types_seen:
+            types_seen.append(label)
+    comparable_types = ", ".join(types_seen) if types_seen else "пока без уверенного покрытия"
+    facts = [
+        {"label": "Сравнимых позиций", "value": str(stats.comparable)},
+        {"label": "Без рынка", "value": str(stats.no_market)},
+        {"label": "Смета / рынок", "value": (f"{stats.median_ratio:.2f}".replace(".", ",") if stats.median_ratio is not None else "—")},
+        {"label": "По сумме", "value": (_fmt_money(stats.comparable_gap_total) if stats.comparable_gap_total is not None else "—")},
+    ]
+    group_map: dict[str, dict] = {}
+    for row in compare_rows:
+        section = str(row.get("section") or "Без раздела")
+        g = group_map.setdefault(section, {"title": section, "good": 0, "warn": 0, "bad": 0, "none": 0})
+        cls = str(row.get("compare_class") or "muted")
+        if cls == "good":
+            g["good"] += 1
+        elif cls == "bad":
+            g["bad"] += 1
+        elif cls == "warn":
+            g["warn"] += 1
+        else:
+            g["none"] += 1
+    groups = list(group_map.values())[:18]
+    subtitle = str(scope_info.get("text") or f"Анализ построен по уже найденным данным. Сейчас покрыты: {comparable_types}.")
+    return {
+        "available": True,
+        "title": title,
+        "subtitle": subtitle,
+        "tone": tone,
+        "facts": facts,
+        "groups": groups,
+        "html": build_viability_section_html(stats, "estimate"),
+    }
+
+
+def _estimate_market_scope_info(meta: dict | None, current_selected_types: list[str] | None) -> dict:
+    labels_full = {"work": "Работы", "service": "Услуги", "product": "Товары/изделия", "material": "Материалы", "other": "Другое"}
+    analyzed_types = _normalize_selected_estimate_types((meta or {}).get("market_selected_types") or [])
+    current_types = _normalize_selected_estimate_types(current_selected_types)
+    analyzed_set = set(analyzed_types)
+    current_set = set(current_types)
+    if not analyzed_types:
+        return {
+            "has_notice": False,
+            "tone": "warn",
+            "title": "",
+            "text": "",
+        }
+    if not current_types:
+        current_set = analyzed_set
+    only_analyzed = current_set.issubset(analyzed_set)
+    if only_analyzed:
+        return {
+            "has_notice": False,
+            "tone": "warn",
+            "title": "",
+            "text": "",
+        }
+    analyzed_labels = ", ".join(labels_full.get(x, x) for x in analyzed_types)
+    missing_labels = ", ".join(labels_full.get(x, x) for x in current_types if x not in analyzed_set)
+    return {
+        "has_notice": True,
+        "tone": "warn",
+        "title": "Рынок собран не для всех выбранных типов",
+        "text": f"Сейчас в файле рынка есть только: {analyzed_labels}. Для этих типов ещё не собраны цены: {missing_labels}. Поэтому вывод ниже не может честно посчитать их как проанализированные.",
+    }
+
+
+def _simple_compare_export_df(compare_rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Раздел": row["section"],
+                "Наименование": row["name"],
+                "Цена сметы": row["estimate_price"],
+                "Цена рынка": row["market_price"],
+                "Сайт": row["site"],
+                "Статус": row["status"],
+            }
+            for row in compare_rows
+        ]
+    )
+
+
+def _simple_sources_export_df(source_rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Раздел": row["section"],
+                "Наименование": row["name"],
+                "Цена рынка": row["market_price"],
+                "Сайт": row["site"],
+                "Статус": row["status"],
+            }
+            for row in source_rows
+        ]
+    )
+
+
 def _estimate_upload_log_append(job: dict, line: str) -> None:
     logs = list(job.get("log_lines") or [])
     stamp = datetime.now().strftime("%H:%M:%S")
@@ -2919,6 +4548,23 @@ def _estimate_market_cleanup(max_jobs: int = 16) -> None:
         keep = dict(items[:max_jobs])
         estimate_market_jobs.clear()
         estimate_market_jobs.update(keep)
+
+
+def _research_queries_from_text(raw: str, *, limit: int = 8) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in str(raw or "").splitlines():
+        q = re.sub(r"\s+", " ", line).strip(" \t,;")
+        if len(q) < 2:
+            continue
+        key = q.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _estimate_upload_progress_cb(job_id: str):
@@ -2996,7 +4642,7 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
         _estimate_upload_cleanup()
 
 
-def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str]) -> None:
+def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str], selected_types: list[str] | None = None) -> None:
     try:
         from autobot.market_analytics import COL_NAME
         from autobot.merge_estimate_market import _norm_key
@@ -3015,20 +4661,30 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
         rows_json = _load_estimate_rows(estimate_id)
         if not rows_json:
             raise ValueError("У этой сметы нет строк для поиска рынка.")
-        est_df = _estimate_rows_to_report_df(rows_json)
+        selected_types = _normalize_selected_estimate_types(selected_types)
+        filtered_rows_json = _filter_estimate_rows(rows_json, selected_types=selected_types)
+        if not filtered_rows_json:
+            raise ValueError("По выбранным типам позиций нет строк для поиска рынка.")
+        est_df = _estimate_rows_to_report_df(filtered_rows_json)
         total_rows = len(_eligible_rows(est_df))
         raw_path = _estimate_market_raw_path(estimate_id)
         merged_path = _estimate_market_merged_path(estimate_id)
         prev = _read_previous(raw_path)
+        if prev is not None and not getattr(prev, "empty", True) and COL_NAME in prev.columns:
+            allowed_keys = {_norm_key(str(x)) for x in est_df[COL_NAME].fillna("").astype(str).tolist() if str(x).strip()}
+            if allowed_keys:
+                prev = prev[prev[COL_NAME].fillna("").astype(str).map(_norm_key).isin(allowed_keys)].copy()
         done_keys = _processed_keys(prev)
         eligible = _eligible_rows(est_df)
         total = len(eligible)
+        active_sources = list(sources)
         _estimate_market_set(
             estimate_id,
             running=True,
             progress=3,
             stage="Готовлю строки сметы",
             detail=f"К обработке: {total} строк" + (f" · город: {city}" if city else ""),
+            selected_types=selected_types,
             updated_at=datetime.now().isoformat(timespec="seconds"),
         )
         use_browser = (os.environ.get("MARKET_AVITO_BROWSER", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
@@ -3038,6 +4694,24 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
         new_rows: list[dict] = []
         with AvitoBrowserFetcher(enabled=use_browser and "avito" in sources, headless=browser_headless) as browser:
             for seq, (_, row) in enumerate(eligible, start=1):
+                with estimate_market_lock:
+                    job = estimate_market_jobs.get(estimate_id)
+                    stop_requested = bool(job.get("stop_requested")) if job else False
+                if stop_requested:
+                    with estimate_market_lock:
+                        job = estimate_market_jobs.get(estimate_id)
+                        if job:
+                            job["running"] = False
+                            job["ok"] = True
+                            job["stage"] = "Остановлено"
+                            job["detail"] = f"Остановлено пользователем · обработано {len(done_keys) + len(new_rows)} из {total}"
+                            job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                            job["done"] = max(0, len(done_keys) + len(new_rows))
+                            job["total"] = total
+                            job["has_raw"] = raw_path.is_file()
+                            job["has_merged"] = merged_path.is_file()
+                            _estimate_market_log_append(job, "Остановлено пользователем")
+                    return
                 work_name = str(row.get(COL_NAME, "") or "").strip()
                 key = _norm_key(work_name)
                 if key in done_keys:
@@ -3059,10 +4733,17 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
                 offers, err = search_market(
                     query,
                     region=city,
-                    sources=sources,
+                    sources=active_sources,
                     max_results=max_results,
                     browser_fetcher=browser,
                 )
+                err_low = str(err or "").casefold()
+                if "avito" in active_sources and ("ограничил доступ" in err_low or "ip/vpn" in err_low or "captcha" in err_low):
+                    active_sources = [x for x in active_sources if x != "avito"]
+                    with estimate_market_lock:
+                        job = estimate_market_jobs.get(estimate_id)
+                        if job:
+                            _estimate_market_log_append(job, "Авито заблокировал доступ — продолжаю только по интернету")
                 new_rows.append(_build_output_row(row, offers=offers, query=query, err=err))
                 merged_raw = _merge_rows(prev, new_rows)
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3089,6 +4770,7 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
         _merge_uploaded_estimate_market_df(est_df, merged_raw).to_excel(merged_path, index=False)
         meta["market_city"] = city
         meta["market_sources"] = ",".join(sources)
+        meta["market_selected_types"] = selected_types
         meta["market_updated_at"] = datetime.now().strftime("%d.%m.%Y %H:%M")
         _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         with estimate_market_lock:
@@ -3126,55 +4808,56 @@ ESTIMATES_TEMPLATE = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Сметы</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a30; --panel2:#0f1729; --border:#2a385f; --muted:#9fb0d6; --text:#e8eefc; --accent:#4f8cff; --ok:#5ecf8a; }
-    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:radial-gradient(circle at top left,#17294f 0,#0b1020 42%,#070b15 100%); color:var(--text); }
+    :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --panel2:#f7fafe; --border:#d9e3ef; --muted:#62748b; --text:#172235; --accent:#1f72dc; --ok:#2e8b57; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:var(--text); }
     .page { max-width:1220px; margin:0 auto; padding:26px 18px 44px; }
     h1 { margin:0 0 8px; font-size:34px; }
     .sub,.muted { color:var(--muted); }
     .tabs { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 18px; }
-    .tab { display:inline-flex; padding:9px 12px; border-radius:999px; color:#c8d8f8; text-decoration:none; background:rgba(15,22,44,.72); border:1px solid var(--border); font-weight:700; font-size:13px; }
-    .tab.is-active { color:#fff; background:linear-gradient(180deg,#345095,#263d78); border-color:#6d8fe8; }
-    .panel,.card { background:rgba(18,26,48,.92); border:1px solid var(--border); border-radius:16px; box-shadow:0 18px 45px rgba(0,0,0,.22); }
+    .tab { display:inline-flex; padding:9px 12px; border-radius:999px; color:#35506f; text-decoration:none; background:#f4f8fd; border:1px solid var(--border); font-weight:700; font-size:13px; }
+    .tab.is-active { color:#fff; background:linear-gradient(180deg,#2e80e8,#1f72dc); border-color:#2e80e8; }
+    .panel,.card { background:linear-gradient(180deg,#ffffff,#f8fbff); border:1px solid var(--border); border-radius:16px; box-shadow:0 18px 45px rgba(28,49,84,.08); }
     .panel { padding:16px; margin-bottom:16px; }
     .upload-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
-    input[type=file], input[type=text], select { background:#0c1325; border:1px solid #33466f; color:var(--text); border-radius:10px; padding:10px; }
+    input[type=file], input[type=text], select { background:#fff; border:1px solid #cfd9e8; color:var(--text); border-radius:10px; padding:10px; }
     input[type=text] { min-width:280px; }
-    .btn { border:1px solid #5b7ddd; background:linear-gradient(180deg,#3b61ba,#294c9c); color:white; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-    .btn.secondary { background:#26364f; border-color:#3a4c70; color:#dce7ff; }
+    .btn { border:1px solid #2e80e8; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:white; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+    .btn.secondary { background:#f4f8fd; border-color:#cfd9e8; color:#35506f; }
     .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:12px; }
     .card { padding:14px; text-decoration:none; color:var(--text); }
-    .card:hover { border-color:#6d8fe8; transform:translateY(-1px); }
+    .card:hover { border-color:#9ec0ef; transform:translateY(-1px); }
     .card h3 { margin:0 0 9px; font-size:15px; line-height:1.35; }
     .meta { display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:12px; }
-    .meta b { display:block; color:#fff; font-size:15px; margin-top:2px; }
-    .table-wrap { overflow:auto; border-radius:14px; border:1px solid var(--border); background:#0c1325; }
+    .meta b { display:block; color:#1b2a41; font-size:15px; margin-top:2px; }
+    .table-wrap { overflow-x:auto; overflow-y:visible; border-radius:14px; border:1px solid var(--border); background:#fff; position:relative; }
     table { width:100%; border-collapse:collapse; font-size:12px; }
-    th,td { padding:9px 10px; border-bottom:1px solid #223150; vertical-align:top; }
-    th { position:sticky; top:0; background:#121c34; color:#bfd2ff; text-align:left; z-index:1; }
-    tr:hover td { background:rgba(79,140,255,.07); }
+    th,td { padding:9px 10px; border-bottom:1px solid #e5ecf4; vertical-align:top; }
+    th { position:sticky; top:72px; background:#f1f6fc; color:#35506f; text-align:left; z-index:12; }
+    tr:hover td { background:#f7faff; }
     .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-    .tag { display:inline-flex; border-radius:999px; padding:3px 8px; border:1px solid #3a4c70; background:#18243d; color:#cfe0ff; font-size:11px; }
+    .tag { display:inline-flex; border-radius:999px; padding:3px 8px; border:1px solid #cfd9e8; background:#f4f8fd; color:#35506f; font-size:11px; }
     .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:12px; }
-    .summary-item { padding:11px; background:#0c1325; border:1px solid #263858; border-radius:12px; }
+    .summary-item { padding:11px; background:#fff; border:1px solid #dfe7f1; border-radius:12px; }
     .summary-item span { display:block; color:var(--muted); font-size:11px; }
     .summary-item b { display:block; margin-top:4px; font-size:16px; }
-    .upload-progress { margin-top:14px; padding:14px; border-radius:14px; border:1px solid #324770; background:linear-gradient(180deg, rgba(17,25,46,.95), rgba(10,16,31,.92)); }
+    .upload-progress { margin-top:14px; padding:14px; border-radius:14px; border:1px solid #d9e3ef; background:linear-gradient(180deg,#ffffff,#f7fafe); }
     .upload-progress[hidden] { display:none; }
     .upload-progress-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
-    .upload-progress-title { font-size:14px; font-weight:700; color:#eaf1ff; }
-    .upload-progress-pct { font-size:13px; color:#9fd2ff; font-variant-numeric:tabular-nums; }
-    .upload-progress-bar { height:12px; border-radius:999px; overflow:hidden; background:#0a1223; border:1px solid #2a3f61; }
+    .upload-progress-title { font-size:14px; font-weight:700; color:#1b2a41; }
+    .upload-progress-pct { font-size:13px; color:#2e80e8; font-variant-numeric:tabular-nums; }
+    .upload-progress-bar { height:12px; border-radius:999px; overflow:hidden; background:#edf3fa; border:1px solid #d6e0ee; }
     .upload-progress-fill { height:100%; width:0%; background:linear-gradient(90deg, #4f8cff, #5ecf8a); transition:width .28s ease; }
-    .upload-progress-stage { margin-top:10px; color:#dbe7ff; font-size:13px; font-weight:700; }
+    .upload-progress-stage { margin-top:10px; color:#1f3957; font-size:13px; font-weight:700; }
     .upload-progress-detail { margin-top:5px; color:#9fb0d6; font-size:12px; line-height:1.45; }
     .upload-progress-steps { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
-    .upload-step { border:1px solid #33466f; background:#14203a; color:#99add7; border-radius:999px; padding:4px 9px; font-size:11px; }
-    .upload-step.is-active { color:#fff; border-color:#5b7ddd; background:#23437f; }
-    .upload-step.is-done { color:#dff7e6; border-color:#3f8a5f; background:#1c3b29; }
-    .upload-progress-error { margin-top:10px; color:#ffbfca; font-size:12px; white-space:pre-wrap; }
-    .upload-progress-logs { margin-top:10px; border-radius:10px; border:1px solid #263858; background:#09111f; padding:9px; max-height:180px; overflow:auto; font-size:11px; color:#aebfe4; line-height:1.45; white-space:pre-wrap; }
+    .upload-step { border:1px solid #cfd9e8; background:#f4f8fd; color:#6d7f96; border-radius:999px; padding:4px 9px; font-size:11px; }
+    .upload-step.is-active { color:#fff; border-color:#2e80e8; background:#2e80e8; }
+    .upload-step.is-done { color:#257347; border-color:#bfe5cc; background:#e9f8ef; }
+    .upload-progress-error { margin-top:10px; color:#b04e4e; font-size:12px; white-space:pre-wrap; }
+    .upload-progress-logs { margin-top:10px; border-radius:10px; border:1px solid #dfe7f1; background:#f8fbff; padding:9px; max-height:180px; overflow:auto; font-size:11px; color:#576a84; line-height:1.45; white-space:pre-wrap; }
     .empty { text-align:center; padding:28px; color:var(--muted); }
     @media (max-width:720px){ h1{font-size:28px}.upload-row{align-items:stretch;flex-direction:column}.btn,input[type=text],select{width:100%;box-sizing:border-box}.meta{grid-template-columns:1fr} }
   </style>
@@ -3184,8 +4867,9 @@ ESTIMATES_TEMPLATE = """
     <h1>Сметы</h1>
     <div class="sub">Загрузите Excel-смету, сохраните её карточкой и смотрите все найденные позиции в таблице.</div>
     <nav class="tabs">
-      <a class="tab" href="/">📋 Тендеры</a>
+      <a class="tab" href="/tenders">📋 Тендеры</a>
       <a class="tab is-active" href="/estimates">📊 Сметы</a>
+      <a class="tab" href="/research">🔎 Поиск по позиции</a>
     </nav>
 
     <section class="panel">
@@ -3381,7 +5065,1128 @@ ESTIMATES_TEMPLATE = """
         };
         xhr.send(fd);
       });
+
+      document.addEventListener("click", async function(e) {
+        const btn = e.target.closest("[data-estimate-delete]");
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const estimateId = btn.getAttribute("data-estimate-delete") || "";
+        const title = btn.getAttribute("data-estimate-title") || "эта смета";
+        const ok = confirm(`Удалить смету "${title}"?\n\nБудут удалены карточка сметы, ее строки и сохраненные файлы рынка.`);
+        if (!ok) return;
+        const initialText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Удаляем...";
+        try {
+          const resp = await fetch("/api/estimates/" + encodeURIComponent(estimateId) + "/delete", {
+            method: "POST",
+            headers: { "Accept": "application/json" },
+          });
+          let data = {};
+          try { data = await resp.json(); } catch (err) {}
+          if (!resp.ok || !data.ok) {
+            alert(data.message || ("Не удалось удалить смету (HTTP " + resp.status + ")."));
+            btn.disabled = false;
+            btn.textContent = initialText;
+            return;
+          }
+          const card = btn.closest("[data-estimate-card]");
+          if (card) card.remove();
+          setTimeout(function() { window.location.reload(); }, 120);
+        } catch (err) {
+          alert("Не удалось удалить смету: " + err);
+          btn.disabled = false;
+          btn.textContent = initialText;
+        }
+      });
+
+      document.addEventListener("click", function(e) {
+        if (e.target.closest("[data-estimate-delete]")) return;
+        const card = e.target.closest("[data-estimate-open]");
+        if (!card) return;
+        const href = card.getAttribute("data-estimate-open") || "";
+        if (!href) return;
+        window.location.href = href;
+      });
     })();
+  </script>
+</body>
+</html>
+"""
+
+ESTIMATES_TEMPLATE_V2 = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>Сметы</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f9fc;
+      --panel: #ffffff;
+      --panel-soft: #f4f8fd;
+      --border: #d9e4f0;
+      --border-strong: #c8d7e8;
+      --text: #182537;
+      --muted: #62748b;
+      --accent: #1f72dc;
+      --ok: #257347;
+      --ok-soft: #e8f7ed;
+      --warn: #9b6a1b;
+      --warn-soft: #fff6df;
+      --shadow: 0 18px 44px rgba(33, 63, 110, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(79, 140, 255, 0.10), transparent 26%),
+        radial-gradient(circle at top right, rgba(94, 207, 138, 0.08), transparent 24%),
+        linear-gradient(180deg, #ffffff 0%, var(--bg) 38%, #f6f9fc 100%);
+    }
+    a { color: inherit; }
+    .page { max-width: 1280px; margin: 0 auto; padding: 28px 20px 48px; }
+    .muted { color: var(--muted); }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 9px 14px;
+      border-radius: 999px;
+      color: #35506f;
+      text-decoration: none;
+      background: rgba(255,255,255,0.88);
+      border: 1px solid var(--border);
+      font-weight: 700;
+      font-size: 13px;
+      box-shadow: 0 8px 20px rgba(36, 67, 112, 0.05);
+    }
+    .tab.is-active {
+      color: #ffffff;
+      background: linear-gradient(180deg, #2e80e8, #1f72dc);
+      border-color: #2e80e8;
+    }
+    .tab:hover { border-color: #a9c4e9; background: #f7fbff; }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.88);
+      color: #35506f;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+      gap: 18px;
+      margin-bottom: 18px;
+      align-items: stretch;
+    }
+    .hero-card,
+    .upload-card,
+    .catalog-panel,
+    .estimate-card,
+    .upload-progress {
+      background: linear-gradient(180deg, #ffffff, #f9fbff);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+    }
+    .hero-card {
+      position: relative;
+      overflow: hidden;
+      padding: 22px 24px 24px;
+      min-height: 184px;
+    }
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      right: -60px;
+      top: -70px;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(31, 114, 220, 0.12), rgba(31, 114, 220, 0));
+      pointer-events: none;
+    }
+    h1 {
+      margin: 12px 0 10px;
+      font-size: clamp(34px, 4vw, 48px);
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+    }
+    .hero-text {
+      max-width: 760px;
+      margin: 10px 0 0;
+      font-size: 14px;
+      line-height: 1.55;
+      color: #516984;
+    }
+    .upload-card {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .panel-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+    .panel-subtitle {
+      margin: 6px 0 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .upload-row { display: grid; gap: 10px; }
+    .file-picker {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .file-input-native {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .file-picker-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 0 15px;
+      border-radius: 12px;
+      border: 1px solid #cfd9e8;
+      background: linear-gradient(180deg, #ffffff, #f4f8fd);
+      color: #35506f;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: border-color .18s ease, background .18s ease, transform .18s ease;
+    }
+    .file-picker-btn:hover {
+      border-color: #a9c4e9;
+      background: linear-gradient(180deg, #ffffff, #eef5ff);
+      transform: translateY(-1px);
+    }
+    .file-picker-name {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .file-picker-name[hidden] { display: none; }
+    .icon-clip {
+      width: 16px;
+      height: 16px;
+      display: block;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+    .upload-hint {
+      display: grid;
+      gap: 8px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, #f4f8fd, #eef4fb);
+      border: 1px solid var(--border);
+      color: #35506f;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    input[type=text] {
+      width: 100%;
+      min-width: 0;
+      background: #ffffff;
+      border: 1px solid #cfd9e8;
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 13px;
+      font-size: 14px;
+      outline: none;
+    }
+    input[type=text]:focus {
+      border-color: #8db4eb;
+      box-shadow: 0 0 0 3px rgba(46, 128, 232, 0.12);
+    }
+    .btn {
+      border: 1px solid #2e80e8;
+      background: linear-gradient(180deg, #2e80e8, #1f72dc);
+      color: #ffffff;
+      border-radius: 12px;
+      padding: 11px 15px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+    }
+    .overview-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .overview-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff, #f7fbff);
+      box-shadow: var(--shadow);
+      color: #29415f;
+      font-size: 13px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+    .overview-pill b {
+      color: #172235;
+      font-size: 18px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    .catalog-panel { padding: 18px; }
+    .panel-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .panel-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+      gap: 14px;
+    }
+    .estimate-card {
+      padding: 16px;
+      color: var(--text);
+      transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+    .estimate-card:hover {
+      transform: translateY(-2px);
+      border-color: #9ec0ef;
+      box-shadow: 0 20px 36px rgba(43, 78, 131, 0.12);
+    }
+    .estimate-card-body-link {
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }
+    .estimate-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .estimate-card-meta {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .status-pill,
+    .date-pill,
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .status-pill { padding: 6px 10px; }
+    .date-pill {
+      padding: 6px 9px;
+      color: var(--muted);
+      background: #f8fbff;
+    }
+    .status-ready { background: var(--ok-soft); border-color: #bfe5cc; color: var(--ok); }
+    .status-partial { background: var(--warn-soft); border-color: #f1ddb2; color: var(--warn); }
+    .status-idle { background: #fff1f1; border-color: #f0c9c9; color: #bb4545; }
+    .estimate-card h3 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.35;
+      color: #172235;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-height: calc(1.35em * 2);
+      word-break: break-word;
+    }
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 12px;
+      min-height: 26px;
+    }
+    .chip {
+      padding: 6px 9px;
+      background: var(--panel-soft);
+      color: #35506f;
+    }
+    .estimate-progress {
+      margin-top: 14px;
+      padding: 11px 12px 12px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff, #f7fafd);
+      border: 1px solid #dfe7f1;
+    }
+    .estimate-progress-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .estimate-progress-label {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .estimate-progress-value {
+      color: #1b2a41;
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+    .estimate-progress-track {
+      position: relative;
+      width: 100%;
+      height: 7px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #e8eff7;
+    }
+    .estimate-progress-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #5b94dd, #84b5f1);
+    }
+    .estimate-progress-note {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .metric-box {
+      padding: 11px 12px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff, #f5f9fe);
+      border: 1px solid #dfe7f1;
+    }
+    .metric-box span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .metric-box b {
+      display: block;
+      margin-top: 5px;
+      color: #1b2a41;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+    .card-delete-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid #efc7c2;
+      background: #fff4f2;
+      color: #b4392c;
+      cursor: pointer;
+      transition: background .18s ease, border-color .18s ease, transform .18s ease;
+    }
+    .card-delete-btn:hover {
+      background: #ffe9e5;
+      border-color: #e8a7a0;
+      transform: translateY(-1px);
+    }
+    .card-delete-btn:disabled {
+      opacity: .6;
+      cursor: wait;
+      transform: none;
+    }
+    .icon-trash {
+      width: 16px;
+      height: 16px;
+      display: block;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+    .metric-good {
+      color: #20744c !important;
+    }
+    .metric-bad {
+      color: #bb4545 !important;
+    }
+    .btn-danger-lite:disabled {
+      opacity: .6;
+      cursor: wait;
+      transform: none;
+    }
+    .open-link {
+      color: var(--accent);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .upload-progress {
+      margin-top: 2px;
+      padding: 14px;
+      border-radius: 18px;
+    }
+    .upload-progress[hidden] { display:none; }
+    .upload-progress-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
+    .upload-progress-title { font-size:14px; font-weight:700; color:#1b2a41; }
+    .upload-progress-pct { font-size:13px; color:#2e80e8; font-variant-numeric:tabular-nums; }
+    .upload-progress-bar { height:12px; border-radius:999px; overflow:hidden; background:#edf3fa; border:1px solid #d6e0ee; }
+    .upload-progress-fill { height:100%; width:0%; background:linear-gradient(90deg, #4f8cff, #5ecf8a); transition:width .28s ease; }
+    .upload-progress-detail { margin-top:5px; color:#7389a9; font-size:12px; line-height:1.45; }
+    .upload-progress-steps { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .upload-step { border:1px solid #cfd9e8; background:#f4f8fd; color:#6d7f96; border-radius:999px; padding:4px 9px; font-size:11px; }
+    .upload-step.is-active { color:#fff; border-color:#2e80e8; background:#2e80e8; }
+    .upload-step.is-done { color:#257347; border-color:#bfe5cc; background:#e9f8ef; }
+    .upload-progress-error { margin-top:10px; color:#b04e4e; font-size:12px; white-space:pre-wrap; }
+    .upload-progress-logs { margin-top:10px; border-radius:10px; border:1px solid #dfe7f1; background:#f8fbff; padding:9px; max-height:180px; overflow:auto; font-size:11px; color:#576a84; line-height:1.45; white-space:pre-wrap; }
+    .empty {
+      text-align: center;
+      padding: 34px 20px;
+      border-radius: 18px;
+      border: 1px dashed var(--border-strong);
+      background: linear-gradient(180deg, #fbfdff, #f5f9fd);
+      color: var(--muted);
+    }
+    @media (max-width: 1080px) {
+      .hero-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .page { padding: 20px 12px 34px; }
+      h1 { font-size: 30px; }
+      .metric-grid,
+      .grid { grid-template-columns: 1fr; }
+      .tabs,
+      .chip-row { gap: 6px; }
+      .panel-head,
+      .estimate-card-top,
+      .estimate-progress-head { flex-direction: column; align-items: flex-start; }
+      .estimate-card-meta { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav class="tabs">
+      <a class="tab" href="/tenders">Тендеры</a>
+      <a class="tab is-active" href="/estimates">Сметы</a>
+      <a class="tab" href="/research">Поиск по позиции</a>
+    </nav>
+
+    <section class="hero-grid">
+      <div class="hero-card">
+        <span class="eyebrow">Сметы</span>
+        <h1>Загрузка и список смет</h1>
+        <p class="hero-text">Загрузите Excel и откройте нужную смету из списка ниже.</p>
+      </div>
+
+      <section class="upload-card">
+        <div>
+          <h2 class="panel-title">Загрузить Excel</h2>
+        </div>
+        <form id="estimateUploadForm" class="upload-row">
+          <div class="file-picker">
+            <input class="file-input-native" id="estimateUploadFile" type="file" name="file" accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+            <label class="file-picker-btn" for="estimateUploadFile">
+              <svg class="icon-clip" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21.44 11.05l-8.49 8.49a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"></path>
+              </svg>
+              <span>Прикрепить файл</span>
+            </label>
+            <span class="file-picker-name" id="estimateUploadFileName" hidden></span>
+          </div>
+          <input type="text" name="title" placeholder="Название сметы, если нужно переименовать карточку" />
+          <button class="btn" type="submit">Загрузить и распарсить</button>
+        </form>
+        <div id="uploadStatus" class="muted"></div>
+        <div id="estimateUploadProgress" class="upload-progress" hidden>
+          <div class="upload-progress-head">
+            <div class="upload-progress-title" id="estimateUploadStage">Подготовка…</div>
+            <div class="upload-progress-pct" id="estimateUploadPct">0%</div>
+          </div>
+          <div class="upload-progress-bar"><div id="estimateUploadFill" class="upload-progress-fill"></div></div>
+          <div id="estimateUploadDetail" class="upload-progress-detail"></div>
+          <div class="upload-progress-steps" id="estimateUploadSteps">
+            <span class="upload-step" data-step="upload">Отправка файла</span>
+            <span class="upload-step" data-step="received">Файл получен</span>
+            <span class="upload-step" data-step="parse">Разбор Excel</span>
+            <span class="upload-step" data-step="catalogue">Каталог позиций</span>
+            <span class="upload-step" data-step="save">Сохранение</span>
+            <span class="upload-step" data-step="done">Готово</span>
+          </div>
+          <div id="estimateUploadError" class="upload-progress-error" hidden></div>
+          <div id="estimateUploadLogs" class="upload-progress-logs" hidden></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="overview-strip" aria-label="Сводка по сметам">
+      <div class="overview-pill">Всего смет <b>{{ overview.total_count }}</b></div>
+      <div class="overview-pill">С анализом рынка <b>{{ overview.with_compare }}</b></div>
+    </section>
+
+    <section class="catalog-panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">Список</span>
+          <h2 class="panel-title">Загруженные сметы</h2>
+        </div>
+      </div>
+      {% if estimates %}
+      <div class="grid">
+        {% for e in estimates %}
+        <article class="estimate-card" data-estimate-card="{{ e.id }}">
+          <div class="estimate-card-top">
+            <span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span>
+            <div class="estimate-card-meta">
+              <span class="date-pill">{{ e.created_at }}</span>
+              <button class="card-delete-btn" type="button" data-estimate-delete="{{ e.id }}" data-estimate-title="{{ e.title }}" onclick="deleteEstimateCard(event, this)" title="Удалить смету" aria-label="Удалить смету">
+                <svg class="icon-trash" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16"></path>
+                  <path d="M10 11v6"></path>
+                  <path d="M14 11v6"></path>
+                  <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"></path>
+                  <path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <a class="estimate-card-body-link" href="/estimates/{{ e.id }}" title="{{ e.title }}">
+            <h3 title="{{ e.title }}">{{ e.title }}</h3>
+
+            <div class="chip-row">
+              {% for badge in e.type_badges %}
+              <span class="chip">{{ badge.label }} · {{ badge.count }}</span>
+              {% endfor %}
+              {% if not e.type_badges %}
+              <span class="chip">Типы не определены</span>
+              {% endif %}
+            </div>
+
+            <div class="estimate-progress">
+              <div class="estimate-progress-head">
+                <span class="estimate-progress-label">Проанализировано</span>
+                <span class="estimate-progress-value">{{ e.market_progress_done }} из {{ e.market_progress_total }}</span>
+              </div>
+              <div class="estimate-progress-track">
+                <div class="estimate-progress-fill" style="width: {{ e.market_progress_percent }}%;"></div>
+              </div>
+              <div class="estimate-progress-note">{{ e.market_progress_note }}</div>
+            </div>
+
+            <div class="metric-grid">
+              <div class="metric-box">
+                <span>Строк</span>
+                <b>{{ e.row_count }}</b>
+              </div>
+              <div class="metric-box">
+                <span>Сумма</span>
+                <b>{{ e.total_sum_fmt }}</b>
+              </div>
+              <div class="metric-box">
+                <span>Состояние рынка</span>
+                <b class="{{ e.market_summary_class }}" style="font-size:14px;">{{ e.market_summary }}</b>
+              </div>
+              <div class="metric-box">
+                <span>Типы</span>
+                <b style="font-size:14px;">{{ e.types_short }}</b>
+              </div>
+            </div>
+          </a>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty">Смет пока нет.</div>
+      {% endif %}
+    </section>
+  </div>
+  <script>
+    (function() {
+      const form = document.getElementById("estimateUploadForm");
+      const status = document.getElementById("uploadStatus");
+      const panel = document.getElementById("estimateUploadProgress");
+      const fill = document.getElementById("estimateUploadFill");
+      const pct = document.getElementById("estimateUploadPct");
+      const stage = document.getElementById("estimateUploadStage");
+      const detail = document.getElementById("estimateUploadDetail");
+      const fileInput = document.getElementById("estimateUploadFile");
+      const fileName = document.getElementById("estimateUploadFileName");
+      const errBox = document.getElementById("estimateUploadError");
+      const logs = document.getElementById("estimateUploadLogs");
+      const stepNodes = Array.from(document.querySelectorAll("#estimateUploadSteps .upload-step"));
+      let activePoll = 0;
+
+      function syncChosenFile() {
+        if (!fileInput || !fileName) return;
+        const name = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : "";
+        fileName.textContent = name;
+        fileName.hidden = !name;
+      }
+
+      if (fileInput) {
+        fileInput.addEventListener("change", syncChosenFile);
+      }
+
+      function showProgress() {
+        panel.hidden = false;
+        logs.hidden = false;
+      }
+
+      function markStep(progress, currentStage, done) {
+        const stageLow = String(currentStage || "").toLowerCase();
+        const currentKey =
+          done ? "done"
+          : progress < 25 ? "upload"
+          : progress < 40 ? "received"
+          : stageLow.includes("каталог") ? "catalogue"
+          : stageLow.includes("сохраня") ? "save"
+          : progress >= 40 ? "parse"
+          : "received";
+        const order = ["upload", "received", "parse", "catalogue", "save", "done"];
+        const currentIndex = order.indexOf(currentKey);
+        stepNodes.forEach(function(node) {
+          const key = node.getAttribute("data-step");
+          const idx = order.indexOf(key);
+          node.classList.toggle("is-done", idx >= 0 && idx < currentIndex);
+          node.classList.toggle("is-active", key === currentKey);
+        });
+      }
+
+      function renderProgress(data) {
+        const value = Math.max(0, Math.min(100, Number(data.progress || 0)));
+        fill.style.width = value + "%";
+        pct.textContent = value + "%";
+        stage.textContent = data.stage || "Подготовка…";
+        detail.textContent = data.detail || "";
+        const resultOk = !!data.result_ok;
+        status.textContent = data.running ? "Смета обрабатывается…" : (resultOk ? "Смета готова." : (data.error ? "Во время обработки возникла ошибка." : ""));
+        if (Array.isArray(data.log_tail) && data.log_tail.length) {
+          logs.hidden = false;
+          logs.textContent = data.log_tail.join("\\n");
+        } else {
+          logs.hidden = true;
+          logs.textContent = "";
+        }
+        if (data.error) {
+          errBox.hidden = false;
+          errBox.textContent = "Ошибка: " + data.error;
+        } else {
+          errBox.hidden = true;
+          errBox.textContent = "";
+        }
+        markStep(value, data.stage || "", resultOk && !data.running);
+      }
+
+      async function pollJob(jobId) {
+        const pollId = ++activePoll;
+        for (;;) {
+          if (pollId !== activePoll) return;
+          let resp, data;
+          try {
+            resp = await fetch("/api/estimates/upload-status/" + encodeURIComponent(jobId), { cache: "no-store" });
+            data = await resp.json();
+          } catch (e) {
+            status.textContent = "Не удалось обновить статус обработки.";
+            return;
+          }
+          if (!resp.ok || !data.ok) {
+            status.textContent = (data && data.message) || "Статус обработки недоступен.";
+            return;
+          }
+          renderProgress(data);
+          if (!data.running) {
+            if (data.result_ok && data.estimate_id) {
+              status.textContent = "Готово, открываю смету…";
+              setTimeout(function() { location.href = "/estimates/" + data.estimate_id; }, 450);
+            }
+            return;
+          }
+          await new Promise(function(resolve) { setTimeout(resolve, 500); });
+        }
+      }
+
+      form.addEventListener("submit", function(e) {
+        e.preventDefault();
+        if (!fileInput || !fileInput.files || !fileInput.files.length) {
+          status.textContent = "Сначала прикрепите Excel-файл.";
+          return;
+        }
+        const fd = new FormData(form);
+        const xhr = new XMLHttpRequest();
+        activePoll += 1;
+        showProgress();
+        errBox.hidden = true;
+        errBox.textContent = "";
+        logs.textContent = "";
+        logs.hidden = true;
+        status.textContent = "Начинаю загрузку файла…";
+        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю Excel на сервер", running: true, result_ok: false, log_tail: [] });
+        xhr.open("POST", "/api/estimates/upload");
+        xhr.upload.addEventListener("progress", function(ev) {
+          if (!ev.lengthComputable) return;
+          showProgress();
+          const uploadPct = Math.max(2, Math.min(24, Math.round(ev.loaded / ev.total * 24)));
+          renderProgress({ progress: uploadPct, stage: "Отправляю файл", detail: "Передано " + ev.loaded + " из " + ev.total + " байт", running: true, result_ok: false, log_tail: [] });
+        });
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState !== 4) return;
+          let data = {};
+          try { data = JSON.parse(xhr.responseText || "{}"); } catch (e) {}
+          if (xhr.status < 200 || xhr.status >= 300 || !data.ok) {
+            showProgress();
+            renderProgress({
+              progress: 100,
+              stage: "Ошибка",
+              detail: "Загрузка или запуск обработки не удались",
+              running: false,
+              result_ok: false,
+              error: data.message || ("HTTP " + xhr.status),
+              log_tail: []
+            });
+            status.textContent = "Ошибка: " + (data.message || ("HTTP " + xhr.status));
+            return;
+          }
+          showProgress();
+          renderProgress({
+            progress: Math.max(26, Number(data.progress || 26)),
+            stage: data.stage || "Файл получен",
+            detail: data.detail || "Сервер принял файл и начал разбор",
+            running: true,
+            result_ok: false,
+            log_tail: data.log_tail || []
+          });
+          status.textContent = "Файл получен, идёт разбор сметы…";
+          pollJob(data.job_id);
+        };
+        xhr.send(fd);
+      });
+
+      window.deleteEstimateCard = async function(event, btn) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        if (!btn || btn.disabled) return;
+        const estimateId = btn.getAttribute("data-estimate-delete") || "";
+        const title = btn.getAttribute("data-estimate-title") || "эта смета";
+        const ok = confirm(`Удалить смету "${title}"?\n\nБудут удалены карточка сметы, ее строки и сохраненные файлы рынка.`);
+        if (!ok) return;
+        const initialHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = "...";
+        try {
+          const resp = await fetch("/api/estimates/" + encodeURIComponent(estimateId) + "/delete", {
+            method: "POST",
+            headers: { "Accept": "application/json" },
+          });
+          let data = {};
+          try { data = await resp.json(); } catch (err) {}
+          if (!resp.ok || !data.ok) {
+            alert(data.message || ("Не удалось удалить смету (HTTP " + resp.status + ")."));
+            btn.disabled = false;
+            btn.innerHTML = initialHtml;
+            return;
+          }
+          const card = btn.closest("[data-estimate-card]");
+          if (card) {
+            card.remove();
+          } else {
+            window.location.reload();
+            return;
+          }
+          setTimeout(function() { window.location.reload(); }, 120);
+        } catch (err) {
+          alert("Не удалось удалить смету: " + err);
+          btn.disabled = false;
+          btn.innerHTML = initialHtml;
+        }
+      };
+
+      document.addEventListener("click", function(e) {
+        if (e.target.closest("[data-estimate-delete]")) return;
+        const card = e.target.closest("[data-estimate-open]");
+        if (!card) return;
+        if (e.target.closest("a, button, input, textarea, select, label")) return;
+        const href = card.getAttribute("data-estimate-open") || "";
+        if (!href) return;
+        window.location.href = href;
+      });
+    })();
+  </script>
+</body>
+</html>
+"""
+
+
+RESEARCH_TEMPLATE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>Поиск по позиции</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --panel2:#f7fafe; --border:#d9e3ef; --muted:#62748b; --text:#172235; --accent:#1f72dc; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:var(--text); }
+    .page { max-width:1220px; margin:0 auto; padding:26px 18px 44px; }
+    h1 { margin:0 0 8px; font-size:34px; }
+    .sub,.muted { color:var(--muted); }
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 18px; }
+    .tab { display:inline-flex; padding:9px 12px; border-radius:999px; color:#35506f; text-decoration:none; background:#f4f8fd; border:1px solid var(--border); font-weight:700; font-size:13px; }
+    .tab.is-active { color:#fff; background:linear-gradient(180deg,#2e80e8,#1f72dc); border-color:#2e80e8; }
+    .panel,.card { background:linear-gradient(180deg,#ffffff,#f8fbff); border:1px solid var(--border); border-radius:16px; box-shadow:0 18px 45px rgba(28,49,84,.08); }
+    .panel { padding:16px; margin-bottom:16px; }
+    .grid { display:grid; gap:12px; }
+    .form-grid { display:grid; grid-template-columns:minmax(320px,1.4fr) minmax(220px,.8fr); gap:12px; align-items:start; }
+    label { display:grid; gap:6px; color:var(--muted); font-size:12px; }
+    textarea,input { background:#fff; border:1px solid #cfd9e8; color:var(--text); border-radius:12px; padding:12px; font:inherit; }
+    textarea { min-height:180px; resize:vertical; }
+    .btn-row { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+    .btn { border:1px solid #2e80e8; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:white; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; }
+    .btn.secondary { background:#f4f8fd; border-color:#cfd9e8; color:#35506f; }
+    .btn[disabled] { opacity:.6; cursor:not-allowed; }
+    .results { display:grid; gap:12px; }
+    .result-card { padding:14px; background:#fff; border:1px solid #dfe7f1; border-radius:14px; }
+    .result-card h3 { margin:0 0 6px; font-size:18px; }
+    .meta { color:#62748b; font-size:13px; margin-bottom:10px; }
+    .offers { display:grid; gap:10px; }
+    .offer { padding:11px 12px; border-radius:12px; background:#f8fbff; border:1px solid #dfe7f1; }
+    .offer-top { display:flex; justify-content:space-between; gap:12px; margin-bottom:6px; }
+    .offer-source { display:inline-flex; padding:4px 8px; border-radius:999px; background:#edf4fd; border:1px solid #cfd9e8; font-size:12px; color:#35506f; }
+    .offer-price { font-weight:800; color:#2e8b57; white-space:nowrap; }
+    .offer a { color:#1f72dc; font-weight:700; text-decoration:none; }
+    .offer-snippet { margin-top:6px; color:#62748b; font-size:13px; }
+    .empty { padding:16px; text-align:center; color:#62748b; }
+    @media (max-width:760px){ .form-grid{grid-template-columns:1fr} .btn-row{flex-direction:column} .btn{width:100%;box-sizing:border-box} }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Поиск по позиции</h1>
+    <div class="sub">Вставьте одну или несколько позиций, укажите город — и сайт найдёт цены, объявления и ссылки из Авито и обычного интернета.</div>
+    <nav class="tabs" aria-label="Разделы сайта">
+      <a class="tab" href="/tenders">Тендеры</a>
+      <a class="tab" href="/estimates">Сметы</a>
+      <a class="tab is-active" href="/research">Поиск по позиции</a>
+    </nav>
+
+    <section class="panel">
+      <div class="form-grid">
+        <label>Позиции для поиска
+          <textarea id="researchQueries" placeholder="Например:&#10;Керамзитобетон М100 В7,5 D1600&#10;Пескобетон М300&#10;Доставка бетона">{{ default_query }}</textarea>
+        </label>
+        <div class="grid">
+          <label>Город
+            <input id="researchCity" type="text" placeholder="Например: Челябинск" value="{{ default_city }}" />
+          </label>
+          <div class="muted">Можно вставить несколько строк. Я обработаю до 8 позиций за один запуск.</div>
+          <div class="btn-row">
+            <button class="btn" id="researchRunBtn" type="button" onclick="runResearch()">Найти цены</button>
+            <button class="btn secondary" type="button" onclick="fillExample()">Подставить пример</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div id="researchStatus" class="muted">Пока ничего не искали.</div>
+      <div id="researchResults" class="results" style="margin-top:12px;"></div>
+    </section>
+  </div>
+
+  <script>
+    function money(v) {
+      const num = Number(v || 0);
+      if (!Number.isFinite(num) || num <= 0) return "цена не указана";
+      return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(num) + " ₽";
+    }
+
+    function fillExample() {
+      const q = document.getElementById("researchQueries");
+      const c = document.getElementById("researchCity");
+      if (q) q.value = "Керамзитобетон М100 В7,5 D1600";
+      if (c && !c.value.trim()) c.value = "Челябинск";
+    }
+
+    function renderResearch(data) {
+      const root = document.getElementById("researchResults");
+      const status = document.getElementById("researchStatus");
+      if (!root || !status) return;
+      root.replaceChildren();
+      const items = Array.isArray(data.results) ? data.results : [];
+      status.textContent = data.message || (items.length ? "Готово." : "Ничего не найдено.");
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "Нет результатов.";
+        root.appendChild(empty);
+        return;
+      }
+      for (const item of items) {
+        const card = document.createElement("div");
+        card.className = "result-card";
+        const h = document.createElement("h3");
+        h.textContent = String(item.query || "");
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const prices = Array.isArray(item.offers) ? item.offers.map(x => Number(x.price || 0)).filter(x => Number.isFinite(x) && x > 0) : [];
+        const cityText = item.region ? (" · город: " + item.region) : "";
+        meta.textContent = "Источников: " + (item.offers ? item.offers.length : 0) + cityText + (prices.length ? (" · диапазон: " + money(Math.min(...prices)) + " — " + money(Math.max(...prices))) : "");
+        card.appendChild(h);
+        card.appendChild(meta);
+        const offersWrap = document.createElement("div");
+        offersWrap.className = "offers";
+        const offers = Array.isArray(item.offers) ? item.offers : [];
+        if (!offers.length) {
+          const empty = document.createElement("div");
+          empty.className = "offer";
+          empty.textContent = item.errors || "Ничего не найдено.";
+          offersWrap.appendChild(empty);
+        } else {
+          for (const offer of offers) {
+            const box = document.createElement("div");
+            box.className = "offer";
+            const top = document.createElement("div");
+            top.className = "offer-top";
+            const source = document.createElement("span");
+            source.className = "offer-source";
+            source.textContent = String(offer.source || "Источник");
+            const price = document.createElement("span");
+            price.className = "offer-price";
+            price.textContent = money(offer.price);
+            top.appendChild(source);
+            top.appendChild(price);
+            const link = document.createElement("a");
+            link.href = String(offer.url || "#");
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = String(offer.title || offer.url || "Открыть источник");
+            box.appendChild(top);
+            box.appendChild(link);
+            if (offer.snippet) {
+              const sn = document.createElement("div");
+              sn.className = "offer-snippet";
+              sn.textContent = String(offer.snippet);
+              box.appendChild(sn);
+            }
+            offersWrap.appendChild(box);
+          }
+        }
+        if (item.errors && offers.length) {
+          const warn = document.createElement("div");
+          warn.className = "meta";
+          warn.textContent = "Ограничения поиска: " + item.errors;
+          card.appendChild(warn);
+        }
+        card.appendChild(offersWrap);
+        root.appendChild(card);
+      }
+    }
+
+    async function runResearch() {
+      const btn = document.getElementById("researchRunBtn");
+      const status = document.getElementById("researchStatus");
+      const queries = document.getElementById("researchQueries");
+      const city = document.getElementById("researchCity");
+      if (!queries) return;
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = "Ищу цены по Авито и интернету…";
+      try {
+        const resp = await fetch("/api/research-items", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            queries: String(queries.value || ""),
+            city: city ? String(city.value || "").trim() : ""
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          if (status) status.textContent = data.message || "Не удалось выполнить поиск.";
+          return;
+        }
+        renderResearch(data);
+      } catch (e) {
+        if (status) status.textContent = "Не удалось выполнить поиск.";
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
   </script>
 </body>
 </html>
@@ -3394,66 +6199,194 @@ ESTIMATE_DETAIL_TEMPLATE = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>{{ meta.title }} · Смета</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a30; --border:#2a385f; --muted:#9fb0d6; --text:#e8eefc; --accent:#4f8cff; }
-    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#0b1020; color:var(--text); }
-    .page { max-width:1380px; margin:0 auto; padding:24px 16px 42px; }
-    a { color:#9fc2ff; }
-    h1 { margin:0 0 8px; font-size:28px; }
+    :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --border:#d9e3ef; --muted:#62748b; --text:#172235; --accent:#1f72dc; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:var(--text); }
+    .page { max-width:1240px; margin:0 auto; padding:18px 14px 34px; }
+    a { color:#1f72dc; }
+    .page-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px; }
+    .page-head-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .top-back {
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding:9px 13px;
+      border-radius:999px;
+      border:1px solid #cfd9e8;
+      background:linear-gradient(180deg,#ffffff,#f4f8fd);
+      color:#35506f;
+      text-decoration:none;
+      font-size:13px;
+      font-weight:700;
+      box-shadow:0 10px 24px rgba(43, 78, 131, 0.08);
+    }
+    .top-back:hover { background:#eef5fd; border-color:#9ec0ef; color:#173a65; }
+    h1 { margin:0 0 6px; font-size:24px; }
     .muted { color:var(--muted); }
-    .panel { background:rgba(18,26,48,.94); border:1px solid var(--border); border-radius:16px; padding:15px; margin-bottom:14px; }
-    .filters { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
-    label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
-    input,select { background:#0c1325; border:1px solid #33466f; color:var(--text); border-radius:10px; padding:10px; min-width:220px; }
-    .btn { border:1px solid #5b7ddd; background:linear-gradient(180deg,#3b61ba,#294c9c); color:white; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; }
-    .btn.secondary { background:#26364f; border-color:#3a4c70; color:#dce7ff; }
+    .panel { background:linear-gradient(180deg,#ffffff,#f8fbff); border:1px solid var(--border); border-radius:16px; padding:12px; margin-bottom:12px; box-shadow:0 16px 34px rgba(28,49,84,.08); }
+    .filters { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
+    label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
+    input,select,textarea { background:#fff; border:1px solid #cfd9e8; color:var(--text); border-radius:10px; padding:8px 10px; min-width:190px; }
+    textarea { min-height:96px; resize:vertical; font-family:inherit; }
+    .btn { border:1px solid #2e80e8; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:white; border-radius:10px; padding:8px 12px; font-weight:700; cursor:pointer; text-decoration:none; font-size:12px; display:inline-flex; align-items:center; justify-content:center; }
+    .btn.secondary { background:#f4f8fd; border-color:#cfd9e8; color:#35506f; }
+    .btn.danger-soft { background:linear-gradient(180deg,#fff4f4,#fdeaea); border-color:#efcaca; color:#a24c4c; }
+    .btn.danger-soft:hover { background:linear-gradient(180deg,#feecec,#fbdede); border-color:#e5b2b2; color:#933f3f; }
+    .btn.icon-only { width:38px; height:38px; padding:0; border-radius:999px; }
+    .btn.icon-only:disabled { opacity:.6; cursor:wait; }
+    .icon-trash {
+      width: 16px;
+      height: 16px;
+      display: block;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+    .btn.is-stop { background:linear-gradient(180deg,#f7e2e2,#efcdcd); border-color:#ddb1b1; color:#8a3f3f; }
+    .btn.is-stop:hover { background:linear-gradient(180deg,#f4d6d6,#ebc2c2); border-color:#d39c9c; color:#7a3232; }
     .actions-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-    .type-picker { margin-top:12px; padding:14px; background:#10182c; border:1px solid #2a3a5c; border-radius:14px; }
-    .type-picker-title { margin:0 0 10px; font-size:14px; font-weight:700; color:#dce7ff; }
-    .type-checks { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
-    .type-check { display:flex; align-items:flex-start; gap:10px; padding:11px 12px; background:#0c1325; border:1px solid #2b3d60; border-radius:12px; min-height:58px; }
-    .type-check input { min-width:18px; width:18px; height:18px; margin-top:2px; accent-color:#5f8fff; }
-    .type-check strong { display:block; font-size:14px; color:#eef4ff; }
-    .type-check span { display:block; color:#9fb0d6; font-size:12px; margin-top:2px; }
+    .crm-callout { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; padding:10px 12px; border-radius:14px; background:linear-gradient(180deg,#eef5ff,#f7fbff); border:1px solid #d7e5f6; }
+    .crm-callout-note { color:#45627f; font-size:12px; line-height:1.45; }
+    .crm-callout-note strong { color:#1b2a41; }
+    .type-picker { margin-top:10px; padding:10px; background:#f8fbff; border:1px solid #dfe7f1; border-radius:14px; }
+    .type-picker-title { margin:0 0 8px; font-size:13px; font-weight:700; color:#1b2a41; }
+    .type-checks { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }
+    .type-check { display:flex; align-items:flex-start; gap:8px; padding:8px 10px; background:#fff; border:1px solid #dfe7f1; border-radius:12px; min-height:48px; }
+    .type-check input { min-width:18px; width:18px; height:18px; margin-top:2px; accent-color:#2e80e8; }
+    .type-check strong { display:block; font-size:13px; color:#1b2a41; }
+    .type-check span { display:block; color:#62748b; font-size:11px; margin-top:2px; }
     .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
-    .summary-item { padding:11px; background:#0c1325; border:1px solid #263858; border-radius:12px; }
+    .summary-item { padding:9px 10px; background:#fff; border:1px solid #dfe7f1; border-radius:12px; }
     .summary-item span { display:block; color:var(--muted); font-size:11px; }
-    .summary-item b { display:block; margin-top:4px; font-size:16px; }
-    .table-wrap { overflow:auto; border-radius:14px; border:1px solid var(--border); background:#0c1325; }
-    table { width:100%; border-collapse:collapse; font-size:12px; min-width:980px; }
-    th,td { padding:8px 9px; border-bottom:1px solid #223150; vertical-align:top; }
-    th { position:sticky; top:0; background:#121c34; color:#bfd2ff; text-align:left; z-index:1; }
-    tr:hover td { background:rgba(79,140,255,.07); }
-    tr.section-row td { background:#14213d; color:#eaf1ff; font-weight:700; border-bottom-color:#31456d; }
-    tr.section-row:hover td { background:#14213d; }
-    tr.sheet-total-row td { background:#16233f; color:#ffd8d8; font-weight:700; border-top:1px solid #6f3d4a; border-bottom:1px solid #6f3d4a; }
-    tr.sheet-break-row td { background:#4a1f2a; border-bottom:0; height:14px; padding:0; }
+    .summary-item b { display:block; margin-top:4px; font-size:15px; }
+    .download-box { margin-top:10px; padding:10px; background:#f8fbff; border:1px solid #dfe7f1; border-radius:12px; }
+    .download-title { margin:0 0 8px; font-size:13px; font-weight:700; color:#1b2a41; }
+    .download-links { display:flex; flex-wrap:wrap; gap:8px; }
+    .download-note { margin-top:8px; color:#62748b; font-size:11px; line-height:1.35; }
+    .table-switch { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .table-switch .btn.is-active { background:linear-gradient(180deg,#2e80e8,#1f72dc); border-color:#2e80e8; color:#fff; }
+    .table-switch .btn[disabled] { opacity:.45; cursor:not-allowed; }
+    .table-panel[hidden] { display:none; }
+    .table-panel-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:center; margin-bottom:8px; }
+    .table-panel-title { margin:0; font-size:15px; color:#1b2a41; }
+    .viability-box { margin-top:10px; padding:12px; border-radius:14px; border:1px solid #c6d8f0; background:linear-gradient(180deg,#f7fbff,#eef5fd); }
+    .viability-box.good { border-color:#bfe5cc; background:linear-gradient(180deg,#f3fcf6,#e8f8ee); }
+    .viability-box.warn { border-color:#f0deb1; background:linear-gradient(180deg,#fffaf0,#fff4dd); }
+    .viability-box.bad { border-color:#f0c5c5; background:linear-gradient(180deg,#fff7f7,#fff0f0); }
+    .viability-title { margin:0; font-size:24px; font-weight:800; letter-spacing:.04em; }
+    .viability-sub { margin-top:6px; color:#445870; font-size:13px; line-height:1.45; }
+    .viability-facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; margin-top:10px; }
+    .viability-fact { padding:9px 10px; border-radius:12px; background:#fff; border:1px solid #dfe7f1; }
+    .viability-fact span { display:block; font-size:10px; color:#62748b; text-transform:uppercase; letter-spacing:.06em; }
+    .viability-fact b { display:block; margin-top:4px; font-size:16px; color:#1b2a41; }
+    .viability-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; margin-top:10px; }
+    .viability-group { padding:10px; border-radius:12px; background:#fff; border:1px solid #dfe7f1; }
+    .viability-group-title { font-size:13px; font-weight:700; color:#1b2a41; margin-bottom:6px; }
+    .viability-group-line { font-size:11px; color:#4e6582; line-height:1.4; }
+    .tone-good { color:#2e8b57; }
+    .tone-warn { color:#a06b18; }
+    .tone-bad { color:#c05757; }
+    .table-wrap { overflow:visible; border-radius:14px; border:1px solid var(--border); background:#fff; position:relative; }
+    .table-scroll { overflow-x:auto; overflow-y:visible; border-radius:14px; }
+    table { width:100%; border-collapse:collapse; font-size:11px; min-width:900px; }
+    th,td { padding:6px 7px; border-bottom:1px solid #e5ecf4; vertical-align:top; }
+    th { position:sticky; top:72px; background:#f1f6fc; color:#35506f; text-align:left; z-index:12; }
+    tr:hover td { background:#f7faff; }
+    tr.section-row td { background:#edf4fd; color:#1b2a41; font-weight:700; border-bottom-color:#d4e0ef; }
+    tr.section-row:hover td { background:#edf4fd; }
+    tr.sheet-total-row td { background:#fff3f3; color:#a94444; font-weight:700; border-top:1px solid #f0c5c5; border-bottom:1px solid #f0c5c5; }
+    tr.sheet-break-row td { background:#f9dde0; border-bottom:0; height:14px; padding:0; }
     .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-    .name { min-width:360px; }
-    .tag { display:inline-flex; border-radius:999px; padding:3px 8px; border:1px solid #3a4c70; background:#18243d; color:#cfe0ff; font-size:11px; white-space:nowrap; }
-    .where { color:#91a3c8; font-size:11px; line-height:1.35; }
+    .name { min-width:300px; }
+    .tag { display:inline-flex; border-radius:999px; padding:2px 7px; border:1px solid #cfd9e8; background:#f4f8fd; color:#35506f; font-size:10px; white-space:nowrap; }
+    .where { color:#62748b; font-size:10px; line-height:1.3; }
     .market-box { display:grid; gap:10px; }
-    .status-box { background:#0c1325; border:1px solid #263858; border-radius:12px; padding:12px; }
+    .market-links { display:flex; flex-wrap:wrap; gap:10px; }
+    .market-link-chip { display:inline-flex; align-items:center; gap:8px; text-decoration:none; border:1px solid #cfd9e8; background:#fff; color:#1f3957; border-radius:12px; padding:10px 14px; font-weight:700; }
+    .market-link-chip:hover { border-color:#9ec0ef; color:#173a65; background:#f5f9ff; }
+    .market-links-note { font-size:12px; line-height:1.45; }
+    .status-box { background:#f8fbff; border:1px solid #dfe7f1; border-radius:12px; padding:12px; }
     .status-line { color:var(--muted); font-size:12px; }
-    .logs { margin:0; background:#0a1020; border:1px solid #223150; border-radius:12px; padding:10px; max-height:200px; overflow:auto; white-space:pre-wrap; font-size:12px; color:#dbe6ff; }
-    @media (max-width:760px){ .filters{align-items:stretch;flex-direction:column}.btn,input,select{width:100%;box-sizing:border-box} }
+    .logs { margin:0; background:#fff; border:1px solid #dfe7f1; border-radius:12px; padding:10px; max-height:200px; overflow:auto; white-space:pre-wrap; font-size:12px; color:#576a84; }
+    .crm-drawer[hidden] { display:none; }
+    .crm-drawer { position:fixed; inset:0; z-index:90; }
+    .crm-drawer-backdrop {
+      position:absolute;
+      inset:0;
+      background:rgba(17, 32, 53, 0.34);
+      backdrop-filter:blur(2px);
+      opacity:0;
+      transition:opacity .26s ease;
+    }
+    .crm-drawer-panel {
+      position:absolute;
+      top:0;
+      right:0;
+      width:min(50vw, 760px);
+      height:100%;
+      background:linear-gradient(180deg,#ffffff,#f8fbff);
+      border-left:1px solid #dfe7f1;
+      box-shadow:-16px 0 40px rgba(33, 63, 110, 0.14);
+      display:flex;
+      flex-direction:column;
+      transform:translateX(100%);
+      transition:transform .3s cubic-bezier(.2,.8,.2,1);
+    }
+    .crm-drawer.is-open .crm-drawer-backdrop { opacity:1; }
+    .crm-drawer.is-open .crm-drawer-panel { transform:translateX(0); }
+    .crm-drawer-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:18px 18px 12px; border-bottom:1px solid #e6edf6; }
+    .crm-drawer-title { margin:0; font-size:20px; color:#1b2a41; }
+    .crm-drawer-sub { margin:6px 0 0; color:#62748b; font-size:12px; line-height:1.45; }
+    .crm-drawer-close { border:1px solid #d8e2ef; background:#f7fbff; color:#506985; border-radius:10px; padding:8px 10px; font-size:12px; font-weight:700; cursor:pointer; }
+    .crm-drawer-body { padding:14px 18px 18px; overflow:auto; display:grid; gap:12px; }
+    .crm-source-card { padding:12px; border-radius:14px; border:1px solid #dfe7f1; background:linear-gradient(180deg,#eef5ff,#f8fbff); }
+    .crm-source-card strong { display:block; color:#1b2a41; font-size:14px; }
+    .crm-source-card span { display:block; margin-top:4px; color:#62748b; font-size:12px; line-height:1.45; }
+    .crm-form-grid { display:grid; gap:10px; }
+    .crm-form-grid label { font-size:12px; }
+    .crm-status { min-height:18px; color:#62748b; font-size:12px; line-height:1.4; }
+    .crm-status.is-error { color:#b14b4b; }
+    .crm-status.is-success { color:#257347; }
+    .crm-drawer-foot { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; padding-top:4px; }
+    @media (max-width:760px){
+      .filters{align-items:stretch;flex-direction:column}
+      .btn,input,select,textarea{width:100%;box-sizing:border-box}
+      .crm-drawer-panel { width:100vw; }
+    }
   </style>
 </head>
 <body>
   <div class="page">
-    <p style="margin:0 0 10px;"><a href="/estimates">← Все сметы</a> · <a href="/">Тендеры</a></p>
+    <div class="page-head">
+      <a class="top-back" href="/estimates">← Все сметы</a>
+      <div class="page-head-actions">
+        <button class="btn danger-soft icon-only" type="button" onclick="deleteEstimate(this)" title="Удалить смету" aria-label="Удалить смету">
+          <svg class="icon-trash" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16"></path>
+            <path d="M10 11v6"></path>
+            <path d="M14 11v6"></path>
+            <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"></path>
+            <path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
     <h1>{{ meta.title }}</h1>
     <div class="muted">{{ meta.original_filename }} · загружено {{ meta.created_at }} · всего строк {{ meta.row_count }}</div>
 
     <section class="panel">
       <form class="filters" method="get" action="/estimates/{{ meta.id }}" id="estimateFilterForm">
+        <input type="hidden" name="table_view" id="estimateTableViewInput" value="{{ active_table_view }}" />
         <label>Поиск по наименованию
           <input type="text" name="q" value="{{ q }}" placeholder="например: бетон, демонтаж, труба" />
         </label>
         <button class="btn" type="submit">Применить</button>
         <a class="btn secondary" href="/estimates/{{ meta.id }}">Сбросить</a>
-        <a class="btn" href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}">Скачать Excel</a>
       </form>
       <div class="type-picker">
         <div class="type-picker-title">Фильтр по типам позиций</div>
@@ -3475,6 +6408,72 @@ ESTIMATE_DETAIL_TEMPLATE = """
         <div class="summary-item"><span>Общая сумма</span><b>{{ summary.total_sum_fmt }}</b></div>
         <div class="summary-item"><span>Средняя цена</span><b>{{ summary.avg_price_fmt }}</b></div>
       </div>
+      <div class="crm-callout">
+        <button class="btn" id="estimateCrmOpenBtn" type="button">Добавить в объекты</button>
+        <div class="crm-callout-note">
+          На основе сметы <strong>{{ crm_prefill.estimate_title }}</strong>. Поля объекта можно открыть и отредактировать перед созданием.
+        </div>
+      </div>
+      <div class="download-box">
+        <div class="download-title">Таблица ниже</div>
+        <div class="table-switch">
+          <button class="btn secondary{% if active_table_view == 'estimate' %} is-active{% endif %}" type="button" data-estimate-view-btn="estimate" data-download-href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" data-download-label="Смета">Смета</button>
+          <button class="btn secondary{% if active_table_view == 'compare' %} is-active{% endif %}" type="button" data-estimate-view-btn="compare" data-download-href="/estimates/{{ meta.id }}/market-compare.xlsx?{{ filter_query }}" data-download-label="Смета vs Рынок" {% if not compare_table.available %}disabled{% endif %}>Смета vs Рынок</button>
+          <button class="btn secondary{% if active_table_view == 'sources' %} is-active{% endif %}" type="button" data-estimate-view-btn="sources" data-download-href="/estimates/{{ meta.id }}/market-sources.xlsx?{{ filter_query }}" data-download-label="Источники цен" {% if not sources_table.available %}disabled{% endif %}>Источники цен</button>
+          <a class="btn" id="activeTableDownloadBtn" href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}">Скачать Excel</a>
+        </div>
+        <div class="download-note">Сначала выберите нужную таблицу, потом нажмите скачать Excel для текущей вкладки.</div>
+      </div>
+      {% if viability.title %}
+      <div class="viability-box {{ viability.tone }}">
+        <h2 class="viability-title">{{ viability.title }}</h2>
+        <div class="viability-sub">{{ viability.subtitle }}</div>
+        {% if viability.facts %}
+        <div class="viability-facts">
+          {% for fact in viability.facts %}
+          <div class="viability-fact">
+            <span>{{ fact.label }}</span>
+            <b>{{ fact.value }}</b>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if viability.groups %}
+        <div class="viability-groups">
+          {% for group in viability.groups %}
+          <div class="viability-group">
+            <div class="viability-group-title">{{ group.title }}</div>
+            <div class="viability-group-line"><span class="tone-good">Выше рынка: {{ group.good }}</span></div>
+            <div class="viability-group-line"><span class="tone-warn">Около рынка: {{ group.warn }}</span></div>
+            <div class="viability-group-line"><span class="tone-bad">Ниже рынка: {{ group.bad }}</span></div>
+            <div class="viability-group-line">Без данных: {{ group.none }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <div style="display:grid;gap:10px;">
+        <div>
+          <h2 style="margin:0 0 8px;">Сравнение по найденным ценам</h2>
+          <div class="muted market-links-note">Откройте нужный тип позиций, чтобы посмотреть сайты, цены и найденные источники.</div>
+        </div>
+        {% if market_links %}
+        <div class="market-links">
+          {% for link in market_links %}
+          <a class="market-link-chip" href="{{ link.href }}">{{ link.label }} · {{ link.count }}</a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="status-box">
+          <div>Пока нет сохранённых сравнений по текущему фильтру.</div>
+          <div class="status-line">Запустите поиск цен, затем обновите страницу — здесь появятся ссылки на отдельные страницы сравнения.</div>
+        </div>
+        {% endif %}
+      </div>
     </section>
 
     <section class="panel">
@@ -3487,9 +6486,9 @@ ESTIMATE_DETAIL_TEMPLATE = """
           <label>Город для поиска
             <input type="text" id="marketCityInput" value="{{ market_city }}" placeholder="например: Челябинск" />
           </label>
-          <button class="btn" type="button" id="marketStartBtn" onclick="startEstimateMarket()">Найти цены</button>
-          <a class="btn secondary" id="marketMergedBtn" href="/estimates/{{ meta.id }}/market-compare.xlsx" {% if not has_market_merged %}hidden{% endif %}>Скачать сравнение рынка</a>
-          <a class="btn secondary" id="marketRawBtn" href="/estimates/{{ meta.id }}/market-sources.xlsx" {% if not has_market_raw %}hidden{% endif %}>Скачать источники рынка</a>
+          <button class="btn" type="button" id="marketStartBtn" onclick="toggleEstimateMarket()">Найти цены</button>
+          <a class="btn secondary" id="marketMergedBtn" href="/estimates/{{ meta.id }}/market-compare.xlsx" {% if not has_market_merged %}hidden{% endif %}>Excel: смета vs рынок</a>
+          <a class="btn secondary" id="marketRawBtn" href="/estimates/{{ meta.id }}/market-sources.xlsx" {% if not has_market_raw %}hidden{% endif %}>Excel: источники рынка</a>
         </div>
         <div class="status-box">
           <div id="marketStatusMain">Пока поиск рынка не запускался.</div>
@@ -3500,7 +6499,12 @@ ESTIMATE_DETAIL_TEMPLATE = """
     </section>
 
     <section class="panel">
+      <div class="table-panel" data-estimate-view-panel="estimate" {% if active_table_view != 'estimate' %}hidden{% endif %}>
+        <div class="table-panel-head">
+          <h2 class="table-panel-title">Смета</h2>
+        </div>
       <div class="table-wrap">
+        <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -3551,10 +6555,322 @@ ESTIMATE_DETAIL_TEMPLATE = """
             {% endif %}
           </tbody>
         </table>
+        </div>
+      </div>
+      </div>
+      <div class="table-panel" data-estimate-view-panel="compare" {% if active_table_view != 'compare' %}hidden{% endif %}>
+        <div class="table-panel-head">
+          <h2 class="table-panel-title">Смета vs Рынок</h2>
+        </div>
+        {% if compare_table.available %}
+        <div class="table-wrap">
+          <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Раздел</th>
+                <th>Тип</th>
+                <th class="name">Наименование</th>
+                <th class="num">Цена сметы</th>
+                <th class="num">Цена рынка</th>
+                <th>Сайт</th>
+                <th>Вывод</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in compare_rows %}
+              <tr>
+                <td class="where">{{ row.section }}</td>
+                <td><span class="tag">{{ row.type_label }}</span></td>
+                <td class="name">{{ row.name }}</td>
+                <td class="num">{{ row.estimate_price }}</td>
+                <td class="num">{{ row.market_price }}</td>
+                <td class="where">
+                  {% if row.site_url %}
+                  <a href="{{ row.site_url }}" target="_blank" rel="noopener noreferrer">{{ row.site }}</a>
+                  {% else %}
+                  {{ row.site }}
+                  {% endif %}
+                </td>
+                <td class="where">
+                  {% if row.compare_class == 'good' %}
+                  <span class="tone-good">{{ row.status }}</span>
+                  {% elif row.compare_class == 'bad' %}
+                  <span class="tone-bad">{{ row.status }}</span>
+                  {% else %}
+                  <span class="tone-warn">{{ row.status }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        {% else %}
+        <div class="status-box">Сравнение рынка пока не готово. Сначала выполните поиск цен по этой смете.</div>
+        {% endif %}
+      </div>
+      <div class="table-panel" data-estimate-view-panel="sources" {% if active_table_view != 'sources' %}hidden{% endif %}>
+        <div class="table-panel-head">
+          <h2 class="table-panel-title">Источники цен</h2>
+        </div>
+        {% if sources_table.available %}
+        <div class="table-wrap">
+          <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Раздел</th>
+                <th class="name">Наименование</th>
+                <th>Цена рынка</th>
+                <th>Сайт</th>
+                <th>Статус</th>
+                <th>Запрос</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in source_rows %}
+              <tr>
+                <td class="where">{{ row.section }}</td>
+                <td class="name">{{ row.name }}</td>
+                <td class="where">{{ row.market_price }}</td>
+                <td class="where">{{ row.site }}</td>
+                <td class="where">{{ row.status }}</td>
+                <td class="where">{{ row.query }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        {% else %}
+        <div class="status-box">Источники цен пока не готовы. Сначала выполните поиск цен по этой смете.</div>
+        {% endif %}
       </div>
     </section>
   </div>
+  <div class="crm-drawer" id="estimateCrmDrawer" hidden>
+    <div class="crm-drawer-backdrop" id="estimateCrmBackdrop"></div>
+    <aside class="crm-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="estimateCrmDrawerTitle">
+      <div class="crm-drawer-head">
+        <div>
+          <h2 class="crm-drawer-title" id="estimateCrmDrawerTitle">Создание объекта</h2>
+          <div class="crm-drawer-sub">Данные уже подставлены из сметы. При необходимости их можно поправить перед отправкой в CRM.</div>
+        </div>
+        <button class="crm-drawer-close" id="estimateCrmCloseBtn" type="button">Закрыть</button>
+      </div>
+      <div class="crm-drawer-body">
+        <div class="crm-source-card">
+          <strong>На основе сметы: {{ crm_prefill.estimate_title }}</strong>
+          <span>{{ crm_prefill.original_filename }} · строк: {{ crm_prefill.row_count }} · сумма: {{ crm_prefill.total_sum_fmt }}</span>
+        </div>
+        <form id="estimateCrmForm" class="crm-form-grid">
+          <label>Название объекта
+            <input type="text" id="estimateCrmTitle" name="title" required />
+          </label>
+          <label>Клиент / заказчик
+            <input type="text" id="estimateCrmClient" name="client_name" />
+          </label>
+          <label>Адрес
+            <input type="text" id="estimateCrmAddress" name="address" />
+          </label>
+          <label>Регион
+            <input type="text" id="estimateCrmRegion" name="region" />
+          </label>
+          <label>Код / договор
+            <input type="text" id="estimateCrmContractNo" name="contract_no" />
+          </label>
+          <label>Бюджет
+            <input type="text" id="estimateCrmBudget" name="budget" inputmode="decimal" />
+          </label>
+          <label>Описание
+            <textarea id="estimateCrmDescription" name="description"></textarea>
+          </label>
+          <div class="crm-status" id="estimateCrmStatus"></div>
+          <div class="crm-drawer-foot">
+            <button class="btn secondary" id="estimateCrmCancelBtn" type="button">Отмена</button>
+            <button class="btn" type="submit" id="estimateCrmSubmitBtn">Создать объект</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+  </div>
   <script>
+    let estimateMarketRenderFresh = {{ 'true' if (compare_table.available or sources_table.available) else 'false' }};
+    let estimateMarketReloadPending = false;
+    let estimateCrmDrawerTimer = null;
+    const estimateCrmPrefill = {{ crm_prefill|tojson }};
+
+    function setEstimateCrmStatus(message, tone) {
+      const box = document.getElementById("estimateCrmStatus");
+      if (!box) return;
+      box.textContent = message || "";
+      box.classList.toggle("is-error", tone === "error");
+      box.classList.toggle("is-success", tone === "success");
+    }
+
+    function fillEstimateCrmForm(data) {
+      const project = data && data.project ? data.project : {};
+      const budget = project.budget == null ? "" : String(project.budget);
+      const map = {
+        estimateCrmTitle: project.title || "",
+        estimateCrmClient: project.client_name || "",
+        estimateCrmAddress: project.address || "",
+        estimateCrmRegion: project.region || "",
+        estimateCrmContractNo: project.contract_no || "",
+        estimateCrmBudget: budget,
+        estimateCrmDescription: project.description || "",
+      };
+      Object.entries(map).forEach(([id, value]) => {
+        const node = document.getElementById(id);
+        if (node) node.value = value;
+      });
+    }
+
+    function getEstimateCrmFieldValue(id) {
+      const node = document.getElementById(id);
+      return node ? (node.value || "") : "";
+    }
+
+    window.openEstimateCrmDrawer = function() {
+      const drawer = document.getElementById("estimateCrmDrawer");
+      if (!drawer) return;
+      if (estimateCrmDrawerTimer) {
+        clearTimeout(estimateCrmDrawerTimer);
+        estimateCrmDrawerTimer = null;
+      }
+      fillEstimateCrmForm(estimateCrmPrefill);
+      setEstimateCrmStatus("На основе сметы «" + (estimateCrmPrefill.estimate_title || "") + "». Поля можно поправить перед созданием объекта.", "");
+      drawer.hidden = false;
+      requestAnimationFrame(() => drawer.classList.add("is-open"));
+      document.body.style.overflow = "hidden";
+    };
+
+    window.closeEstimateCrmDrawer = function() {
+      const drawer = document.getElementById("estimateCrmDrawer");
+      if (!drawer) return;
+      drawer.classList.remove("is-open");
+      if (estimateCrmDrawerTimer) clearTimeout(estimateCrmDrawerTimer);
+      estimateCrmDrawerTimer = setTimeout(() => {
+        drawer.hidden = true;
+        estimateCrmDrawerTimer = null;
+      }, 320);
+      document.body.style.overflow = "";
+    };
+
+    window.submitEstimateCrmForm = async function(event) {
+      event.preventDefault();
+      const submitBtn = document.getElementById("estimateCrmSubmitBtn");
+      if (submitBtn) submitBtn.disabled = true;
+      const payload = {
+        title: getEstimateCrmFieldValue("estimateCrmTitle"),
+        client_name: getEstimateCrmFieldValue("estimateCrmClient"),
+        address: getEstimateCrmFieldValue("estimateCrmAddress"),
+        region: getEstimateCrmFieldValue("estimateCrmRegion"),
+        contract_no: getEstimateCrmFieldValue("estimateCrmContractNo"),
+        budget: getEstimateCrmFieldValue("estimateCrmBudget"),
+        description: getEstimateCrmFieldValue("estimateCrmDescription"),
+      };
+      setEstimateCrmStatus("Создаю объект в CRM…", "");
+      try {
+        const resp = await fetch("/api/estimates/{{ meta.id }}/export-to-crm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        let data = {};
+        try { data = await resp.json(); } catch (e) {}
+        if (!resp.ok || !data.ok) {
+          setEstimateCrmStatus(data.message || ("Не удалось создать объект (HTTP " + resp.status + ")."), "error");
+          return;
+        }
+        if (data.already_exists) {
+          setEstimateCrmStatus("Этот объект уже есть в CRM: #" + data.project_id + ".", "success");
+          if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+          return;
+        }
+        const summary = data.summary || {};
+        setEstimateCrmStatus("Готово: объект #" + data.project_id + " создан. Материалов отправлено: " + (data.materials_sent || 0) + ".", "success");
+        if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+      } catch (e) {
+        setEstimateCrmStatus("Не удалось отправить данные в CRM: " + e, "error");
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
+      }
+    };
+
+    const estimateCrmOpenBtn = document.getElementById("estimateCrmOpenBtn");
+    if (estimateCrmOpenBtn) estimateCrmOpenBtn.addEventListener("click", window.openEstimateCrmDrawer);
+    const estimateCrmBackdrop = document.getElementById("estimateCrmBackdrop");
+    if (estimateCrmBackdrop) estimateCrmBackdrop.addEventListener("click", window.closeEstimateCrmDrawer);
+    const estimateCrmCloseBtn = document.getElementById("estimateCrmCloseBtn");
+    if (estimateCrmCloseBtn) estimateCrmCloseBtn.addEventListener("click", window.closeEstimateCrmDrawer);
+    const estimateCrmCancelBtn = document.getElementById("estimateCrmCancelBtn");
+    if (estimateCrmCancelBtn) estimateCrmCancelBtn.addEventListener("click", window.closeEstimateCrmDrawer);
+    const estimateCrmForm = document.getElementById("estimateCrmForm");
+    if (estimateCrmForm) estimateCrmForm.addEventListener("submit", window.submitEstimateCrmForm);
+
+    async function deleteEstimate(btn) {
+      const title = String({{ meta.title|tojson }});
+      const ok = confirm(`Удалить смету "${title}"?\n\nБудут удалены карточка сметы, её строки и все сохранённые файлы рынка по этой смете.`);
+      if (!ok) return;
+      const initialHtml = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "...";
+      }
+      try {
+        const resp = await fetch("/api/estimates/{{ meta.id }}/delete", {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+        });
+        let data = {};
+        try { data = await resp.json(); } catch (e) {}
+        if (!resp.ok || !data.ok) {
+          alert(data.message || ("Не удалось удалить смету (HTTP " + resp.status + ")."));
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = initialHtml;
+          }
+          return;
+        }
+        window.location.href = "/estimates";
+      } catch (e) {
+        alert("Не удалось удалить смету: " + e);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = initialHtml;
+        }
+      }
+    }
+
+    function setEstimateTableView(viewKey) {
+      const buttons = Array.from(document.querySelectorAll("[data-estimate-view-btn]"));
+      const panels = Array.from(document.querySelectorAll("[data-estimate-view-panel]"));
+      const activeBtn = buttons.find((btn) => btn.getAttribute("data-estimate-view-btn") === viewKey && !btn.disabled) || buttons.find((btn) => !btn.disabled);
+      const nextKey = activeBtn ? activeBtn.getAttribute("data-estimate-view-btn") : "estimate";
+      buttons.forEach((btn) => btn.classList.toggle("is-active", btn === activeBtn));
+      panels.forEach((panel) => {
+        panel.hidden = panel.getAttribute("data-estimate-view-panel") !== nextKey;
+      });
+      const hiddenInput = document.getElementById("estimateTableViewInput");
+      if (hiddenInput) hiddenInput.value = nextKey;
+      const downloadBtn = document.getElementById("activeTableDownloadBtn");
+      if (downloadBtn && activeBtn) {
+        downloadBtn.href = activeBtn.getAttribute("data-download-href") || "#";
+        const label = activeBtn.getAttribute("data-download-label") || "";
+        downloadBtn.textContent = label ? ("Скачать Excel: " + label) : "Скачать Excel";
+      }
+    }
+
+    document.querySelectorAll("[data-estimate-view-btn]").forEach((btn) => {
+      btn.addEventListener("click", function() {
+        if (btn.disabled) return;
+        setEstimateTableView(btn.getAttribute("data-estimate-view-btn") || "estimate");
+      });
+    });
+
     async function refreshEstimateMarketStatus() {
       try {
         const resp = await fetch("/api/estimates/{{ meta.id }}/market-status");
@@ -3566,9 +6882,26 @@ ESTIMATE_DETAIL_TEMPLATE = """
         const startBtn = document.getElementById("marketStartBtn");
         const mergedBtn = document.getElementById("marketMergedBtn");
         const rawBtn = document.getElementById("marketRawBtn");
-        if (startBtn) startBtn.disabled = !!data.running;
+        const compareBtn = document.querySelector('[data-estimate-view-btn="compare"]');
+        const sourcesBtn = document.querySelector('[data-estimate-view-btn="sources"]');
+        if (startBtn) {
+          startBtn.dataset.running = data.running ? "1" : "0";
+          startBtn.disabled = startBtn.dataset.busy === "1";
+          startBtn.textContent = data.running ? "Остановить поиск" : "Найти цены";
+          startBtn.classList.toggle("is-stop", !!data.running);
+        }
         if (mergedBtn) mergedBtn.hidden = !data.has_merged;
         if (rawBtn) rawBtn.hidden = !data.has_raw;
+        if (!data.running && !estimateMarketRenderFresh && (data.has_merged || data.has_raw) && !estimateMarketReloadPending) {
+          estimateMarketRenderFresh = true;
+          estimateMarketReloadPending = true;
+          if (compareBtn && data.has_merged) compareBtn.disabled = false;
+          if (sourcesBtn && data.has_raw) sourcesBtn.disabled = false;
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set("table_view", data.has_merged ? "compare" : "sources");
+          window.location.replace(nextUrl.toString());
+          return;
+        }
         if (main) {
           if (data.running) {
             main.textContent = "Идёт поиск цен: " + (data.done || 0) + " / " + (data.total || 0);
@@ -3595,16 +6928,30 @@ ESTIMATE_DETAIL_TEMPLATE = """
       } catch (e) {}
     }
 
+    async function toggleEstimateMarket() {
+      const btn = document.getElementById("marketStartBtn");
+      const isRunning = btn && btn.dataset.running === "1";
+      if (isRunning) {
+        await stopEstimateMarket();
+      } else {
+        await startEstimateMarket();
+      }
+    }
+
     async function startEstimateMarket() {
       const cityInput = document.getElementById("marketCityInput");
       const city = cityInput ? String(cityInput.value || "").trim() : "";
+      const selectedTypes = Array.from(document.querySelectorAll('input[name="types"]:checked')).map(x => String(x.value || ""));
       const btn = document.getElementById("marketStartBtn");
-      if (btn) btn.disabled = true;
+      if (btn) {
+        btn.dataset.busy = "1";
+        btn.disabled = true;
+      }
       try {
         const resp = await fetch("/api/estimates/{{ meta.id }}/market-start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city })
+          body: JSON.stringify({ city, selected_types: selectedTypes })
         });
         const data = await resp.json();
         if (!resp.ok || !data.ok) {
@@ -3613,10 +6960,32 @@ ESTIMATE_DETAIL_TEMPLATE = """
       } catch (e) {
         alert("Не удалось запустить поиск рынка");
       } finally {
+        if (btn) btn.dataset.busy = "0";
         refreshEstimateMarketStatus();
       }
     }
 
+    async function stopEstimateMarket() {
+      const btn = document.getElementById("marketStartBtn");
+      if (btn) {
+        btn.dataset.busy = "1";
+        btn.disabled = true;
+      }
+      try {
+        const resp = await fetch("/api/estimates/{{ meta.id }}/market-stop", { method: "POST" });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          alert(data.message || "Не удалось остановить поиск");
+        }
+      } catch (e) {
+        alert("Не удалось остановить поиск");
+      } finally {
+        if (btn) btn.dataset.busy = "0";
+        refreshEstimateMarketStatus();
+      }
+    }
+
+    setEstimateTableView("{{ active_table_view }}");
     refreshEstimateMarketStatus();
     setInterval(refreshEstimateMarketStatus, 3000);
   </script>
@@ -3625,8 +6994,211 @@ ESTIMATE_DETAIL_TEMPLATE = """
 """
 
 
+ESTIMATE_MARKET_VIEW_TEMPLATE = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>{{ meta.title }} · Сравнение цен</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --border:#d9e3ef; --muted:#62748b; --text:#172235; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:var(--text); }
+    .page { max-width:1040px; margin:0 auto; padding:14px 12px 24px; }
+    .panel { background:linear-gradient(180deg,#ffffff,#f8fbff); border:1px solid var(--border); border-radius:14px; box-shadow:0 14px 34px rgba(28,49,84,.08); padding:10px; margin-bottom:10px; }
+    .muted,.where { color:var(--muted); }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; }
+    .chip { display:inline-flex; align-items:center; gap:5px; text-decoration:none; border:1px solid #cfd9e8; background:#fff; color:#35506f; border-radius:10px; padding:6px 10px; font-weight:700; font-size:11px; }
+    .chip.is-active { background:linear-gradient(180deg,#2e80e8,#1f72dc); border-color:#2e80e8; color:#fff; }
+    .items { display:grid; gap:0; }
+    .item { position:relative; border:1px solid #d9e3ef; border-radius:12px; background:linear-gradient(180deg,#ffffff,#f8fbff); padding:8px 9px; box-shadow:0 8px 18px rgba(28,49,84,.06); }
+    .item + .item { margin-top:8px; }
+    .item + .item::after { content:""; position:absolute; left:10px; right:10px; top:-12px; height:2px; background:linear-gradient(90deg, rgba(110,168,255,0), rgba(110,168,255,.55), rgba(46,139,87,.75), rgba(110,168,255,.55), rgba(110,168,255,0)); box-shadow:0 0 8px rgba(110,168,255,.16); }
+    .item-head { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; margin-bottom:6px; padding-bottom:6px; border-bottom:1px solid #e5ecf4; }
+    .item-title { font-weight:700; font-size:12px; line-height:1.28; }
+    .item-index { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; padding:0 6px; border-radius:999px; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:#fff; font-weight:800; font-size:10px; border:1px solid #2e80e8; box-shadow:0 4px 12px rgba(46,128,232,.16); }
+    .tag { display:inline-flex; border-radius:999px; padding:1px 6px; border:1px solid #cfd9e8; background:#f4f8fd; color:#35506f; font-size:9px; white-space:nowrap; }
+    .meta { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:6px; }
+    .offers { display:grid; gap:6px; margin-top:6px; }
+    .offer { border:1px solid #dfe7f1; border-radius:9px; background:#fff; padding:6px; }
+    .offer-top { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }
+    .offer-title a { color:#1f72dc; text-decoration:none; }
+    .offer-title a:hover { text-decoration:underline; }
+    .offer-snippet { color:#62748b; font-size:10px; line-height:1.25; margin-top:4px; white-space:pre-wrap; }
+    .status-note { color:#a06b18; font-size:10px; margin-top:5px; }
+    .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <p style="margin:0 0 10px;"><a href="/estimates/{{ meta.id }}?{{ back_query }}">← Назад к смете</a> · <a href="/estimates">Все сметы</a> · <a href="/research">Поиск по позиции</a></p>
+    <h1 style="margin:0 0 8px;">{{ meta.title }} · Сравнение цен</h1>
+    <div class="muted">Показываю найденные сайты и цены по выбранному типу позиций.</div>
+
+    <section class="panel">
+      {% if market_links %}
+      <div class="chips">
+        {% for link in market_links %}
+        <a class="chip{% if link.key == active_market_type %} is-active{% endif %}" href="{{ link.href }}">{{ link.label }} · {{ link.count }}</a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div>Пока нет сохранённых сравнений по текущему фильтру.</div>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      {% if active_section %}
+      <div class="items">
+        {% for item in active_section["items"] %}
+        <article class="item">
+          <div class="item-head">
+            <div style="display:flex; gap:12px; align-items:flex-start;">
+              <div class="item-index">{{ loop.index }}</div>
+              <div class="item-title">{{ item.name }}</div>
+            </div>
+            <span class="tag">{{ item.type_label }}</span>
+          </div>
+          <div class="meta">
+            <span class="tag">Кол-во: {{ item.qty_fmt }}</span>
+            <span class="tag">Ед.: {{ item.unit or "—" }}</span>
+            <span class="tag">Смета за ед.: {{ item.estimate_price_fmt }}</span>
+            <span class="tag">Смета всего: {{ item.estimate_total_fmt }}</span>
+            <span class="tag">Рынок: {{ item.market_prices or "—" }}</span>
+          </div>
+          {% if item["offers"] %}
+          <div class="offers">
+            {% for offer in item["offers"] %}
+            <div class="offer">
+              <div class="offer-top">
+                <div class="offer-title">
+                  {% if offer.url %}
+                  <a href="{{ offer.url }}" target="_blank" rel="noopener noreferrer">{{ offer.title }}</a>
+                  {% else %}
+                  {{ offer.title }}
+                  {% endif %}
+                </div>
+                <div class="num">{{ offer.price_fmt }}</div>
+              </div>
+              {% if offer.source and offer.source != "Интернет" %}
+              <div class="where">{{ offer.source }}</div>
+              {% endif %}
+              {% if offer.snippet %}
+              <div class="offer-snippet">{{ offer.snippet }}</div>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+          {% if item.status %}
+          <div class="status-note">{{ item.status }}</div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div>По выбранному типу пока нет сохранённых данных.</div>
+      {% endif %}
+    </section>
+  </div>
+</body>
+</html>
+"""
+
+def _render_estimates_page_v2():
+    def _sort_created_key(raw: object) -> tuple[int, float]:
+        text = str(raw or "").strip()
+        if not text:
+            return (1, 0.0)
+        try:
+            dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
+            return (0, -dt.timestamp())
+        except Exception:
+            return (0, 0.0)
+
+    type_order = ["material", "work", "service", "product", "other"]
+    type_labels = {
+        "material": "Материалы",
+        "work": "Работы",
+        "service": "Услуги",
+        "product": "Товары",
+        "other": "Другое",
+    }
+    cards = []
+    total_rows = 0
+    total_sum = 0.0
+    total_sum_known = False
+    with_compare = 0
+
+    for meta in _read_estimates_index():
+        if not isinstance(meta, dict):
+            continue
+        estimate_id = str(meta.get("id") or "")
+        rows = _load_estimate_rows(estimate_id)
+        summary = _summarize_estimate_rows(rows)
+        type_counts = summary.get("type_counts") or {}
+        type_badges = [{"key": key, "label": type_labels.get(key, key), "count": int(type_counts.get(key) or 0)} for key in type_order if int(type_counts.get(key) or 0) > 0]
+        types_short = ", ".join(b["label"] for b in type_badges[:3]) if type_badges else "Без типов"
+        has_market_compare = _estimate_market_merged_path(estimate_id).is_file()
+        has_market_sources = _estimate_market_raw_path(estimate_id).is_file()
+        market_done, market_total = _estimate_market_progress_for_card(estimate_id, rows)
+        market_total = max(market_total, int(summary.get("row_count") or 0))
+        market_done = max(0, min(market_done, market_total)) if market_total > 0 else 0
+        market_pct = int(min(100, max(0, round(100.0 * market_done / market_total)))) if market_total > 0 else 0
+        if has_market_compare:
+            market_status_label = "Смета vs рынок"
+            market_status_class = "status-ready"
+            market_summary = "Сравнение уже готово"
+            market_summary_class = "metric-good"
+            market_progress_note = "Сравнение собрано, можно открывать смету и смотреть разбор."
+            with_compare += 1
+        elif has_market_sources:
+            market_status_label = "Есть источники"
+            market_status_class = "status-partial"
+            market_summary = "Собраны источники рынка"
+            market_summary_class = ""
+            market_progress_note = f"Найдено цен: {market_done} из {market_total}. Можно дособрать сравнение внутри сметы."
+        else:
+            market_status_label = "Нет рынка"
+            market_status_class = "status-idle"
+            market_summary = "Рынок ещё не анализировали"
+            market_summary_class = "metric-bad"
+            market_progress_note = "Поиск цен ещё не запускался."
+
+        item = dict(meta)
+        item["total_sum_fmt"] = _fmt_money(summary.get("total_sum"))
+        item["type_badges"] = type_badges
+        item["types_short"] = types_short
+        item["market_status_label"] = market_status_label
+        item["market_status_class"] = market_status_class
+        item["market_summary"] = market_summary
+        item["market_summary_class"] = market_summary_class
+        item["market_progress_done"] = market_done
+        item["market_progress_total"] = market_total
+        item["market_progress_percent"] = market_pct
+        item["market_progress_note"] = market_progress_note
+        cards.append(item)
+
+        total_rows += int(summary.get("row_count") or 0)
+        sum_value = summary.get("total_sum")
+        if sum_value is not None:
+            total_sum += float(sum_value)
+            total_sum_known = True
+
+    cards.sort(key=lambda x: _sort_created_key(x.get("created_at")))
+    overview = {
+        "total_count": len(cards),
+        "total_rows": total_rows,
+        "with_compare": with_compare,
+        "total_sum_fmt": _fmt_money(total_sum) if total_sum_known else "—",
+    }
+    return render_template_string(ESTIMATES_TEMPLATE_V2, estimates=cards, overview=overview, crm_prefill={})
+
+
 @app.route("/estimates")
 def estimates_page():
+    return _render_estimates_page_v2()
     cards = []
     for meta in _read_estimates_index():
         if not isinstance(meta, dict):
@@ -3642,6 +7214,72 @@ def estimates_page():
         cards.append(item)
     cards.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
     return render_template_string(ESTIMATES_TEMPLATE, estimates=cards)
+
+
+@app.route("/research")
+def research_page():
+    return render_template_string(
+        RESEARCH_TEMPLATE,
+        default_query=(request.args.get("q", "") or "").strip(),
+        default_city=(request.args.get("city", "") or "").strip(),
+    )
+
+
+@app.route("/api/research-items", methods=["POST"])
+def api_research_items():
+    data = request.get_json(silent=True) or {}
+    queries = _research_queries_from_text(str(data.get("queries") or data.get("query") or ""))
+    city = re.sub(r"\s+", " ", str(data.get("city") or "").strip())[:120]
+    if not queries:
+        return jsonify({"ok": False, "message": "Нужна хотя бы одна позиция для поиска."}), 400
+
+    from autobot.item_research import parse_sources, research_item
+
+    sources = parse_sources(
+        os.environ.get("MARKET_SUMMARY_SOURCES")
+        or os.environ.get("MARKET_SOURCES")
+        or "avito,web"
+    )
+
+    results: list[dict] = []
+    for query in queries:
+        try:
+            item = research_item(query, region=city, sources=sources, max_results=5)
+            offers = []
+            for offer in item.offers[:5]:
+                offers.append(
+                    {
+                        "source": str(offer.source or ""),
+                        "title": str(offer.title or ""),
+                        "price": float(offer.price or 0) if offer.price else 0,
+                        "url": str(offer.url or ""),
+                        "snippet": str(offer.snippet or "")[:500],
+                    }
+                )
+            results.append(
+                {
+                    "query": item.query,
+                    "region": item.region,
+                    "offers": offers,
+                    "errors": str(item.errors or ""),
+                }
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "query": query,
+                    "region": city,
+                    "offers": [],
+                    "errors": str(e)[:400],
+                }
+            )
+    return jsonify(
+        {
+            "ok": True,
+            "message": f"Готово. Обработано позиций: {len(results)}.",
+            "results": results,
+        }
+    )
 
 
 @app.route("/estimates/<estimate_id>")
@@ -3725,6 +7363,21 @@ def estimate_detail_page(estimate_id: str):
                 "sheet_total_fmt": _fmt_money(current_sheet_total if current_sheet_has_sum else None),
             }
         )
+    compare_df = _estimate_market_df_for_rows(_estimate_market_merged_path(estimate_id), rows)
+    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows)
+    compare_rows = _estimate_compare_rows(rows, compare_df)
+    source_rows = _estimate_source_rows(rows, raw_df)
+    scope_info = _estimate_market_scope_info(meta, selected_types)
+    table_views = {
+        "estimate": {"available": bool(rows)},
+        "compare": {"available": bool(compare_rows)},
+        "sources": {"available": bool(source_rows)},
+    }
+    active_table_view = _pick_estimate_active_table_view(request.args.get("table_view", ""), table_views)
+    viability = _estimate_viability_overview(compare_df, compare_rows, scope_info)
+    market_sections = _estimate_market_sections(estimate_id, rows, selected_types=selected_types)
+    market_links = _estimate_market_links(estimate_id, market_sections, q=q, selected_types=selected_types)
+    crm_prefill = _estimate_crm_prefill(estimate_id)
     return render_template_string(
         ESTIMATE_DETAIL_TEMPLATE,
         meta=meta,
@@ -3735,8 +7388,50 @@ def estimate_detail_page(estimate_id: str):
         market_city=str(meta.get("market_city") or ""),
         has_market_raw=_estimate_market_raw_path(estimate_id).is_file(),
         has_market_merged=_estimate_market_merged_path(estimate_id).is_file(),
+        active_table_view=active_table_view,
+        compare_table=table_views["compare"],
+        compare_rows=compare_rows,
+        sources_table=table_views["sources"],
+        source_rows=source_rows,
+        viability=viability,
+        market_links=market_links,
         type_options=type_options,
         summary=summary,
+        crm_prefill=crm_prefill,
+    )
+
+
+@app.route("/estimates/<estimate_id>/market-view")
+def estimate_market_view_page(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id)
+    if not meta:
+        abort(404)
+    rows_all = _load_estimate_rows(estimate_id)
+    q = (request.args.get("q", "") or "").strip()
+    selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
+    if not selected_types:
+        legacy_type = (request.args.get("type", "") or "").strip()
+        if legacy_type:
+            selected_types = _normalize_selected_estimate_types([legacy_type])
+        elif str(request.args.get("hide_work", "") or "").strip() in {"1", "true", "yes", "on"}:
+            selected_types = [x for x in ["service", "product", "material", "other"]]
+    rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
+    market_sections = _estimate_market_sections(estimate_id, rows, selected_types=selected_types)
+    market_links = _estimate_market_links(estimate_id, market_sections, q=q, selected_types=selected_types)
+    active_market_type = (request.args.get("market_type", "") or "").strip()
+    active_section = None
+    if market_sections:
+        active_section = next((sec for sec in market_sections if str(sec.get("key") or "") == active_market_type), None) or market_sections[0]
+        active_market_type = str(active_section.get("key") or "")
+    back_query = urlencode([("q", q)] + [("types", t) for t in selected_types], doseq=True)
+    return render_template_string(
+        ESTIMATE_MARKET_VIEW_TEMPLATE,
+        meta=meta,
+        market_links=market_links,
+        active_market_type=active_market_type,
+        active_section=active_section,
+        back_query=back_query,
     )
 
 
@@ -3853,23 +7548,88 @@ def estimate_detail_download_xlsx(estimate_id: str):
 @app.route("/estimates/<estimate_id>/market-sources.xlsx")
 def estimate_market_sources_download_xlsx(estimate_id: str):
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    path = _estimate_market_raw_path(estimate_id)
     meta = _load_estimate_meta(estimate_id) or {}
-    if not path.is_file():
+    rows_all = _load_estimate_rows(estimate_id)
+    if not rows_all:
         abort(404)
-    filename = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", str(meta.get("title") or estimate_id)).strip(" ._") or estimate_id
-    return send_file(path, as_attachment=True, download_name=f"{filename} - источники рынка.xlsx", max_age=0)
+    q = (request.args.get("q", "") or "").strip()
+    selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
+    rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
+    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows)
+    source_rows = _estimate_source_rows(rows, raw_df)
+    if not source_rows:
+        abort(404)
+    filename = _safe_download_stem(str(meta.get("title") or estimate_id), estimate_id)
+    export_df = _simple_sources_export_df(source_rows)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name="Источники")
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=f"{filename} - источники рынка.xlsx", max_age=0)
 
 
 @app.route("/estimates/<estimate_id>/market-compare.xlsx")
 def estimate_market_compare_download_xlsx(estimate_id: str):
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    path = _estimate_market_merged_path(estimate_id)
     meta = _load_estimate_meta(estimate_id) or {}
+    rows_all = _load_estimate_rows(estimate_id)
+    if not rows_all:
+        abort(404)
+    q = (request.args.get("q", "") or "").strip()
+    selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
+    rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
+    compare_df = _estimate_market_df_for_rows(_estimate_market_merged_path(estimate_id), rows)
+    compare_rows = _estimate_compare_rows(rows, compare_df)
+    if not compare_rows:
+        abort(404)
+    filename = _safe_download_stem(str(meta.get("title") or estimate_id), estimate_id)
+    export_df = _simple_compare_export_df(compare_rows)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name="Сравнение")
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=f"{filename} - сравнение рынка.xlsx", max_age=0)
+
+
+@app.route("/tenders/<tender_id>/estimate.xlsx")
+def tender_estimate_download_xlsx(tender_id: str):
+    tid = (tender_id or "").strip()
+    if not tid or "/" in tid or ".." in tid:
+        abort(404)
+    path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
     if not path.is_file():
         abort(404)
-    filename = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", str(meta.get("title") or estimate_id)).strip(" ._") or estimate_id
-    return send_file(path, as_attachment=True, download_name=f"{filename} - сравнение рынка.xlsx", max_age=0)
+    meta = load_tender_metadata().get(tid) or {}
+    filename = _safe_download_stem(meta.get("title") or tid, tid)
+    return send_file(path, as_attachment=True, download_name=f"{filename} - смета.xlsx", max_age=0)
+
+
+@app.route("/tenders/<tender_id>/market-sources.xlsx")
+def tender_market_sources_download_xlsx(tender_id: str):
+    tid = (tender_id or "").strip()
+    if not tid or "/" in tid or ".." in tid:
+        abort(404)
+    path = _price_output_path_for_tender(tid)
+    if not path.is_file():
+        abort(404)
+    meta = load_tender_metadata().get(tid) or {}
+    filename = _safe_download_stem(meta.get("title") or tid, tid)
+    return send_file(path, as_attachment=True, download_name=f"{filename} - источники рынка.xlsx", max_age=0)
+
+
+@app.route("/tenders/<tender_id>/svodka.xlsx")
+def tender_svodka_download_xlsx(tender_id: str):
+    tid = (tender_id or "").strip()
+    if not tid or "/" in tid or ".." in tid:
+        abort(404)
+    from autobot.merge_estimate_market import OUT_PREFIX
+
+    path = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
+    if not path.is_file():
+        abort(404)
+    meta = load_tender_metadata().get(tid) or {}
+    filename = _safe_download_stem(meta.get("title") or tid, tid)
+    return send_file(path, as_attachment=True, download_name=f"{filename} - выгодность.xlsx", max_age=0)
 
 
 @app.route("/api/estimates/<estimate_id>/market-status")
@@ -3889,6 +7649,7 @@ def api_estimate_market_status(estimate_id: str):
         "done": int(job.get("done") or 0),
         "total": int(job.get("total") or 0),
         "city": str(job.get("city") or meta.get("market_city") or ""),
+        "selected_types": _normalize_selected_estimate_types(job.get("selected_types") or meta.get("market_selected_types") or []),
         "log_tail": list(job.get("log_lines") or []),
         "started_at": job.get("started_at"),
         "ended_at": job.get("ended_at"),
@@ -3913,6 +7674,10 @@ def api_estimate_market_start(estimate_id: str):
             return jsonify({"ok": False, "message": "Поиск рынка уже выполняется."}), 409
     data = request.get_json(silent=True) or {}
     city = re.sub(r"\s+", " ", str(data.get("city") or "").strip())[:120]
+    selected_types = _normalize_selected_estimate_types(data.get("selected_types") or [])
+    filtered_rows = _filter_estimate_rows(rows, selected_types=selected_types)
+    if not filtered_rows:
+        return jsonify({"ok": False, "message": "По выбранным типам позиций нет строк для поиска цен."}), 400
     sources = ["avito", "web"]
     with estimate_market_lock:
         estimate_market_jobs[estimate_id] = {
@@ -3924,18 +7689,36 @@ def api_estimate_market_start(estimate_id: str):
             "error": "",
             "city": city,
             "sources": ",".join(sources),
+            "selected_types": selected_types,
+            "stop_requested": False,
             "done": 0,
-            "total": 0,
+            "total": len(filtered_rows),
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "ended_at": None,
             "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Старт поиска рынка" + (f" · город: {city}" if city else "")],
         }
     threading.Thread(
         target=_run_estimate_market_worker,
-        kwargs={"estimate_id": estimate_id, "city": city, "sources": sources},
+        kwargs={"estimate_id": estimate_id, "city": city, "sources": sources, "selected_types": selected_types},
         daemon=True,
     ).start()
     return jsonify({"ok": True, "message": "Поиск рынка запущен."})
+
+
+@app.route("/api/estimates/<estimate_id>/market-stop", methods=["POST"])
+def api_estimate_market_stop(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    with estimate_market_lock:
+        cur = estimate_market_jobs.get(estimate_id)
+        if not cur:
+            return jsonify({"ok": False, "message": "Активный поиск для этой сметы не найден."}), 404
+        if not cur.get("running"):
+            return jsonify({"ok": True, "message": "Поиск уже остановлен."})
+        cur["stop_requested"] = True
+        cur["stage"] = "Останавливаю"
+        cur["detail"] = "Жду завершения текущей позиции и сохраняю уже найденные результаты"
+        _estimate_market_log_append(cur, "Запрошена остановка поиска")
+    return jsonify({"ok": True, "message": "Остановка поиска запрошена."})
 
 
 @app.route("/api/estimates/upload", methods=["POST"])
@@ -4033,53 +7816,55 @@ NMCK_PREVIEW_PAGE = """
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>{{ title|e }} — таблица НМЦК</title>
   <style>
     :root {
-      --bg: #0b1020;
-      --panel: #121a30;
-      --border: #27355d;
-      --text: #e8ecf1;
-      --muted: #9fb0d6;
-      --accent: #4b65bb;
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --border: #d9e3ef;
+      --text: #172235;
+      --muted: #62748b;
+      --accent: #1f72dc;
     }
-    html, body { margin: 0; min-height: 100%; background: radial-gradient(1200px 700px at 20% -200px, #1c2b56 0%, var(--bg) 45%); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
+    html, body { margin: 0; min-height: 100%; background: linear-gradient(180deg, #ffffff 0%, var(--bg) 100%); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
     .page { max-width: 100%; padding: 18px 16px 32px; box-sizing: border-box; }
     .head { max-width: 1400px; margin: 0 auto 14px; }
     h1 { font-size: 1.2rem; font-weight: 700; margin: 0 0 6px 0; letter-spacing: -0.02em; line-height: 1.35; word-break: break-word; }
     .sub { font-size: 13px; color: var(--muted); margin: 0 0 12px 0; }
-    a.back { color: #87bbff; font-size: 13px; text-decoration: none; }
+    a.back { color: #1f72dc; font-size: 13px; text-decoration: none; }
     a.back:hover { text-decoration: underline; }
     .table-shell {
       max-width: 1400px;
       margin: 0 auto;
       border: 1px solid var(--border);
       border-radius: 12px;
-      background: linear-gradient(180deg, var(--panel), #10172b);
+      background: linear-gradient(180deg, var(--panel), #f8fbff);
       overflow: hidden;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      box-shadow: 0 10px 30px rgba(28, 49, 84, 0.08);
     }
     .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     table { border-collapse: collapse; width: 100%; font-size: 12px; }
     th, td {
-      border: 1px solid #223154;
+      border: 1px solid #e5ecf4;
       padding: 8px 10px;
       text-align: left;
       vertical-align: top;
       line-height: 1.35;
     }
     th {
-      background: #1a2442;
-      color: #d2defa;
+      background: #f1f6fc;
+      color: #35506f;
       font-weight: 600;
       max-width: 28em;
       word-break: break-word;
     }
-    tbody tr:nth-child(even) { background: rgba(10, 14, 28, 0.35); }
-    tbody tr:hover { background: rgba(75, 101, 187, 0.12); }
+    tbody tr:nth-child(even) { background: #fafcff; }
+    tbody tr:hover { background: #f3f8ff; }
     td { word-break: break-word; max-width: 36em; }
     td.num { font-variant-numeric: tabular-nums; white-space: nowrap; max-width: none; }
-    .foot { max-width: 1400px; margin: 14px auto 0; font-size: 11px; color: #8a9bc4; }
+    .foot { max-width: 1400px; margin: 14px auto 0; font-size: 11px; color: #62748b; }
   </style>
 </head>
 <body>
@@ -4125,18 +7910,19 @@ MISSING_MERGE_PAGE = """
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Сравнение цен ещё не готово</title>
   <style>
-    body { font-family: Segoe UI, sans-serif; background:#0f1220; color:#e8ecf1; margin:0; padding:24px; line-height:1.5; }
-    a { color:#7eb8ff; }
-    .box { max-width:580px; margin:0 auto; border:1px solid #2a3359; border-radius:12px; padding:20px; background:#13182b; }
+    body { font-family: Segoe UI, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:#172235; margin:0; padding:24px; line-height:1.5; }
+    a { color:#1f72dc; }
+    .box { max-width:580px; margin:0 auto; border:1px solid #d9e3ef; border-radius:12px; padding:20px; background:#ffffff; box-shadow:0 12px 28px rgba(28,49,84,.08); }
     h1 { font-size:1.15rem; margin-top:0; }
-    .btn { border:1px solid #4b65bb; background:#2a3f82; color:#e7eeff; border-radius:8px; padding:10px 16px; cursor:pointer; font-size:14px; margin-top:12px; margin-right:8px; }
+    .btn { border:1px solid #2e80e8; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:#ffffff; border-radius:8px; padding:10px 16px; cursor:pointer; font-size:14px; margin-top:12px; margin-right:8px; }
     .btn:disabled { opacity:.5; cursor:not-allowed; }
-    .merge-bar-wrap { height:12px; background:#0f1324; border-radius:8px; overflow:hidden; margin-top:12px; border:1px solid #2b365e; }
+    .merge-bar-wrap { height:12px; background:#edf3fa; border-radius:8px; overflow:hidden; margin-top:12px; border:1px solid #d6e0ee; }
     .merge-bar-fill { height:100%; background:linear-gradient(90deg,#3d5290,#5ecf8a); transition:width .35s ease; }
-    .logs { margin-top:10px; max-height:140px; overflow:auto; font-family:Consolas,monospace; font-size:11px; white-space:pre-wrap; background:#0f1324; padding:8px; border-radius:8px; border:1px solid #2b365e; }
-    .hint { font-size:13px; color:#9fb0d6; }
+    .logs { margin-top:10px; max-height:140px; overflow:auto; font-family:Consolas,monospace; font-size:11px; white-space:pre-wrap; background:#f8fbff; padding:8px; border-radius:8px; border:1px solid #dfe7f1; color:#576a84; }
+    .hint { font-size:13px; color:#62748b; }
   </style>
 </head>
 <body>
@@ -5146,6 +8932,51 @@ def api_tenders():
         )
     items.sort(key=lambda x: (x.get("region") or "", str(x.get("tender_id") or "")))
     return jsonify({"items": items[:200]})
+
+
+@app.route("/api/export-to-crm", methods=["POST"])
+def api_export_to_crm():
+    data = request.get_json(silent=True) or {}
+    tid = str(data.get("tender_id", "")).strip()
+    if not tid:
+        return jsonify({"ok": False, "message": "Нужен tender_id"}), 400
+    if tid not in load_tender_metadata():
+        return jsonify({"ok": False, "message": "Такой тендер не найден в tenders.json"}), 404
+    try:
+        result = export_tender_to_crm(tid)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:700]}), 500
+    return jsonify({"ok": True, "tender_id": tid, **result})
+
+
+@app.route("/api/estimates/<estimate_id>/export-to-crm", methods=["POST"])
+def api_export_estimate_to_crm(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    meta = _load_estimate_meta(estimate_id)
+    if not meta:
+        return jsonify({"ok": False, "message": "Смета не найдена."}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        result = export_estimate_to_crm(estimate_id, overrides=data)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:700]}), 500
+    return jsonify({"ok": True, "estimate_id": estimate_id, **result})
+
+
+@app.route("/api/estimates/<estimate_id>/delete", methods=["POST"])
+def api_delete_estimate(estimate_id: str):
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    if not estimate_id:
+        return jsonify({"ok": False, "message": "Нужен estimate_id."}), 400
+    try:
+        delete_estimate(estimate_id)
+    except Exception as e:
+        message = str(e)[:700]
+        status = 409 if "идёт поиск рынка" in message else 500
+        if "не найдена" in message.casefold():
+            status = 404
+        return jsonify({"ok": False, "message": message}), status
+    return jsonify({"ok": True, "estimate_id": estimate_id})
 
 
 @app.route("/api/merge-site-status")

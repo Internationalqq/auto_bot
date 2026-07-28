@@ -1,0 +1,13 @@
+.git
+.agents
+.cursor
+.pytest_cache
+.runtime
+.vscode
+__pycache__
+data
+*.pyc
+*.pyo
+*.log
+.env
+.tmp_webui_script.js

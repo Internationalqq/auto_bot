@@ -30,6 +30,7 @@ except ImportError:
 import pandas as pd
 
 from autobot.market_analytics import (
+    COL_DUP,
     COL_NAME,
     COL_ITEM,
     COL_QTY,
@@ -493,8 +494,6 @@ def _bundle_focus_html(rows: list[dict[str, str]], *, qty_scale: float = 1.0, un
             )
         else:
             u_cell = html_mod.escape(title) if title else "—"
-        if source:
-            u_cell = f'<span class="src-source">{html_mod.escape(source)}</span> {u_cell}'
         parts.append(
             "<div class='src-row'>"
             f"<span class='src-idx'>{i}.</span>"
@@ -526,10 +525,202 @@ def _bundle_col_urls_html(rows: list[dict[str, str]]) -> str:
             )
         else:
             u_cell = html_mod.escape(title) if title else "—"
-        if source:
-            u_cell = f'<span class="src-source">{html_mod.escape(source)}</span> {u_cell}'
         lines.append(f'<div class="psp-row"><span class="psp-i">{i}.</span> <span class="psp-link">{u_cell}</span></div>')
     return "".join(lines)
+
+
+def _format_number(value: float | None, *, decimals: int = 2) -> str:
+    if value is None:
+        return "вЂ”"
+    fv = float(value)
+    if not math.isfinite(fv):
+        return "вЂ”"
+    if abs(fv - round(fv)) < 1e-6:
+        return f"{int(round(fv)):,}".replace(",", " ")
+    return f"{fv:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def _format_money(value: float | None) -> str:
+    base = _format_number(value)
+    return f"{base} в‚Ѕ" if base != "вЂ”" else base
+
+
+def _estimate_numeric_for_compare(row: pd.Series) -> float | None:
+    unit_raw = row.get(COL_UNIT)
+    unit = "" if pd.isna(unit_raw) else str(unit_raw).strip()
+    norm_block: float | None = None
+    if unit_has_area_or_volume_marker(unit):
+        norm_block = estimate_block_qty_from_unit(unit)
+
+    up = _safe_float(row.get(COL_UNIT_PRICE))
+    sm = _safe_float(row.get(COL_SUM))
+    q = _safe_float(row.get(COL_QTY))
+    derived = (sm / q) if (sm is not None and q is not None and q > 0) else None
+    use = up
+    if (
+        sm is not None
+        and sm > 0
+        and unit_has_area_or_volume_marker(unit)
+        and norm_block is not None
+        and norm_block >= 10.0
+        and q is not None
+        and abs(q - norm_block) / norm_block <= 0.05
+    ):
+        use = sm
+    if derived is not None and derived > 0:
+        if use is None:
+            use = derived
+        elif use is not None and use > 0:
+            qty_is_normative_block = (
+                norm_block is not None
+                and norm_block >= 10.0
+                and q is not None
+                and abs(q - norm_block) / norm_block <= 0.05
+            )
+            if not qty_is_normative_block:
+                lo, hi = derived * 0.15, derived * 25.0
+                if use < lo or use > hi:
+                    use = derived
+    if use is None or use <= 0:
+        return None
+    return float(use)
+
+
+def _position_type_for_tender(name: str, unit: str = "") -> tuple[str, str]:
+    text = f"{name} {unit}".casefold().replace("ё", "е")
+    material_keys = (
+        "бетон",
+        "раствор",
+        "смесь",
+        "цемент",
+        "песок",
+        "щебень",
+        "грунт",
+        "краска",
+        "эмаль",
+        "плитк",
+        "кирпич",
+        "труба",
+        "кабель",
+        "провод",
+        "арматур",
+        "битум",
+        "мастик",
+        "лист",
+        "профил",
+        "доска",
+        "брус",
+        "изоляц",
+        "линолеум",
+        "ламинат",
+        "керамзит",
+    )
+    product_keys = (
+        "насос",
+        "шкаф",
+        "щит",
+        "светильник",
+        "радиатор",
+        "кран",
+        "задвижк",
+        "клапан",
+        "вентил",
+        "люк",
+        "двер",
+        "окно",
+        "блок",
+        "прибор",
+        "оборудован",
+        "издели",
+        "унитаз",
+        "раковин",
+        "смесител",
+        "тройник",
+        "угольник",
+        "муфт",
+        "фланец",
+    )
+    service_keys = ("аренда", "перевозка", "доставка", "вывоз", "погруз", "разгруз", "обслуживание", "испытание", "пусконалад")
+    work_keys = (
+        "устройство",
+        "установка",
+        "монтаж",
+        "демонтаж",
+        "разборка",
+        "снятие",
+        "прокладка",
+        "окраска",
+        "ремонт",
+        "очистка",
+        "расчистка",
+        "штукатур",
+        "облицов",
+        "сверление",
+        "засыпка",
+        "разработка",
+        "укладка",
+        "изоляция",
+        "испытание",
+    )
+    if any(k in text for k in service_keys):
+        return "service", "Услуга"
+    if any(k in text for k in work_keys):
+        return "work", "Работа"
+    if any(k in text for k in material_keys):
+        return "material", "Материал"
+    if any(k in text for k in product_keys):
+        return "product", "Товар"
+    return "other", "Позиция"
+
+
+def _tender_bucket(name: str, unit: str = "") -> tuple[str, str]:
+    type_slug, type_label = _position_type_for_tender(name, unit)
+    if type_slug == "material":
+        return "material", type_label
+    return "work", type_label
+
+
+def _row_market_median_unit(row: pd.Series, rub_col: str) -> float | None:
+    med = _median_unit_float(row.get("Медиана цена за ед. (рынок)", ""))
+    if med is not None:
+        return med
+    raw = row.get(rub_col, "")
+    nums = _parse_semicolon_numbers("" if pd.isna(raw) else str(raw))
+    if not nums:
+        return None
+    return float(statistics.median(nums))
+
+
+def _row_compare_market_value(row: pd.Series, market_unit: float | None) -> float | None:
+    if market_unit is None or market_unit <= 0:
+        return None
+    q_scale, _ = _quantity_multiplier_from_unit(str(row.get(COL_UNIT, "") or ""))
+    if q_scale and q_scale > 1.0:
+        return float(market_unit * q_scale)
+    return float(market_unit)
+
+
+def _row_market_total(row: pd.Series, market_unit: float | None) -> float | None:
+    if market_unit is None or market_unit <= 0:
+        return None
+    qty = _safe_float(row.get(COL_QTY))
+    if qty is not None and qty > 0:
+        return float(market_unit * qty)
+    q_scale, _ = _quantity_multiplier_from_unit(str(row.get(COL_UNIT, "") or ""))
+    if q_scale and q_scale > 1.0:
+        return float(market_unit * q_scale)
+    return float(market_unit)
+
+
+def _row_verdict(est_value: float | None, market_value: float | None) -> tuple[str, str]:
+    if est_value is None or market_value is None or market_value <= 0:
+        return "Нет рынка", "status-empty"
+    ratio = est_value / market_value
+    if ratio > 1.08:
+        return "Выгодно", "status-good"
+    if ratio < 0.92:
+        return "Невыгодно", "status-bad"
+    return "На грани", "status-warn"
 
 
 def _render_html(
@@ -676,6 +867,7 @@ def _render_html(
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Смета и рынок · {tid_esc}</title>
   <style>
     :root {{
@@ -1204,6 +1396,745 @@ def _render_html(
 """
 
 
+def _render_html_typed(
+    tender_id: str,
+    tender_title: str,
+    df: pd.DataFrame,
+    publish_date: str = "",
+    *,
+    viability_html: str = "",
+) -> str:
+    market_col = "Рыночные источники" if "Рыночные источники" in df.columns else ""
+    market_full_col = "Рыночные источники (полный текст)" if "Рыночные источники (полный текст)" in df.columns else market_col
+    if "Рынок цены за ед. (итог)" in df.columns:
+        rub_col = "Рынок цены за ед. (итог)"
+    elif "Суммы из ответа (итог)" in df.columns:
+        rub_col = "Суммы из ответа (итог)"
+    else:
+        rub_col = "Суммы из текста ответа (авто)"
+
+    def _has_text_value(val: object) -> bool:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return False
+        s = str(val).strip()
+        return bool(s and s.casefold() not in ("nan", "none", "—", "-", "н/д", "нет"))
+
+    def _row_has_market(row: pd.Series) -> bool:
+        for c in [
+            rub_col,
+            "Цены за ед. (рынок, руб)",
+            "Медиана цена за ед. (рынок)",
+            "Цена-сайт-телефон (json)",
+            "Ссылки (строго)",
+            "Телефоны (строго)",
+            market_col,
+            market_full_col,
+        ]:
+            if c and c in df.columns and _has_text_value(row.get(c, "")):
+                return True
+        return False
+
+    df = df.copy()
+    df["__has_market"] = df.apply(_row_has_market, axis=1)
+    df["__orig_order"] = range(len(df))
+    df = df.sort_values(["__has_market", "__orig_order"], ascending=[False, True])
+
+    buckets: dict[str, dict[str, object]] = {
+        "work": {
+            "title": "Работы и услуги",
+            "subtitle": "Монтаж, техника, услуги, аренда и прочие нематериальные позиции.",
+            "rows": [],
+            "count": 0,
+            "comparable": 0,
+            "good": 0,
+            "warn": 0,
+            "bad": 0,
+            "empty": 0,
+            "estimate_total": 0.0,
+            "market_total": 0.0,
+        },
+        "material": {
+            "title": "Материалы",
+            "subtitle": "Материалы и товарные позиции из сметы с найденным рынком справа.",
+            "rows": [],
+            "count": 0,
+            "comparable": 0,
+            "good": 0,
+            "warn": 0,
+            "bad": 0,
+            "empty": 0,
+            "estimate_total": 0.0,
+            "market_total": 0.0,
+        },
+    }
+
+    ready_count = 0
+    total_count = 0
+
+    for _, row in df.iterrows():
+        if COL_DUP in df.columns and str(row.get(COL_DUP, "")).strip() == "Да":
+            continue
+        name_raw = str(row.get(COL_NAME, "") or "").strip()
+        if len(name_raw) < 2:
+            continue
+        total_count += 1
+        if bool(row.get("__has_market", False)):
+            ready_count += 1
+
+        unit_raw = "" if pd.isna(row.get(COL_UNIT, "")) else str(row.get(COL_UNIT, "")).strip()
+        bucket_key, type_label = _tender_bucket(name_raw, unit_raw)
+        bucket = buckets[bucket_key]
+        bucket["count"] = int(bucket["count"]) + 1
+
+        qty = _safe_float(row.get(COL_QTY))
+        estimate_unit = _safe_float(row.get(COL_UNIT_PRICE))
+        estimate_total = _safe_float(row.get(COL_SUM))
+        market_unit = _row_market_median_unit(row, rub_col)
+        market_total = _row_market_total(row, market_unit)
+        compare_estimate = _estimate_numeric_for_compare(row)
+        compare_market = _row_compare_market_value(row, market_unit)
+        verdict_text, verdict_class = _row_verdict(compare_estimate, compare_market)
+
+        if verdict_class == "status-good":
+            bucket["good"] = int(bucket["good"]) + 1
+            bucket["comparable"] = int(bucket["comparable"]) + 1
+        elif verdict_class == "status-bad":
+            bucket["bad"] = int(bucket["bad"]) + 1
+            bucket["comparable"] = int(bucket["comparable"]) + 1
+        elif verdict_class == "status-warn":
+            bucket["warn"] = int(bucket["warn"]) + 1
+            bucket["comparable"] = int(bucket["comparable"]) + 1
+        else:
+            bucket["empty"] = int(bucket["empty"]) + 1
+
+        if estimate_total is not None:
+            bucket["estimate_total"] = float(bucket["estimate_total"]) + estimate_total
+        if market_total is not None:
+            bucket["market_total"] = float(bucket["market_total"]) + market_total
+
+        market_raw = row.get(market_col, "") if market_col else ""
+        market_full_raw = row.get(market_full_col, "") if market_full_col else ""
+        phones_raw = "" if pd.isna(row.get("Телефоны (строго)", "")) else str(row.get("Телефоны (строго)", ""))
+        urls_raw = "" if pd.isna(row.get("Ссылки (строго)", "")) else str(row.get("Ссылки (строго)", ""))
+        if not phones_raw.strip() and not urls_raw.strip():
+            fallback_market_text = "" if pd.isna(market_raw) else str(market_raw)
+            phones_raw = "; ".join(collect_phones(fallback_market_text))
+            urls_raw = "; ".join(collect_urls(fallback_market_text))
+        market_preview_txt = ""
+        if market_full_col and not pd.isna(market_full_raw):
+            market_preview_txt = str(market_full_raw).strip()
+        if not market_preview_txt and market_col and not pd.isna(market_raw):
+            market_preview_txt = str(market_raw).strip()
+
+        bundle_rows = _rows_from_bundle_or_fallback(
+            bundle_json="" if pd.isna(row.get("Цена-сайт-телефон (json)", "")) else str(row.get("Цена-сайт-телефон (json)", "")),
+            qty_scale=1.0,
+            fallback_prices_text="" if pd.isna(row.get(rub_col, "")) else str(row.get(rub_col, "")),
+            fallback_phones_text=phones_raw,
+            fallback_urls_text=urls_raw,
+            market_full_text=market_preview_txt,
+            median_unit_raw=row.get("Медиана цена за ед. (рынок)", ""),
+        )
+        sources_html = _bundle_focus_html(bundle_rows)
+        item_no = _cell(row.get(COL_ITEM, "")) if COL_ITEM in df.columns else str(bucket["count"])
+        row_ready_cls = " row-ready" if bool(row.get("__has_market", False)) else ""
+        market_total_hint = ""
+        if qty is not None and market_unit is not None and market_total is not None:
+            market_total_hint = f"<div class='mini-note'>{_format_number(qty)} × {_format_money(market_unit)} = {_format_money(market_total)}</div>"
+        elif market_total is not None:
+            market_total_hint = f"<div class='mini-note'>Оценка: {_format_money(market_total)}</div>"
+
+        bucket["rows"].append(
+            "".join(
+                [
+                    f"<tr class='data-row{row_ready_cls}'>",
+                    f"<td class='col-no'>{html_mod.escape(str(item_no))}</td>",
+                    "<td class='col-name'>",
+                    f"<div class='name-main'>{html_mod.escape(name_raw)}</div>",
+                    f"<span class='type-pill'>{html_mod.escape(type_label)}</span>",
+                    "</td>",
+                    f"<td>{_cell(unit_raw)}</td>",
+                    f"<td>{_format_number(qty)}</td>",
+                    f"<td>{_format_money(estimate_unit)}</td>",
+                    f"<td>{_format_money(estimate_total)}</td>",
+                    f"<td>{_format_money(market_unit)}</td>",
+                    f"<td>{_format_money(market_total)}{market_total_hint}</td>",
+                    f"<td class='sources-cell'>{sources_html}</td>",
+                    f"<td><span class='status-pill {verdict_class}'>{html_mod.escape(verdict_text)}</span></td>",
+                    "</tr>",
+                ]
+            )
+        )
+
+    summary_cards: list[str] = []
+    tab_buttons: list[str] = []
+    tab_panels: list[str] = []
+    for idx, key in enumerate(("work", "material")):
+        bucket = buckets[key]
+        count = int(bucket["count"])
+        title = str(bucket["title"])
+        subtitle = str(bucket["subtitle"])
+        active = " is-active" if idx == 0 else ""
+        tab_buttons.append(
+            f"<button type='button' class='type-tab{active}' data-tab='{key}'>{html_mod.escape(title)} <span>{count}</span></button>"
+        )
+        summary_cards.append(
+            f"""
+            <article class="summary-card">
+              <div class="summary-card__title">{html_mod.escape(title)}</div>
+              <div class="summary-card__count">{count}</div>
+              <div class="summary-card__meta">с рынком: <b>{int(bucket["comparable"])}</b> · нет рынка: <b>{int(bucket["empty"])}</b></div>
+              <div class="summary-card__meta">выгодно: <b>{int(bucket["good"])}</b> · на грани: <b>{int(bucket["warn"])}</b> · невыгодно: <b>{int(bucket["bad"])}</b></div>
+              <div class="summary-card__meta">смета: <b>{_format_money(float(bucket["estimate_total"]))}</b> · рынок: <b>{_format_money(float(bucket["market_total"]) if float(bucket["market_total"]) > 0 else None)}</b></div>
+            </article>
+            """
+        )
+        rows_html = "".join(bucket["rows"]) if bucket["rows"] else "<tr><td colspan='10' class='empty-row'>Пока нет позиций в этом разделе.</td></tr>"
+        tab_panels.append(
+            f"""
+            <section class="type-panel{active}" data-panel="{key}">
+              <div class="panel-head">
+                <div>
+                  <h2>{html_mod.escape(title)}</h2>
+                  <p>{html_mod.escape(subtitle)}</p>
+                </div>
+                <div class="panel-meta">
+                  <span>позиций: <b>{count}</b></span>
+                  <span>сравнили: <b>{int(bucket["comparable"])}</b></span>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <div class="table-scroll">
+                <table class="tender-table">
+                  <thead>
+                    <tr>
+                      <th>№</th>
+                      <th>Наименование</th>
+                      <th>Ед.</th>
+                      <th>Кол-во</th>
+                      <th>Смета / ед.</th>
+                      <th>Смета / всего</th>
+                      <th>Рынок / ед.</th>
+                      <th>Рынок / всего</th>
+                      <th>Источники</th>
+                      <th>Итог</th>
+                    </tr>
+                  </thead>
+                  <tbody>{rows_html}</tbody>
+                </table>
+                </div>
+              </div>
+            </section>
+            """
+        )
+
+    title_esc = html_mod.escape(tender_title)
+    tid_esc = html_mod.escape(tender_id)
+    tid_js = json.dumps(tender_id, ensure_ascii=False)
+    pub_raw = (publish_date or "").strip()
+    pub_esc = html_mod.escape(pub_raw) if pub_raw else "—"
+    partial_note = (
+        f"По загруженному рынку данные есть по <b>{ready_count}</b> позициям из <b>{total_count}</b>. "
+        "Сверху общий вывод по тендеру, ниже отдельные таблицы по работам и материалам."
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>Смета и рынок · {tid_esc}</title>
+  <style>
+    :root {{
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --text: #142132;
+      --muted: #617287;
+      --line: #d9e2ec;
+      --accent: #1d6f64;
+      --accent-soft: #e7f7f3;
+      --good: #1d8348;
+      --good-bg: #e9f8ef;
+      --warn: #b35a00;
+      --warn-bg: #fff4e8;
+      --bad: #b42318;
+      --bad-bg: #feeceb;
+      --empty: #667085;
+      --empty-bg: #eef2f6;
+      --shadow: 0 20px 48px rgba(15, 23, 42, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(1200px 520px at 0% 0%, rgba(15, 118, 110, 0.07), transparent 50%),
+        radial-gradient(900px 420px at 100% 0%, rgba(59, 130, 246, 0.06), transparent 48%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }}
+    .wrap {{ max-width: 1680px; margin: 0 auto; padding: 1.5rem 1.2rem 3rem; }}
+    header {{ margin-bottom: 1.5rem; }}
+    header h1 {{ font-size: 1.55rem; font-weight: 700; margin: 0 0 .3rem; }}
+    header p {{ margin: 0; color: var(--muted); font-size: .96rem; }}
+    .top-link {{
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
+      margin-bottom: .8rem;
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+    }}
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(260px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0 1.25rem;
+    }}
+    @media (max-width: 900px) {{
+      .summary-grid {{ grid-template-columns: 1fr; }}
+    }}
+    .summary-card {{
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 1rem 1.1rem;
+      box-shadow: var(--shadow);
+    }}
+    .summary-card__title {{ font-size: .88rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+    .summary-card__count {{ font-size: 2rem; font-weight: 800; margin: .25rem 0 .4rem; }}
+    .summary-card__meta {{ color: var(--muted); font-size: .92rem; margin-top: .2rem; }}
+    .live-note {{
+      margin: .75rem 0 1rem;
+      padding: .95rem 1rem;
+      border: 1px solid #cae9e5;
+      border-radius: 16px;
+      color: #21564f;
+      background: var(--accent-soft);
+    }}
+    .report-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: .7rem;
+      align-items: center;
+      margin-bottom: 1.1rem;
+    }}
+    .report-btn {{
+      border: 1px solid #b9ddd6;
+      border-radius: 999px;
+      padding: .78rem 1.2rem;
+      background: var(--accent-soft);
+      color: #164e48;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    .report-btn.secondary {{ background: #f7fafc; color: var(--text); border-color: #d7e2ec; }}
+    .report-status {{ color: var(--muted); font-size: .93rem; }}
+    .viewer {{
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }}
+    .viewer-head {{
+      padding: 1rem 1.1rem .55rem;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(248,250,252,.95), rgba(255,255,255,.98));
+    }}
+    .viewer-head h2 {{ margin: 0 0 .25rem; font-size: 1.05rem; }}
+    .viewer-head p {{ margin: 0; color: var(--muted); font-size: .93rem; }}
+    .type-tabs {{ display: flex; flex-wrap: wrap; gap: .6rem; padding: 1rem 1.1rem 0; }}
+    .type-tab {{
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--text);
+      border-radius: 999px;
+      padding: .62rem 1rem;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    .type-tab span {{ color: var(--muted); }}
+    .type-tab.is-active {{ background: var(--accent-soft); border-color: #b9ddd6; color: #164e48; }}
+    .type-tab.is-active span {{ color: #53746f; }}
+    .type-panel {{ display: none; padding: 1rem 1.1rem 1.15rem; }}
+    .type-panel.is-active {{ display: block; }}
+    .panel-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      margin-bottom: .85rem;
+    }}
+    .panel-head h2 {{ margin: 0 0 .2rem; font-size: 1.05rem; }}
+    .panel-head p {{ margin: 0; color: var(--muted); font-size: .92rem; max-width: 860px; }}
+    .panel-meta {{ display: flex; flex-wrap: wrap; gap: .55rem; }}
+    .panel-meta span {{
+      padding: .46rem .72rem;
+      border-radius: 999px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      border: 1px solid var(--line);
+      font-size: .9rem;
+    }}
+    .table-wrap {{
+      overflow: visible;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fff;
+      position: relative;
+    }}
+    .table-scroll {{
+      overflow-x: auto;
+      overflow-y: visible;
+      border-radius: 18px;
+    }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 1280px; }}
+    thead th {{
+      position: sticky;
+      top: 72px;
+      z-index: 12;
+      background: #f8fafc;
+      color: #324054;
+      font-weight: 700;
+      text-align: left;
+      font-size: .84rem;
+      padding: .78rem .74rem;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }}
+    tbody td {{
+      padding: .78rem .74rem;
+      vertical-align: top;
+      border-bottom: 1px solid #edf2f7;
+      color: var(--text);
+      word-break: break-word;
+      font-size: .92rem;
+    }}
+    .data-row.row-ready td:first-child {{ position: relative; }}
+    .data-row.row-ready td:first-child::before {{
+      content: "";
+      position: absolute;
+      left: .18rem;
+      top: .9rem;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px rgba(15, 118, 110, 0.14);
+    }}
+    .col-no {{ width: 56px; color: var(--muted); padding-left: .85rem; }}
+    .col-name {{ min-width: 360px; }}
+    .name-main {{ font-weight: 700; margin-bottom: .35rem; }}
+    .type-pill {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: .18rem .55rem;
+      font-size: .74rem;
+      font-weight: 700;
+      background: #edf6ff;
+      color: #245b8f;
+    }}
+    .sources-cell {{ min-width: 440px; }}
+    .sources-cell .src-row {{
+      display: grid;
+      grid-template-columns: auto minmax(100px, 130px) minmax(120px, 180px) minmax(180px, 1fr);
+      gap: .4rem;
+      align-items: start;
+      padding: .42rem 0;
+      border-bottom: 1px dashed #dde5ee;
+    }}
+    .sources-cell .src-row:last-child {{ border-bottom: 0; }}
+    .src-idx {{ color: var(--muted); font-size: .82rem; padding-top: .2rem; }}
+    .src-chip {{
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      min-height: 2rem;
+      padding: .38rem .55rem;
+      border-radius: 12px;
+      font-size: .82rem;
+      line-height: 1.2;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+    }}
+    .src-chip--price {{ color: #9a6700; background: #fff7e6; border-color: #f5ddb3; }}
+    .src-chip--phone {{ color: #0f6b46; background: #eaf7ef; border-color: #cce7d8; }}
+    .src-chip--site {{ color: #245b8f; background: #edf6ff; border-color: #d6e8fb; }}
+    .src-chip a {{ color: inherit; text-decoration: none; }}
+    .src-chip a:hover {{ text-decoration: underline; }}
+    .src-source {{
+      display: inline-block;
+      margin-right: .3rem;
+      padding: .15rem .45rem;
+      border-radius: 999px;
+      background: #f1ebff;
+      color: #6547c2;
+      font-size: .72rem;
+    }}
+    .status-pill {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 122px;
+      padding: .45rem .7rem;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: .8rem;
+      white-space: nowrap;
+    }}
+    .status-good {{ color: var(--good); background: var(--good-bg); }}
+    .status-warn {{ color: var(--warn); background: var(--warn-bg); }}
+    .status-bad {{ color: var(--bad); background: var(--bad-bg); }}
+    .status-empty {{ color: var(--empty); background: var(--empty-bg); }}
+    .mini-note {{ margin-top: .35rem; color: var(--muted); font-size: .78rem; }}
+    .empty-row {{ text-align: center; color: var(--muted); padding: 2rem 1rem; }}
+    .viability {{
+      border-radius: 20px;
+      padding: 1.15rem 1.2rem;
+      margin-bottom: 1rem;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }}
+    .viability--room {{ background: linear-gradient(180deg, #f7fff9, #ffffff); border-color: #cfe9d8; }}
+    .viability--tight {{ background: linear-gradient(180deg, #fff8f7, #ffffff); border-color: #f1d3d1; }}
+    .viability--warn,
+    .viability--neutral {{ background: linear-gradient(180deg, #fffdf7, #ffffff); border-color: #efe0b3; }}
+    .viability__head {{ color: var(--muted); font-size: .88rem; margin-bottom: .45rem; }}
+    .viability__verdict {{ font-size: 1.45rem; margin: 0 0 .35rem; }}
+    .viability__facts,
+    .viability__pros ul,
+    .viability__cons ul {{ margin: .6rem 0 0; padding-left: 1.1rem; }}
+    .viability__pros,
+    .viability__cons {{ margin-top: .8rem; padding: .85rem .95rem; border-radius: 16px; background: #f8fafc; }}
+    .viability__narrative {{ margin-top: .9rem; padding: .95rem 1rem; border-radius: 16px; background: #f8fafc; white-space: pre-wrap; }}
+    .viability__muted {{ margin: .65rem 0 0 0; font-size: .82rem; color: var(--muted); line-height: 1.45; }}
+    .site-log-fab {{
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      width: 52px;
+      height: 52px;
+      border-radius: 999px;
+      border: 1px solid #d7e2ec;
+      background: #ffffff;
+      color: #1f3a37;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, .12);
+      cursor: pointer;
+      font-size: 1.2rem;
+    }}
+    .site-log-fab.has-new {{ box-shadow: 0 0 0 4px rgba(15, 118, 110, .12), 0 12px 30px rgba(15, 23, 42, .12); }}
+    .site-log-panel {{
+      position: fixed;
+      right: 22px;
+      bottom: 86px;
+      width: min(420px, calc(100vw - 32px));
+      max-height: min(70vh, 720px);
+      background: rgba(255,255,255,.98);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 24px 60px rgba(15, 23, 42, .16);
+      overflow: hidden;
+      z-index: 30;
+    }}
+    .site-log-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: .85rem .95rem;
+      color: var(--muted);
+      font-size: .9rem;
+      background: #f8fafc;
+      border-bottom: 1px solid var(--line);
+    }}
+    .site-log-close {{ border: 0; background: transparent; color: #334155; cursor: pointer; font-size: .88rem; }}
+    .site-log-feed {{ max-height: min(62vh, 640px); overflow: auto; padding: .85rem .9rem; display: grid; gap: .55rem; }}
+    .site-log-msg {{ padding: .75rem .8rem; border-radius: 14px; background: #f8fafc; border: 1px solid #e7edf4; }}
+    .site-log-msg.is-error,
+    .site-log-msg.is-warn {{ border-color: #f5ddb3; background: #fff8eb; }}
+    .site-log-msg.is-done {{ border-color: #cce7d8; background: #eefaf2; }}
+    .site-log-meta {{ font-size: .76rem; color: var(--muted); margin-bottom: .25rem; }}
+    .site-log-text {{ color: #243447; white-space: pre-wrap; word-break: break-word; }}
+    .site-log-empty {{ color: var(--muted); font-size: .9rem; }}
+  </style>
+</head>
+<body>
+  <!-- merge-report-build: {html_mod.escape(datetime.now(timezone.utc).isoformat())} -->
+  <div class="wrap">
+    <header>
+      <a href="/" class="top-link">← К списку тендеров</a>
+      <h1>{title_esc}</h1>
+      <p><code>{tid_esc}</code> · опубликован: <b>{pub_esc}</b></p>
+    </header>
+    {viability_html}
+    <div class="live-note">{partial_note}</div>
+    <section class="summary-grid">
+      {"".join(summary_cards)}
+    </section>
+    <div class="report-actions">
+      <button type="button" class="report-btn" onclick="startTenderCompare(false)">Продолжить поиск цен</button>
+      <button type="button" class="report-btn secondary" onclick="startTenderCompare(true)">Начать поиск заново</button>
+      <button type="button" class="report-btn secondary" onclick="location.reload()">Обновить страницу</button>
+      <span class="report-status" id="liveStatus">Если поиск рынка сейчас работает, таблица будет обновляться по мере сохранения новых строк.</span>
+    </div>
+    <section class="viewer">
+      <div class="viewer-head">
+        <h2>Таблица разбора позиций</h2>
+        <p>Переключайте вкладки ниже: таблица меняется прямо на сайте без Excel, чтобы отдельно смотреть работы и материалы.</p>
+      </div>
+      <div class="type-tabs">
+        {"".join(tab_buttons)}
+      </div>
+      <div class="type-panels">
+        {"".join(tab_panels)}
+      </div>
+    </section>
+  </div>
+  <button type="button" class="site-log-fab" id="siteLogFab" onclick="toggleSiteLog()" title="Логи и сообщения выполнения">🧾</button>
+  <aside class="site-log-panel" id="siteLogPanel" hidden>
+    <div class="site-log-head">
+      <span>🧾 Логи выполнения</span>
+      <button type="button" class="site-log-close" onclick="toggleSiteLog(false)">закрыть</button>
+    </div>
+    <div class="site-log-feed" id="siteLogFeed">
+      <div class="site-log-empty">Пока событий нет. Когда поиск рынка работает по этому тендеру, сообщения появятся здесь.</div>
+    </div>
+  </aside>
+  <script>
+    const TENDER_ID = {tid_js};
+    let siteLogOpen = false;
+    let siteLogLastKey = "";
+
+    function toggleSiteLog(force) {{
+      const panel = document.getElementById("siteLogPanel");
+      const fab = document.getElementById("siteLogFab");
+      if (!panel) return;
+      siteLogOpen = typeof force === "boolean" ? force : panel.hidden;
+      panel.hidden = !siteLogOpen;
+      if (siteLogOpen && fab) fab.classList.remove("has-new");
+      const feed = document.getElementById("siteLogFeed");
+      if (siteLogOpen && feed) feed.scrollTop = feed.scrollHeight;
+    }}
+
+    function renderSiteLog(events) {{
+      const feed = document.getElementById("siteLogFeed");
+      const fab = document.getElementById("siteLogFab");
+      if (!feed) return;
+      const list = Array.isArray(events) ? events.filter((ev) => !ev.tender_id || ev.tender_id === TENDER_ID).slice(-90) : [];
+      const last = list.length ? JSON.stringify(list[list.length - 1]) : "";
+      if (last && last !== siteLogLastKey && !siteLogOpen && fab) fab.classList.add("has-new");
+      siteLogLastKey = last;
+      feed.replaceChildren();
+      if (!list.length) {{
+        const empty = document.createElement("div");
+        empty.className = "site-log-empty";
+        empty.textContent = "Пока событий нет. Когда поиск рынка работает по этому тендеру, сообщения появятся здесь.";
+        feed.appendChild(empty);
+        return;
+      }}
+      for (const ev of list) {{
+        const kind = String(ev.kind || "");
+        const msg = document.createElement("div");
+        msg.className = "site-log-msg" + (kind ? " is-" + kind : "");
+        const meta = document.createElement("div");
+        meta.className = "site-log-meta";
+        meta.textContent = String(ev.ts || "сейчас").replace("T", " ");
+        const text = document.createElement("div");
+        text.className = "site-log-text";
+        const icon = kind === "done" ? "✅" : (kind === "error" || kind === "warn") ? "⚠️" : kind === "begin" ? "🔎" : "🧾";
+        const rawText = String(ev.text || "");
+        text.textContent = rawText.startsWith(icon) ? rawText : (icon + " " + rawText);
+        msg.appendChild(meta);
+        msg.appendChild(text);
+        feed.appendChild(msg);
+      }}
+      if (siteLogOpen) feed.scrollTop = feed.scrollHeight;
+    }}
+
+    async function startTenderCompare(resetMarket) {{
+      const ok = confirm(
+        resetMarket
+          ? "Начать поиск цен заново для этого тендера?\n\nСохранённый прогресс рынка будет отброшен."
+          : "Продолжить поиск цен для этого тендера?\n\nУже сохранённые строки рынка будут использованы."
+      );
+      if (!ok) return;
+      const status = document.getElementById("liveStatus");
+      if (status) status.textContent = "Отправляю задачу на сервер…";
+      try {{
+        const r = await fetch(resetMarket ? "/api/generate-merge-site-one-rerun-market" : "/api/generate-merge-site-one", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json", "Accept": "application/json" }},
+          body: JSON.stringify({{ tender_id: TENDER_ID }}),
+        }});
+        const data = await r.json().catch(() => ({{}}));
+        if (!r.ok || !data.ok) {{
+          alert(data.message || ("Не удалось запустить задачу, HTTP " + r.status));
+          if (status) status.textContent = data.message || "Запуск не выполнен.";
+          return;
+        }}
+        if (status) status.textContent = "Задача запущена. Таблица будет обновляться по мере сохранения строк.";
+      }} catch (e) {{
+        alert("Ошибка запроса: " + e);
+        if (status) status.textContent = "Ошибка запроса к серверу.";
+      }}
+    }}
+
+    (function autoRefreshWhileMarketRuns() {{
+      let lastDone = null;
+      let lastReloadAt = Date.now();
+      async function tick() {{
+        const status = document.getElementById("liveStatus");
+        try {{
+          const r = await fetch("/api/merge-site-status", {{ cache: "no-store" }});
+          if (!r.ok) return;
+          const st = await r.json();
+          renderSiteLog(st.chat_events || []);
+          if (!st.running || st.current_tid !== TENDER_ID) return;
+          const done = Number(st.market_done || 0);
+          const total = Number(st.market_total || 0);
+          if (status && total > 0) {{
+            status.textContent = "Поиск рынка работает: " + done + "/" + total + ". Страница обновляется, чтобы показать новые строки.";
+          }}
+          if (lastDone === null) {{
+            lastDone = done;
+            return;
+          }}
+          if (done > lastDone && Date.now() - lastReloadAt > 12000) {{
+            lastReloadAt = Date.now();
+            location.reload();
+          }}
+          lastDone = Math.max(lastDone, done);
+        }} catch (e) {{}}
+      }}
+      setInterval(tick, 3000);
+      tick();
+    }})();
+
+    (function() {{
+      const tabs = Array.from(document.querySelectorAll(".type-tab"));
+      const panels = Array.from(document.querySelectorAll(".type-panel"));
+      function setActive(tabKey) {{
+        tabs.forEach((tab) => tab.classList.toggle("is-active", tab.dataset.tab === tabKey));
+        panels.forEach((panel) => panel.classList.toggle("is-active", panel.dataset.panel === tabKey));
+      }}
+      tabs.forEach((tab) => {{
+        tab.addEventListener("click", () => setActive(tab.dataset.tab));
+      }});
+      setActive("work");
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
 def write_tender_report_site(tender_id: str) -> Path | None:
     tid = (tender_id or "").strip()
     if not tid:
@@ -1256,7 +2187,7 @@ def write_tender_report_site(tender_id: str) -> Path | None:
     path = out_dir / "index.html"
     publish_date = str(meta.get("publish_date") or "").strip()
     path.write_text(
-        _render_html(tid, title, df, publish_date=publish_date, viability_html=viability_html),
+        _render_html_typed(tid, title, df, publish_date=publish_date, viability_html=viability_html),
         encoding="utf-8",
     )
     return path

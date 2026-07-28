@@ -1994,6 +1994,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Отчет по сметам {tender.tender_id}</title>
   <style>
     html {{ box-sizing: border-box; }}

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from autobot.paths import REPO_ROOT
-from autobot.real_market_scraper import AvitoBrowserFetcher, MarketOffer, search_market
+from autobot.real_market_scraper import AvitoBrowserFetcher, MarketOffer, _compact_query, search_market
 
 try:
     from dotenv import load_dotenv
@@ -31,6 +31,40 @@ except ImportError:
 
 DEFAULT_SOURCES = ["avito", "web"]
 VALID_SOURCES = {"avito", "web"}
+REMOTE_CITY_TOKENS = (
+    "москва",
+    "московск",
+    "санкт-петербург",
+    "петербург",
+    "ленинградск",
+)
+
+KNOWN_GEO_SCOPES: dict[str, dict[str, object]] = {
+    "миасс": {
+        "search_regions": ["Миасс", "Челябинск", "Челябинская область"],
+        "allow_tokens": ["миасс", "челябинск", "челябинская", "златоуст", "чебаркуль", "карабаш"],
+        "prefer_tokens": ["миасс", "челябинск", "челябинская"],
+        "label": "Миасс + рядом до 150 км (Челябинск/область)",
+    },
+    "чебаркуль": {
+        "search_regions": ["Чебаркуль", "Челябинск", "Челябинская область"],
+        "allow_tokens": ["чебаркуль", "челябинск", "челябинская", "миасс", "златоуст"],
+        "prefer_tokens": ["чебаркуль", "челябинск", "челябинская"],
+        "label": "Чебаркуль + рядом до 150 км (Челябинск/область)",
+    },
+    "златоуст": {
+        "search_regions": ["Златоуст", "Челябинск", "Челябинская область"],
+        "allow_tokens": ["златоуст", "челябинск", "челябинская", "миасс", "чебаркуль"],
+        "prefer_tokens": ["златоуст", "челябинск", "челябинская"],
+        "label": "Златоуст + рядом до 150 км (Челябинск/область)",
+    },
+    "челябинск": {
+        "search_regions": ["Челябинск", "Челябинская область"],
+        "allow_tokens": ["челябинск", "челябинская", "миасс", "златоуст", "чебаркуль", "карабаш"],
+        "prefer_tokens": ["челябинск", "челябинская"],
+        "label": "Челябинск и область",
+    },
+}
 
 
 @dataclass
@@ -73,6 +107,56 @@ def _sentences(text: str) -> list[str]:
     parts = re.split(r"[\n;]+|(?<=[.!?])\s+", raw)
     clean_parts = (re.sub(r"\s+", " ", p).strip() for p in parts)
     return _uniq_keep_order((p for p in clean_parts if len(p.strip()) >= 12), limit=40)
+
+
+def _norm_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").casefold().replace("ё", "е")).strip()
+
+
+def _geo_scope(region: str) -> dict[str, object]:
+    raw = re.sub(r"\s+", " ", str(region or "").strip())
+    if not raw:
+        return {"search_regions": [""], "allow_tokens": [], "prefer_tokens": [], "label": ""}
+    low = _norm_text(raw)
+    for key, scope in KNOWN_GEO_SCOPES.items():
+        if key in low:
+            return dict(scope)
+    token = low.split(",")[0].strip()
+    return {
+        "search_regions": [raw],
+        "allow_tokens": [token] if token else [],
+        "prefer_tokens": [token] if token else [],
+        "label": raw,
+    }
+
+
+def _offer_geo_score(offer: MarketOffer, *, allow_tokens: list[str], prefer_tokens: list[str]) -> int:
+    text = _norm_text(f"{offer.title} {offer.snippet} {offer.url}")
+    score = 0
+    if any(tok and tok in text for tok in prefer_tokens):
+        score += 100
+    elif any(tok and tok in text for tok in allow_tokens):
+        score += 40
+    if any(tok in text for tok in REMOTE_CITY_TOKENS) and not any(tok and tok in text for tok in allow_tokens):
+        score -= 120
+    return score
+
+
+def _rank_geo_offers(offers: list[MarketOffer], *, allow_tokens: list[str], prefer_tokens: list[str], limit: int) -> list[MarketOffer]:
+    if not offers:
+        return []
+    scored: list[tuple[int, int, MarketOffer]] = []
+    for idx, offer in enumerate(offers):
+        score = _offer_geo_score(offer, allow_tokens=allow_tokens, prefer_tokens=prefer_tokens)
+        if score < 0:
+            continue
+        scored.append((score, idx, offer))
+    if not scored:
+        if allow_tokens or prefer_tokens:
+            return []
+        return offers[:limit]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [offer for _, _, offer in scored[:limit]]
 
 
 def _all_text(offers: list[MarketOffer]) -> str:
@@ -181,18 +265,70 @@ def research_item(
     src = sources or DEFAULT_SOURCES.copy()
     src = [s for s in src if s in VALID_SOURCES] or DEFAULT_SOURCES.copy()
     max_results = max(1, min(10, int(max_results or 5)))
+    geo = _geo_scope(region)
+    search_regions = [str(x or "").strip() for x in (geo.get("search_regions") or [""]) if str(x or "").strip() or not region]
+    allow_tokens = [str(x) for x in (geo.get("allow_tokens") or [])]
+    prefer_tokens = [str(x) for x in (geo.get("prefer_tokens") or [])]
+    region_label = str(geo.get("label") or region or "")
 
     use_browser = (os.environ.get("MARKET_AVITO_BROWSER", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
     browser_headless = (os.environ.get("MARKET_AVITO_HEADLESS", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+    active_sources = list(src)
+    all_offers: list[MarketOffer] = []
+    error_parts: list[str] = []
+    seen_keys: set[str] = set()
+
+    def merge_offers(items: list[MarketOffer]) -> None:
+        for offer in items or []:
+            key = (offer.url or "").strip() or f"{offer.source}|{offer.title}|{offer.price}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            all_offers.append(offer)
+
     with AvitoBrowserFetcher(enabled=use_browser and "avito" in src, headless=browser_headless) as browser:
-        offers, errors = search_market(
-            q,
-            region=region,
-            sources=src,
-            max_results=max_results,
-            browser_fetcher=browser,
-        )
-    return ItemResearchResult(query=q, region=region, sources=src, offers=offers, errors=errors)
+        compact_q = _compact_query(q)
+        for idx, search_region in enumerate(search_regions or [""]):
+            offers, errors = search_market(
+                q,
+                region=search_region,
+                sources=active_sources,
+                max_results=max_results,
+                browser_fetcher=browser,
+            )
+            merge_offers(offers)
+            if errors:
+                error_parts.append(errors)
+
+            err_low = str(errors or "").casefold()
+            avito_blocked = "ограничил доступ" in err_low or "ip/vpn" in err_low or "captcha" in err_low
+            if avito_blocked and "avito" in active_sources:
+                active_sources = [s for s in active_sources if s != "avito"]
+
+            need_web_retry = "web" in active_sources and (not offers or (compact_q and compact_q != q))
+            if need_web_retry:
+                retry_query = compact_q if compact_q and compact_q != q else q
+                retry_offers, retry_errors = search_market(
+                    retry_query,
+                    region=search_region,
+                    sources=["web"],
+                    max_results=max_results,
+                    browser_fetcher=browser,
+                )
+                merge_offers(retry_offers)
+                if retry_errors:
+                    error_parts.append(retry_errors)
+
+            ranked_now = _rank_geo_offers(all_offers, allow_tokens=allow_tokens, prefer_tokens=prefer_tokens, limit=max_results)
+            if len(ranked_now) >= max_results:
+                break
+            if idx == 0 and not ranked_now and len(search_regions) > 1:
+                error_parts.append(f"В самом городе не найдено — расширяю поиск рядом: {search_regions[1]}")
+
+    final_sources = active_sources or ["web"]
+    final_errors = "; ".join(_uniq_keep_order((e for e in error_parts if str(e or "").strip()), limit=6))
+    final_offers = _rank_geo_offers(all_offers, allow_tokens=allow_tokens, prefer_tokens=prefer_tokens, limit=max_results)
+    return ItemResearchResult(query=q, region=region_label, sources=final_sources, offers=final_offers[:max_results], errors=final_errors)
 
 
 def _money(v: float) -> str:
