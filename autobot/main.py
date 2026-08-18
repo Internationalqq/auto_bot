@@ -1485,7 +1485,7 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
     total_col = min(15, df.shape[1] - 1)
     price_per_unit_candidates = [c for c in (9, 10, 11, 12, 13, 14) if c < df.shape[1]]
 
-    position_rows: list[tuple[int, int, str, str, float | None, str]] = []
+    position_rows: list[tuple[int, int, str, str, str, float | None, str]] = []
     current_section = ""
     # header_row — уже строка первой позиции (шапка с № в A), не пропускаем её.
     for r in range(header_row, len(df)):
@@ -1527,18 +1527,19 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
         if len(work_text) < 8:
             continue
 
+        basis_code = _cell_text(row_values[1]) if len(row_values) > 1 else ""
         unit_text = _cell_text(row_values[unit_col]) if unit_col < len(row_values) else ""
         qty_val = row_values[qty_col] if qty_col < len(row_values) else None
         qty = to_float(qty_val)
 
-        position_rows.append((r, int(round(item_no)), work_text, unit_text, qty, current_section))
+        position_rows.append((r, int(round(item_no)), basis_code, work_text, unit_text, qty, current_section))
 
     if not position_rows:
         return items
 
     # Берем сумму позиции как последнее числовое значение в колонке P
     # между текущей позицией и началом следующей.
-    for idx, (row_idx, item_no, work_text, unit_text, qty, section_text) in enumerate(position_rows):
+    for idx, (row_idx, item_no, basis_code, work_text, unit_text, qty, section_text) in enumerate(position_rows):
         next_row_idx = position_rows[idx + 1][0] if idx + 1 < len(position_rows) else len(df)
         last_total = pick_lsr_position_total(df, row_idx, next_row_idx, total_col)
         if last_total is None:
@@ -1589,6 +1590,7 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
                 "section": section_text,
                 "extract_source": "LSR",
                 "item_no": item_no,
+                "basis_code": basis_code,
                 "work_name": work_text,
                 "unit": unit_text,
                 "qty": qty,
@@ -1832,6 +1834,21 @@ def write_tender_estimate_report(tender: Tender, rows: list[dict], out_paths: di
 
 
 def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
+    source_columns = [
+        "source_file",
+        "extract_source",
+        "item_no",
+        "basis_code",
+        "sheet_name",
+        "excel_row",
+        "section",
+        "work_name",
+        "unit",
+        "qty",
+        "qty_with_unit",
+        "unit_price_rub",
+        "price_from_estimate_rub",
+    ]
     if not rows:
         return pd.DataFrame(
             columns=[
@@ -1850,22 +1867,12 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
             ]
         )
     df = pd.DataFrame(rows)
-    clean_df = df[
-        [
-            "source_file",
-            "extract_source",
-            "item_no",
-            "sheet_name",
-            "excel_row",
-            "section",
-            "work_name",
-            "unit",
-            "qty",
-            "qty_with_unit",
-            "unit_price_rub",
-            "price_from_estimate_rub",
-        ]
-    ].rename(
+    for col in source_columns:
+        if col not in df.columns:
+            df[col] = None
+    df["unit"] = df["unit"].fillna("")
+    df["qty_with_unit"] = df["qty_with_unit"].fillna("")
+    clean_df = df[source_columns].rename(
         columns={
             "source_file": "Файл ЛСР",
             "extract_source": "Источник извлечения",

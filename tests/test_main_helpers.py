@@ -2,6 +2,7 @@ from pathlib import Path
 
 from autobot.main import (
     Tender,
+    _build_tender_clean_df,
     _candidate_notice_urls,
     _extract_reg_number_from_url,
     _sanitize_filename_for_windows,
@@ -66,3 +67,24 @@ def test_extract_rows_from_pdf_fallback(monkeypatch):
     assert any("основания" in n for n in names)
     assert any("бордюров" in n for n in names)
     assert all(r["extract_source"] == "PDF fallback" for r in rows)
+
+
+def test_build_tender_clean_df_accepts_fallback_rows_without_lsr_columns():
+    rows = [
+        {
+            "source_file": "estimate.xlsx",
+            "sheet_name": "Sheet1",
+            "excel_row": 12,
+            "section": "",
+            "extract_source": "Excel fallback",
+            "work_name": "Montazh ograzhdeniya",
+            "price_from_estimate_rub": 125000.0,
+        }
+    ]
+
+    clean = _build_tender_clean_df(rows)
+
+    assert len(clean) == 1
+    assert clean.iloc[0]["Название работы/услуги"] == "Montazh ograzhdeniya"
+    assert clean.iloc[0]["Сумма, руб"] == 125000.0
+    assert clean.iloc[0]["Ед. изм."] == ""

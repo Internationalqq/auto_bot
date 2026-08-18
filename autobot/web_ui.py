@@ -33,6 +33,7 @@ from flask import (
     redirect,
     jsonify,
     make_response,
+    render_template,
     render_template_string,
     request,
     send_file,
@@ -41,6 +42,7 @@ from flask import (
 )
 
 from autobot.site_public_url import get_report_site_public_base
+from autobot.workflow_overview import build_storage_overview, build_workflow_payload
 
 _AUTOBOT_MAIN_FILE = REPO_ROOT / "autobot" / "main.py"
 _TOOLS_RUN_MODULE = REPO_ROOT / "tools" / "run_module.py"
@@ -2056,6 +2058,17 @@ INDEX_TEMPLATE = """
       refreshCoverage();
     }
 
+    function navigateCrmProject(url) {
+      if (!url) return;
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "pmbi:navigate", href: url }, "*");
+          return;
+        }
+      } catch (e) {}
+      window.location.href = url;
+    }
+
     async function exportTenderToCrm(tid) {
       const t = String(tid || "").trim();
       if (!t) return;
@@ -2075,7 +2088,7 @@ INDEX_TEMPLATE = """
         const summary = data.summary || {};
         if (data.already_exists) {
           alert("Эта закупка уже есть в CRM: объект #" + data.project_id + ".");
-          if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+          if (data.project_url) navigateCrmProject(data.project_url);
           return;
         }
         alert(
@@ -2083,7 +2096,7 @@ INDEX_TEMPLATE = """
           + "Материалов отправлено: " + (data.materials_sent || 0) + ".\\n"
           + "В CRM сейчас материалов: " + (summary.materials == null ? "?" : summary.materials) + "."
         );
-        if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+        if (data.project_url) navigateCrmProject(data.project_url);
       } catch (e) {
         alert("Не удалось отправить закупку в CRM: " + e);
       }
@@ -2942,7 +2955,27 @@ def _safe_download_stem(title: str, fallback: str) -> str:
 
 
 def _crm_base_url() -> str:
-    return (os.environ.get("PMBI_CRM_URL") or "http://127.0.0.1:8080").strip().rstrip("/")
+    return (
+        os.environ.get("PMBI_CRM_URL")
+        or os.environ.get("PMBI_CRM_BASE_URL")
+        or "http://127.0.0.1:8080"
+    ).strip().rstrip("/")
+
+
+def _crm_public_base_url() -> str:
+    return (
+        os.environ.get("PMBI_CRM_PUBLIC_URL")
+        or os.environ.get("PMBI_PUBLIC_BASE_URL")
+        or os.environ.get("PMBI_CRM_URL")
+        or "http://127.0.0.1:8080"
+    ).strip().rstrip("/")
+
+
+def _crm_project_url(project_id: int, tab: str | None = None) -> str:
+    query = f"openProject={int(project_id)}"
+    if tab:
+        query += f"&tab={quote(str(tab), safe='')}"
+    return f"/app/projects?{query}"
 
 
 def _crm_credentials() -> tuple[str, str] | None:
@@ -3062,8 +3095,14 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         excel_row = row.get("excel_row")
         if excel_row not in (None, ""):
             notes.append(f"?????? Excel: {excel_row}")
+        basis_code = str(row.get("basis_code") or row.get("code") or row.get("article") or "").strip()
+        if basis_code:
+            notes.append(f"Код: {basis_code}")
         type_key = str(row.get("type") or "").strip().lower()
         type_label = str(row.get("type_label") or "").strip()
+        code_type = _estimate_code_type(basis_code)
+        if code_type:
+            type_key, type_label = code_type
         if type_label:
             notes.append(f"???: {type_label}")
         if total is not None and total > 0:
@@ -3075,6 +3114,9 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
                 "unit": str(row.get("unit") or "").strip() or "??",
                 "planned_qty": max(0.01, float(qty)),
                 "planned_price": max(0.0, float(unit_price or 0.0)),
+                "article": basis_code,
+                "code": basis_code,
+                "basis_code": basis_code,
                 "item_kind": item_kind,
                 "type": type_key or item_kind,
                 "type_label": type_label,
@@ -3225,7 +3267,7 @@ def export_tender_to_crm(tender_id: str) -> dict:
                     if project_id > 0:
                         return {
                             "project_id": project_id,
-                            "project_url": f"{base}/app/projects",
+                            "project_url": _crm_project_url(project_id, "materials"),
                             "materials_sent": 0,
                             "summary": {"materials": 0, "tasks": 0, "stages": 0},
                             "already_exists": True,
@@ -3264,7 +3306,7 @@ def export_tender_to_crm(tender_id: str) -> dict:
 
     return {
         "project_id": project_id,
-        "project_url": f"{base}/app/projects",
+        "project_url": _crm_project_url(project_id, "materials"),
         "materials_sent": len(materials),
         "summary": bootstrap_summary,
     }
@@ -3298,7 +3340,7 @@ def export_estimate_to_crm(estimate_id: str, overrides: dict | None = None) -> d
                     if project_id > 0:
                         return {
                             "project_id": project_id,
-                            "project_url": f"{base}/app/projects",
+                            "project_url": _crm_project_url(project_id, "materials"),
                             "materials_sent": 0,
                             "summary": {"materials": 0, "tasks": 0, "stages": 0},
                             "already_exists": True,
@@ -3337,7 +3379,7 @@ def export_estimate_to_crm(estimate_id: str, overrides: dict | None = None) -> d
 
     return {
         "project_id": project_id,
-        "project_url": f"{base}/app/projects",
+        "project_url": _crm_project_url(project_id, "materials"),
         "materials_sent": len(materials),
         "summary": bootstrap_summary,
     }
@@ -3458,6 +3500,143 @@ def _publish_date_sort_key(raw: str, *, newest_first: bool) -> tuple[int, float]
         return 0, (-ts if newest_first else ts)
     except ValueError:
         return 1, 0.0
+
+
+TENDERS_STATUS_LABELS = {
+    "download_documents": "Нужны документы",
+    "extract_estimate": "Нужна смета",
+    "find_market_prices": "Нужны цены",
+    "build_comparison": "Нужно сравнение",
+    "review": "Готово",
+}
+
+TENDERS_STATUS_DETAILS = {
+    "download_documents": "Документы еще не скачаны.",
+    "extract_estimate": "Документы есть, смета еще не извлечена.",
+    "find_market_prices": "Смета готова, рынок еще не собран.",
+    "build_comparison": "Цены есть, итоговая страница еще не готова.",
+    "review": "Сравнение готово к просмотру.",
+}
+
+TENDERS_STATUS_CLASS = {
+    "download_documents": "status-attention",
+    "extract_estimate": "status-attention",
+    "find_market_prices": "status-work",
+    "build_comparison": "status-work",
+    "review": "status-ready",
+}
+
+TENDERS_STATUS_ORDER = {
+    "download_documents": 10,
+    "extract_estimate": 20,
+    "find_market_prices": 30,
+    "build_comparison": 40,
+    "review": 90,
+}
+
+TENDERS_MAIN_ACTION_LABELS = {
+    "download_documents": "Скачать документы",
+    "extract_estimate": "Извлечь смету",
+    "find_market_prices": "Найти цены",
+    "build_comparison": "Собрать сравнение",
+    "review": "Открыть результат",
+}
+
+TENDERS_RUN_TITLES = {
+    "download_documents": "Скачиваем документы",
+    "extract_estimate": "Извлекаем смету",
+    "find_market_prices": "Ищем цены",
+    "build_comparison": "Собираем сравнение",
+    "review": "Открываем результат",
+}
+
+TENDERS_RUN_DETAILS = {
+    "download_documents": "Система скачает документы, извлечет смету и продолжит подготовку результата.",
+    "extract_estimate": "Система перечитает документы, извлечет смету и продолжит подготовку результата.",
+    "find_market_prices": "Система найдет рыночные цены и соберет сравнение.",
+    "build_comparison": "Система обновит итоговую таблицу и страницу результата.",
+    "review": "Сравнение уже готово.",
+}
+
+
+def _tenders_items() -> tuple[list[dict], dict[str, int]]:
+    payload = build_workflow_payload(include_storage=False)
+    meta_by_id = load_tender_metadata()
+    items = list(payload.get("tenders") or [])
+    for item in items:
+        tid = str(item.get("tender_id") or "").strip()
+        action = str(item.get("next_action") or "").strip() or "download_documents"
+        meta_row = meta_by_id.get(tid, {}) or {}
+        title = str(item.get("title") or "").strip()
+        if not title or title.casefold() in {"документы", "извещение"}:
+            title = f"Закупка № {tid}"
+        price_rub = _float_or_none(item.get("price_rub") if item.get("price_rub") is not None else meta_row.get("price_rub"))
+        item["title"] = title
+        item["status_label"] = TENDERS_STATUS_LABELS.get(action, item.get("next_action_label") or "Следующий шаг")
+        item["status_detail"] = TENDERS_STATUS_DETAILS.get(action, "")
+        item["status_class"] = TENDERS_STATUS_CLASS.get(action, "status-work")
+        item["sort_weight"] = TENDERS_STATUS_ORDER.get(action, 50)
+        item["price_fmt"] = _fmt_money(price_rub) if price_rub else "не указана"
+        item["eis_url"] = eis_notice_url(tid, meta_row.get("url"))
+        item["result_url"] = f"/merge-report/{tid}/"
+        item["main_button_label"] = TENDERS_MAIN_ACTION_LABELS.get(action, item.get("next_action_label") or "Продолжить")
+        item["main_run_title"] = TENDERS_RUN_TITLES.get(action, "Продолжаем закупку")
+        item["main_run_detail"] = TENDERS_RUN_DETAILS.get(action, "Система выполнит следующий недостающий шаг.")
+        item["can_export_crm"] = bool(item.get("has_estimate"))
+    items.sort(
+        key=lambda x: (
+            int(x.get("sort_weight") or 50),
+            _publish_date_sort_key(str(x.get("publish_date") or ""), newest_first=True),
+            str(x.get("title") or ""),
+            str(x.get("tender_id") or ""),
+        )
+    )
+    counts = {str(k): int(v) for k, v in (payload.get("counts") or {}).items()}
+    return items, counts
+
+
+def _tenders_overview(items: list[dict], counts: dict[str, int]) -> dict:
+    ready = int(counts.get("review", 0) or 0)
+    needs_work = max(0, len(items) - ready)
+    return {
+        "total": len(items),
+        "ready": ready,
+        "needs_work": needs_work,
+        "needs_prices": int(counts.get("find_market_prices", 0) or 0),
+        "needs_docs": int(counts.get("download_documents", 0) or 0),
+        "needs_estimate": int(counts.get("extract_estimate", 0) or 0),
+        "needs_comparison": int(counts.get("build_comparison", 0) or 0),
+    }
+
+
+@app.route("/dashboard")
+def dashboard_redirect():
+    return redirect(url_for("index"))
+
+
+def _render_tenders_board():
+    items, counts = _tenders_items()
+    selected_action = (request.args.get("action") or "").strip()
+    if selected_action and selected_action != "all":
+        visible_items = [x for x in items if str(x.get("next_action") or "") == selected_action]
+    else:
+        selected_action = "all"
+        visible_items = items
+    filters = [
+        {"key": "all", "label": "Все", "count": len(items)},
+        {"key": "download_documents", "label": "Документы", "count": counts.get("download_documents", 0)},
+        {"key": "extract_estimate", "label": "Сметы", "count": counts.get("extract_estimate", 0)},
+        {"key": "find_market_prices", "label": "Цены", "count": counts.get("find_market_prices", 0)},
+        {"key": "build_comparison", "label": "Сравнения", "count": counts.get("build_comparison", 0)},
+        {"key": "review", "label": "Готово", "count": counts.get("review", 0)},
+    ]
+    return render_template(
+        "tenders.html",
+        items=visible_items,
+        filters=filters,
+        selected_action=selected_action,
+        overview=_tenders_overview(items, counts),
+    )
 
 
 SIMPLE_INDEX_TEMPLATE = """
@@ -3676,11 +3855,16 @@ def _render_tenders_index(*, embed_mode: bool = False):
 
 @app.route("/")
 def root_index():
-    return redirect(url_for("estimates_page"))
+    return redirect(url_for("index"))
 
 
 @app.route("/tenders")
 def index():
+    return _render_tenders_board()
+
+
+@app.route("/tenders/old")
+def tenders_old():
     query = request.query_string.decode("utf-8", errors="ignore").strip()
     iframe_src = "/tenders/content"
     if query:
@@ -3817,7 +4001,19 @@ def _json_num(v) -> float | None:
     return f if f == f else None
 
 
-def _position_type(name: str, unit: str = "") -> tuple[str, str]:
+def _estimate_code_type(value: str) -> tuple[str, str] | None:
+    text = str(value or "")
+    if re.search(r"(?<![\w\u0400-\u04ff])(?:ФСБЦ|FSBC)\s*[-\d]", text, flags=re.IGNORECASE):
+        return "material", "Материал"
+    if re.search(r"(?<![\w\u0400-\u04ff])(?:ГЭСН|GESN)\s*[A-ZА-Я]?\s*\d", text, flags=re.IGNORECASE):
+        return "work", "Работа"
+    return None
+
+
+def _position_type(name: str, unit: str = "", basis_code: str = "") -> tuple[str, str]:
+    code_type = _estimate_code_type(f"{basis_code} {name} {unit}")
+    if code_type:
+        return code_type
     text = f"{name} {unit}".casefold().replace("ё", "е")
     material_keys = (
         "бетон", "раствор", "смесь", "цемент", "песок", "щебень", "грунт", "краска", "эмаль",
@@ -3928,7 +4124,8 @@ def _filter_estimate_rows(rows_all: list[dict], *, q: str = "", selected_types: 
 
 
 def _estimate_row_to_dict(row) -> dict:
-    type_key, type_label = _position_type(row.name, row.unit)
+    basis_code = str(getattr(row, "basis_code", "") or "").strip()
+    type_key, type_label = _position_type(row.name, row.unit, basis_code)
     return {
         "idx": int(row.idx),
         "name": row.name,
@@ -3937,6 +4134,8 @@ def _estimate_row_to_dict(row) -> dict:
         "unit_price": _json_num(row.unit_price),
         "total": _json_num(row.total),
         "item_no": row.item_no,
+        "basis_code": basis_code,
+        "code": basis_code,
         "sheet": row.sheet,
         "excel_row": row.excel_row,
         "section": row.section,
@@ -6733,6 +6932,17 @@ ESTIMATE_DETAIL_TEMPLATE = """
       return node ? (node.value || "") : "";
     }
 
+    function navigateEstimateCrmProject(url) {
+      if (!url) return;
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "pmbi:navigate", href: url }, "*");
+          return;
+        }
+      } catch (e) {}
+      window.location.href = url;
+    }
+
     window.openEstimateCrmDrawer = function() {
       const drawer = document.getElementById("estimateCrmDrawer");
       if (!drawer) return;
@@ -6787,12 +6997,12 @@ ESTIMATE_DETAIL_TEMPLATE = """
         }
         if (data.already_exists) {
           setEstimateCrmStatus("Этот объект уже есть в CRM: #" + data.project_id + ".", "success");
-          if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+          if (data.project_url) navigateEstimateCrmProject(data.project_url);
           return;
         }
         const summary = data.summary || {};
         setEstimateCrmStatus("Готово: объект #" + data.project_id + " создан. Материалов отправлено: " + (data.materials_sent || 0) + ".", "success");
-        if (data.project_url) window.open(data.project_url, "_blank", "noopener,noreferrer");
+        if (data.project_url) navigateEstimateCrmProject(data.project_url);
       } catch (e) {
         setEstimateCrmStatus("Не удалось отправить данные в CRM: " + e, "error");
       } finally {
@@ -9058,6 +9268,17 @@ def api_merge_site_status():
 @app.route("/api/reports-coverage")
 def api_reports_coverage():
     return jsonify(_compute_reports_coverage())
+
+
+@app.route("/api/workflow-overview")
+def api_workflow_overview():
+    include_storage = str(request.args.get("storage") or "").strip().lower() in {"1", "true", "yes"}
+    return jsonify(build_workflow_payload(include_storage=include_storage))
+
+
+@app.route("/api/storage-overview")
+def api_storage_overview():
+    return jsonify({"storage": [item.to_dict() for item in build_storage_overview()]})
 
 
 @app.route("/api/push-state")

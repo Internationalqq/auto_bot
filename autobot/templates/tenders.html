@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}" />
+  <title>Тендеры</title>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/tenders">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Auto Bot</span>
+    </a>
+    <nav class="topnav" aria-label="Разделы">
+      <a class="is-active" href="/tenders">Тендеры</a>
+      <a href="/estimates">Сметы</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <section class="workspace-head">
+      <div>
+        <div class="eyebrow">Закупки</div>
+        <h1>Тендеры</h1>
+      </div>
+      <div class="head-actions">
+        <button class="btn primary" type="button" data-global-action="continue-missing" {% if overview.needs_work < 1 %}disabled{% endif %}>Продолжить в работе: {{ overview.needs_work }}</button>
+        <button class="btn secondary" type="button" data-global-action="start-search">Найти закупки</button>
+      </div>
+    </section>
+
+    <section class="live-panel is-idle" id="livePanel" aria-live="polite">
+      <div class="live-main">
+        <span class="live-dot" aria-hidden="true"></span>
+        <div>
+          <strong id="liveTitle">Сейчас ничего не выполняется</strong>
+          <div class="live-sub" id="liveSub">Можно запустить поиск или продолжить недостающие тендеры.</div>
+        </div>
+      </div>
+      <div class="live-right">
+        <span class="live-percent" id="livePercent"></span>
+        <button class="ghost-btn" type="button" id="toggleLogBtn">Журнал</button>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="liveFill"></div>
+      </div>
+      <div class="live-facts" id="liveFacts"></div>
+      <pre class="live-log" id="liveLog" hidden></pre>
+    </section>
+
+    <section class="summary-grid" aria-label="Сводка">
+      <div class="metric">
+        <span>Всего</span>
+        <strong>{{ overview.total }}</strong>
+      </div>
+      <div class="metric">
+        <span>В работе</span>
+        <strong>{{ overview.needs_work }}</strong>
+      </div>
+      <div class="metric">
+        <span>Нужны цены</span>
+        <strong>{{ overview.needs_prices }}</strong>
+      </div>
+      <div class="metric metric-ready">
+        <span>Готово</span>
+        <strong>{{ overview.ready }}</strong>
+      </div>
+    </section>
+
+    <section class="filters" aria-label="Фильтр по следующему шагу">
+      {% for f in filters %}
+      <a class="filter-chip{% if selected_action == f.key %} is-active{% endif %}" href="/tenders{% if f.key != 'all' %}?action={{ f.key }}{% endif %}">
+        <span>{{ f.label }}</span>
+        <strong>{{ f.count }}</strong>
+      </a>
+      {% endfor %}
+    </section>
+
+    <section class="tender-list" aria-label="Список тендеров">
+      {% if items %}
+        {% for t in items %}
+        <article
+          class="tender-card {{ t.status_class }}"
+          data-href="{{ t.result_url }}"
+          role="link"
+          tabindex="0"
+          aria-label="Открыть карточку тендера {{ t.tender_id }}"
+        >
+          <div class="tender-main">
+            <div class="status-line">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span>{{ t.status_label }}</span>
+            </div>
+            <a class="card-title-link" href="{{ t.result_url }}">
+              <h2>{{ t.title or ("Закупка № " ~ t.tender_id) }}</h2>
+            </a>
+            <div class="meta-row">
+              <span>{{ t.tender_id }}</span>
+              <span>{{ t.region or "Без региона" }}</span>
+              <span>{{ t.price_fmt }}</span>
+              <span>{{ t.publish_date or "дата не указана" }}</span>
+            </div>
+          </div>
+
+          <div class="step-strip" aria-label="Готовность">
+            <span class="{% if t.has_downloads %}is-done{% endif %}">Документы</span>
+            <span class="{% if t.has_estimate %}is-done{% endif %}">Смета</span>
+            <span class="{% if t.has_market_sources %}is-done{% endif %}">Цены</span>
+            <span class="{% if t.has_comparison or t.has_report_site %}is-done{% endif %}">Сравнение</span>
+          </div>
+
+          <div class="next-box">
+            <span>{{ t.status_detail }}</span>
+            <div class="row-actions">
+              {% if t.next_action == "review" %}
+              <a class="btn primary" href="{{ t.result_url }}">{{ t.main_button_label }}</a>
+              {% else %}
+              <button
+                class="btn primary"
+                type="button"
+                data-tender-action="continue"
+                data-tender-id="{{ t.tender_id }}"
+                data-run-title="{{ t.main_run_title }}"
+                data-run-detail="{{ t.main_run_detail }}"
+              >{{ t.main_button_label }}</button>
+              {% endif %}
+              <details class="more-menu">
+                <summary>Еще</summary>
+                <div class="more-actions">
+                  <a href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть ЕИС</a>
+                  {% if t.has_estimate %}
+                  <a href="/tenders/{{ t.tender_id }}/estimate.xlsx">Excel сметы</a>
+                  <button type="button" data-tender-action="rebuild" data-tender-id="{{ t.tender_id }}">Перечитать смету</button>
+                  <button type="button" data-tender-action="rerun-market" data-tender-id="{{ t.tender_id }}">Цены заново</button>
+                  <button type="button" data-tender-action="crm" data-tender-id="{{ t.tender_id }}">В CRM</button>
+                  {% endif %}
+                  {% if t.has_market_sources %}
+                  <a href="/tenders/{{ t.tender_id }}/market-sources.xlsx">Источники цен</a>
+                  {% endif %}
+                  {% if t.has_comparison %}
+                  <a href="/tenders/{{ t.tender_id }}/svodka.xlsx">Excel сравнения</a>
+                  {% endif %}
+                </div>
+              </details>
+            </div>
+          </div>
+        </article>
+        {% endfor %}
+      {% else %}
+        <div class="empty-state">
+          <h2>Нет тендеров в этом состоянии</h2>
+          <a class="btn secondary" href="/tenders">Показать все</a>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="storage-panel">
+      <div>
+        <h2>Хранилище</h2>
+        <p>Размер скачанных документов и распаковок считается отдельно, чтобы вкладка открывалась быстро.</p>
+      </div>
+      <button class="btn secondary" type="button" id="loadStorageBtn">Посмотреть размер</button>
+      <div class="storage-grid" id="storageGrid" hidden></div>
+    </section>
+  </main>
+
+  <script>
+    const livePanel = document.getElementById("livePanel");
+    const liveTitle = document.getElementById("liveTitle");
+    const liveSub = document.getElementById("liveSub");
+    const livePercent = document.getElementById("livePercent");
+    const liveFill = document.getElementById("liveFill");
+    const liveFacts = document.getElementById("liveFacts");
+    const liveLog = document.getElementById("liveLog");
+
+    function setLiveState(cls) {
+      livePanel.classList.remove("is-idle", "is-running", "is-done", "is-error");
+      livePanel.classList.add(cls);
+    }
+
+    function showLive(title, detail) {
+      setLiveState("is-running");
+      liveTitle.textContent = title || "Запускаем задачу";
+      liveSub.textContent = detail || "Система ставит работу в очередь.";
+      livePercent.textContent = "0%";
+      liveFill.style.width = "2%";
+      liveFacts.innerHTML = '<span>Запуск</span><span>Жду первый ответ</span>';
+      liveLog.textContent = "";
+    }
+
+    function lastText(items) {
+      const arr = Array.isArray(items) ? items.filter(Boolean) : [];
+      return arr.length ? String(arr[arr.length - 1]) : "";
+    }
+
+    function renderFacts(parts) {
+      liveFacts.innerHTML = parts.filter(Boolean).map(function(x) {
+        return "<span>" + String(x).replace(/[&<>]/g, function(ch) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch];
+        }) + "</span>";
+      }).join("");
+    }
+
+    async function postJson(url, body) {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.message || data.error || ("HTTP " + resp.status));
+      }
+      return data;
+    }
+
+    async function refreshLiveStatus() {
+      try {
+        const [parseResp, mergeResp] = await Promise.all([
+          fetch("/api/parse-status", { cache: "no-store" }),
+          fetch("/api/merge-site-status", { cache: "no-store" })
+        ]);
+        const parse = await parseResp.json();
+        const merge = await mergeResp.json();
+
+        if (merge.running) {
+          const pct = Number(merge.percent || 0);
+          const marketDone = Number(merge.market_done || 0);
+          const marketTotal = Number(merge.market_total || 0);
+          const current = merge.current_tid ? ("Тендер " + merge.current_tid) : "Подготовка тендеров";
+          const eventTexts = (merge.chat_events || []).map(function(e) { return e.text; }).filter(Boolean);
+          const recent = lastText(eventTexts) || lastText(merge.log_tail || []);
+
+          setLiveState("is-running");
+          liveTitle.textContent = "Сейчас идет сравнение цен";
+          liveSub.textContent = recent || current;
+          livePercent.textContent = pct + "%";
+          liveFill.style.width = Math.max(2, pct) + "%";
+          renderFacts([
+            current,
+            "Закупки: " + Number(merge.done || 0) + " из " + Number(merge.total || 0),
+            marketTotal > 0 ? ("Строки рынка: " + marketDone + " из " + marketTotal) : "",
+            marketTotal > 0 ? ("Осталось строк: " + Math.max(0, marketTotal - marketDone)) : ""
+          ]);
+          liveLog.textContent = [
+            ...(eventTexts.slice(-8)),
+            ...((merge.log_tail || []).slice(-8))
+          ].join("\\n");
+          return;
+        }
+
+        if (parse.running) {
+          const recent = lastText(parse.log_tail || []);
+          setLiveState("is-running");
+          liveTitle.textContent = parse.task || "Сейчас идет поиск закупок";
+          liveSub.textContent = recent || "Система работает с ЕИС и документами.";
+          livePercent.textContent = "";
+          liveFill.style.width = "45%";
+          renderFacts([
+            "Поиск и документы",
+            parse.started_at ? ("Старт: " + parse.started_at) : "",
+            "Строк лога: " + Number(parse.log_lines_count || 0)
+          ]);
+          liveLog.textContent = (parse.log_tail || []).slice(-14).join("\\n");
+          return;
+        }
+
+        const hadActivity = !livePanel.classList.contains("is-idle") || merge.last_summary || parse.exit_code !== null;
+        if (hadActivity) {
+          const failed = (parse.exit_code !== null && Number(parse.exit_code) !== 0) || (merge.error_ids || []).length > 0;
+          setLiveState(failed ? "is-error" : "is-done");
+          liveTitle.textContent = failed ? "Последняя задача завершилась с ошибками" : "Сейчас ничего не выполняется";
+          liveSub.textContent = merge.last_summary || (parse.exit_code !== null ? ("Код завершения поиска: " + parse.exit_code) : "Можно запускать следующий шаг.");
+          livePercent.textContent = failed ? "" : "готово";
+          liveFill.style.width = failed ? "100%" : "0%";
+          renderFacts([
+            merge.last_ended_at ? ("Завершено: " + merge.last_ended_at) : "",
+            (merge.error_ids || []).length ? ("Ошибок: " + (merge.error_ids || []).length) : ""
+          ]);
+          liveLog.textContent = ((merge.log_tail || parse.log_tail || [])).slice(-14).join("\\n");
+        }
+      } catch (e) {
+        setLiveState("is-error");
+        liveTitle.textContent = "Не удалось обновить прогресс";
+        liveSub.textContent = e.message || String(e);
+      }
+    }
+
+    async function runTenderAction(kind, tenderId, runTitle, runDetail) {
+      if (!tenderId) return;
+      const map = {
+        "continue": ["/api/generate-merge-site-one", runTitle || "Продолжаем тендер", { tender_id: tenderId }],
+        "rerun-market": ["/api/generate-merge-site-one-rerun-market", "Ищем цены заново", { tender_id: tenderId }],
+        "rebuild": ["/api/rebuild-report", "Перечитываем смету", { tender_id: tenderId }],
+        "crm": ["/api/export-to-crm", "Отправляем в CRM", { tender_id: tenderId }]
+      };
+      const spec = map[kind];
+      if (!spec) return;
+      showLive(spec[1], runDetail || ("Тендер " + tenderId));
+      try {
+        const data = await postJson(spec[0], spec[2]);
+        if (kind === "crm" && data.project_url) {
+          window.location.href = data.project_url;
+          return;
+        }
+        refreshLiveStatus();
+      } catch (e) {
+        setLiveState("is-error");
+        liveTitle.textContent = "Задача не запустилась";
+        liveSub.textContent = e.message || String(e);
+      }
+    }
+
+    document.addEventListener("click", function(e) {
+      const btn = e.target.closest("[data-tender-action]");
+      if (!btn) return;
+      runTenderAction(
+        btn.getAttribute("data-tender-action"),
+        btn.getAttribute("data-tender-id"),
+        btn.getAttribute("data-run-title"),
+        btn.getAttribute("data-run-detail")
+      );
+    });
+
+    document.addEventListener("click", function(e) {
+      if (e.target.closest("a, button, summary, details, input, select, textarea")) return;
+      const card = e.target.closest(".tender-card[data-href]");
+      if (!card) return;
+      window.location.href = card.getAttribute("data-href");
+    });
+
+    document.addEventListener("keydown", function(e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const card = e.target.closest(".tender-card[data-href]");
+      if (!card || e.target !== card) return;
+      e.preventDefault();
+      window.location.href = card.getAttribute("data-href");
+    });
+
+    document.querySelector("[data-global-action='start-search']")?.addEventListener("click", async function() {
+      showLive("Ищем закупки", "Скачиваем документы и извлекаем сметы.");
+      try {
+        await postJson("/api/start-parse", { max_pages: 2, max_tenders: 15, days_back: 60 });
+        refreshLiveStatus();
+      } catch (e) {
+        setLiveState("is-error");
+        liveSub.textContent = e.message || String(e);
+      }
+    });
+
+    document.querySelector("[data-global-action='continue-missing']")?.addEventListener("click", async function() {
+      showLive("Продолжаем недостающие", "Ищем цены и собираем сравнения.");
+      try {
+        await postJson("/api/generate-merge-site-missing", {});
+        refreshLiveStatus();
+      } catch (e) {
+        setLiveState("is-error");
+        liveSub.textContent = e.message || String(e);
+      }
+    });
+
+    document.getElementById("toggleLogBtn")?.addEventListener("click", function() {
+      liveLog.hidden = !liveLog.hidden;
+      this.textContent = liveLog.hidden ? "Журнал" : "Скрыть журнал";
+    });
+
+    document.getElementById("loadStorageBtn")?.addEventListener("click", async function() {
+      const grid = document.getElementById("storageGrid");
+      this.disabled = true;
+      this.textContent = "Считаю...";
+      try {
+        const resp = await fetch("/api/storage-overview", { cache: "no-store" });
+        const data = await resp.json();
+        grid.innerHTML = (data.storage || []).map(function(item) {
+          return '<div class="storage-item"><span>' + item.name + '</span><strong>' + item.mb + ' МБ</strong><small>' + item.files + ' файлов</small></div>';
+        }).join("");
+        grid.hidden = false;
+      } catch (e) {
+        grid.innerHTML = '<div class="storage-item"><span>Ошибка</span><strong>' + (e.message || e) + '</strong></div>';
+        grid.hidden = false;
+      } finally {
+        this.disabled = false;
+        this.textContent = "Обновить размер";
+      }
+    });
+
+    refreshLiveStatus();
+    setInterval(refreshLiveStatus, 1800);
+  </script>
+</body>
+</html>

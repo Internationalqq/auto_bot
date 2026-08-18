@@ -38,6 +38,7 @@ class EstimateRow:
     unit_price: float | None = None
     total: float | None = None
     item_no: str = ""
+    basis_code: str = ""
     sheet: str = ""
     excel_row: int | None = None
     section: str = ""
@@ -197,6 +198,7 @@ def _read_standard_report(path: Path) -> list[EstimateRow]:
                 unit_price=unit_price,
                 total=total,
                 item_no=_clean_text(row.get(COL_ITEM)),
+                basis_code=_clean_text(row.get("basis_code") or row.get("Код") or row.get("Шифр") or row.get("Обоснование") or row.get("Норматив")),
                 sheet="Отчёт",
                 excel_row=int(i) + 2,
                 section="",
@@ -242,6 +244,7 @@ def _read_via_project_parser(path: Path) -> list[EstimateRow]:
                 unit_price=_num(row.get(COL_UNIT_PRICE)),
                 total=_num(row.get(COL_SUM)),
                 item_no=item_no,
+                basis_code=_clean_text(row.get("basis_code") or row.get("Код") or row.get("Шифр") or row.get("Обоснование") or row.get("Норматив")),
                 sheet=_clean_text(row.get("Лист")),
                 excel_row=int(_num(row.get("Строка Excel")) or 0) or None,
                 section=_clean_text(row.get("Раздел")),

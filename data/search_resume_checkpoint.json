@@ -1,0 +1,73 @@
+{
+  "signature": "9a57e82566988985c18b1736cc398fe5b565aba2",
+  "saved_at": "2026-08-17T11:31:39",
+  "completed": false,
+  "search_total": 120,
+  "filtered_tenders": [
+    {
+      "tender_id": "0121200004726000988",
+      "title": "№ 0121200004726000988",
+      "url": "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0121200004726000988",
+      "region": "Ставропольский край",
+      "stage": "Подача заявок",
+      "price_rub": 21419658.29,
+      "publish_date": "14.08.2026"
+    },
+    {
+      "tender_id": "0121200004726000971",
+      "title": "№ 0121200004726000971",
+      "url": "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0121200004726000971",
+      "region": "Ставропольский край",
+      "stage": "Подача заявок",
+      "price_rub": 22870985.0,
+      "publish_date": "12.08.2026"
+    },
+    {
+      "tender_id": "0121300003226000150",
+      "title": "№ 0121300003226000150",
+      "url": "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0121300003226000150",
+      "region": "Ставропольский край",
+      "stage": "Подача заявок",
+      "price_rub": 32298322.52,
+      "publish_date": "07.08.2026"
+    },
+    {
+      "tender_id": "0169600019426000374",
+      "title": "№ 0169600019426000374",
+      "url": "https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0169600019426000374",
+      "region": "Челябинская область",
+      "stage": "Подача заявок",
+      "price_rub": 53945356.15,
+      "publish_date": "14.08.2026"
+    },
+    {
+      "tender_id": "0171200001926003453",
+      "title": "№ 0171200001926003453",
+      "url": "https://zakupki.gov.ru/epz/order/notice/ok20/view/common-info.html?regNumber=0171200001926003453",
+      "region": "Ярославская область",
+      "stage": "Подача заявок",
+      "price_rub": 93879312.98,
+      "publish_date": "05.08.2026"
+    },
+    {
+      "tender_id": "0171200001926003452",
+      "title": "№ 0171200001926003452",
+      "url": "https://zakupki.gov.ru/epz/order/notice/ok20/view/common-info.html?regNumber=0171200001926003452",
+      "region": "Ярославская область",
+      "stage": "Подача заявок",
+      "price_rub": 38805984.02,
+      "publish_date": "05.08.2026"
+    }
+  ],
+  "completed_ids": [
+    "0121200004726000988"
+  ],
+  "new_ids": [
+    "0121200004726000971",
+    "0121200004726000988",
+    "0121300003226000150",
+    "0169600019426000374",
+    "0171200001926003452",
+    "0171200001926003453"
+  ]
+}
