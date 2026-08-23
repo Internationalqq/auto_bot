@@ -2354,6 +2354,13 @@ def _verify_offers(
     for offer in offers:
         started_at = time.monotonic()
         is_avito = "avito.ru" in urlparse(offer.url or "").netloc.casefold()
+        page_row = src_row
+        if offer.adapter == "hermes-browser-agent" and offer.title:
+            # Agent-discovered pages can contain many prices. Its exact title
+            # narrows page extraction, while identity is still checked against
+            # the original estimate row below.
+            page_row = src_row.copy()
+            page_row[COL_NAME] = offer.title
         if avito_collect_only and is_avito:
             offer.page_checked = False
             offer.page_error = (
@@ -2361,7 +2368,7 @@ def _verify_offers(
                 "бережный режим после ограничения IP"
             )
         else:
-            offer = _enrich_offer_from_page(offer, src_row, plan, browser_fetcher=browser_fetcher)
+            offer = _enrich_offer_from_page(offer, page_row, plan, browser_fetcher=browser_fetcher)
         check = check_offer(
             name=market_query_name(src_row.get(COL_NAME, "")),
             unit=src_row.get("Ед. изм.", ""),
@@ -2988,7 +2995,7 @@ def import_agent_market_result(
     position_payload: dict[str, object],
     result: dict[str, object],
 ) -> dict[str, object]:
-    """Import browser-agent evidence as candidates without trusting it as verified market data."""
+    """Import agent evidence and independently verify every direct page on AutoBot."""
 
     tid = str(tender_id or "").strip()
     name = str(position_payload.get("name") or "").strip()
@@ -3073,6 +3080,13 @@ def import_agent_market_result(
     output_path = output_path_for_tender(tid)
     previous = _read_previous(output_path)
     saved = _saved_offers_for_key(previous, key)
+    imported = _verify_offers(
+        source_row,
+        imported,
+        plan,
+        reference_offers=saved,
+    )
+    stored_verified = _store_verified_offers_in_index(tid, source_row, imported)
     offers = _dedupe_and_sort(saved + imported, max_results=12)
     query = str(position_payload.get("query") or "").strip()
     if not query:
@@ -3092,8 +3106,10 @@ def import_agent_market_result(
             pass
     return {
         "imported": len(imported),
+        "verified": sum(1 for offer in imported if offer.verification == "verified"),
         "total_candidates": sum(1 for offer in offers if offer.verification == "candidate"),
         "preserved_verified": sum(1 for offer in offers if offer.verification == "verified"),
+        "indexed": stored_verified,
         "report": str(output_path),
     }
 

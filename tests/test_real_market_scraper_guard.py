@@ -466,3 +466,61 @@ def test_offer_dedupe_ignores_search_tracking_parameters() -> None:
     assert len(offers) == 1
     assert offers[0].url == "https://supplier.example/item"
     assert offers[0].price == 1200
+
+
+def test_agent_result_is_verified_by_autobot_before_market_import(tmp_path: Path, monkeypatch) -> None:
+    tender_id = "0171200001926000664"
+    estimate_path = tmp_path / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
+    output_path = tmp_path / f"РЫНОК_ИСТОЧНИКИ_ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
+    name = "Щебень из плотных горных пород для строительных работ"
+    pd.DataFrame(
+        [{
+            market.COL_NAME: name,
+            "Ед. изм.": "м3",
+            market.COL_QTY: 57.859,
+            market.COL_UNIT_PRICE: 3264.79,
+            market.COL_SUM: 188897.48,
+            "basis_code": "ФСБЦ-02.2.05.04-2094",
+            "Раздел": "Установка бортовых камней",
+        }]
+    ).to_excel(estimate_path, index=False)
+    monkeypatch.setattr(market, "estimate_path_for_tender", lambda _tid: estimate_path)
+    monkeypatch.setattr(market, "output_path_for_tender", lambda _tid: output_path)
+    monkeypatch.setattr(
+        market,
+        "load_tender_metadata",
+        lambda: {tender_id: {"region": "Ярославская область"}},
+    )
+    calls: dict[str, object] = {}
+
+    def fake_verify(src_row, offers, plan, **kwargs):
+        calls["adapter"] = offers[0].adapter
+        calls["queries"] = plan.queries
+        offers[0].verification = "verified"
+        offers[0].page_checked = True
+        offers[0].verification_reason = "Страница и цена подтверждены AutoBot"
+        return offers
+
+    monkeypatch.setattr(market, "_verify_offers", fake_verify)
+    monkeypatch.setattr(market, "_store_verified_offers_in_index", lambda *_args, **_kwargs: 1)
+
+    imported = market.import_agent_market_result(
+        tender_id,
+        {"name": name, "queries": ["щебень цена за м3"]},
+        {"offers": [{
+            "title": "Щебень гранитный 20-40",
+            "price": 2400,
+            "unit": "м3",
+            "url": "https://supplier.example/scheben-20-40/",
+            "evidence": "Щебень гранитный 20-40 — 2400 руб. за м3",
+            "confidence": 0.85,
+        }]},
+    )
+
+    assert calls["adapter"] == "hermes-browser-agent"
+    assert any("Ярославская область" in query for query in calls["queries"])
+    assert imported["imported"] == 1
+    assert imported["verified"] == 1
+    assert imported["total_candidates"] == 0
+    assert imported["indexed"] == 1
+    assert output_path.is_file()
