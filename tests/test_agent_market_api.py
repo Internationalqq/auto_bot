@@ -223,9 +223,9 @@ class AgentMarketApiTests(unittest.TestCase):
         )
 
         self.assertEqual(len(concrete), 3)
-        self.assertEqual(len(sand), 3)
+        self.assertEqual(len(sand), 4)
         self.assertIn("beton-yrs.ru", concrete[0])
-        self.assertIn("karernyj-pesok", sand[0])
+        self.assertIn("pesok_karerniy", sand[0])
 
     def test_get_exposes_verified_offer_outcome_for_live_results(self) -> None:
         job = queue.claim_job("mac-mini")
