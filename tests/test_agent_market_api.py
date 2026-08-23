@@ -175,6 +175,20 @@ class AgentMarketApiTests(unittest.TestCase):
         claimed = queue.claim_job("mac-priority")
         self.assertEqual(claimed["position_key"], "material-1")
         self.assertEqual(claimed["payload"]["max_attempts"], 1)
+        self.assertIn("scheben", " ".join(claimed["payload"]["start_urls"]))
+
+    def test_regional_supplier_hints_cover_concrete_and_sand(self) -> None:
+        concrete = web_ui._agent_market_start_urls(
+            "Бетон В15 М200", ["бетон В15 цена м3"], "Ярославская область"
+        )
+        sand = web_ui._agent_market_start_urls(
+            "Песок строительный мелкий", ["песок цена м3"], "Ярославль"
+        )
+
+        self.assertEqual(len(concrete), 3)
+        self.assertEqual(len(sand), 3)
+        self.assertIn("beton-yrs.ru", concrete[0])
+        self.assertIn("karernyj-pesok", sand[0])
 
     def test_get_exposes_verified_offer_outcome_for_live_results(self) -> None:
         job = queue.claim_job("mac-mini")

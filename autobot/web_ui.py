@@ -10223,6 +10223,48 @@ def api_avito_status():
     return jsonify({"ok": True, **status})
 
 
+_AGENT_MARKET_SOURCE_HINTS = (
+    {
+        "regions": ("яросл",),
+        "markers": ("бетон в15", "бетон м200", "бст в15"),
+        "urls": (
+            "https://beton-yrs.ru/price/",
+            "https://yaroslavl.gamma-beton.ru/price",
+            "https://yar-beton.ru/",
+        ),
+    },
+    {
+        "regions": ("яросл",),
+        "markers": ("песок строительный", "песок карьерный", "песок мелкий"),
+        "urls": (
+            "https://xn--90ahb6al8czar.xn--p1ai/karernyj-pesok/",
+            "https://pesok-yaroslavl.ru/kariernyy-pesok",
+            "https://postavka76.ru/pages/pesok.htm",
+        ),
+    },
+    {
+        "regions": ("яросл",),
+        "markers": ("щебень",),
+        "urls": (
+            "https://yaroslavl.scheben-rf.ru/scheben_granitniy/",
+            "https://yaroslavl.scheben-rf.ru/scheben_graviyniy/",
+            "https://xn--90ahb6al8czar.xn--p1ai/shcheben-20-40/",
+        ),
+    },
+)
+
+
+def _agent_market_start_urls(name: object, queries: object, region: object) -> list[str]:
+    region_text = str(region or "").casefold().replace("ё", "е")
+    query_text = " ".join([str(name or ""), *(str(item or "") for item in list(queries or []))]).casefold().replace("ё", "е")
+    for hint in _AGENT_MARKET_SOURCE_HINTS:
+        if not any(marker in region_text for marker in hint["regions"]):
+            continue
+        if any(marker.casefold().replace("ё", "е") in query_text for marker in hint["markers"]):
+            return list(hint["urls"])
+    return []
+
+
 @app.route("/api/tenders/<tender_id>/agent-market/jobs", methods=["GET", "POST"])
 def api_tender_agent_market_jobs(tender_id: str):
     """Create browser-agent jobs from real estimate rows or show their current state."""
@@ -10369,6 +10411,7 @@ def api_tender_agent_market_jobs(tender_id: str):
         primary_query = queries[0]
         region = str(tender.get("region") or "").strip()
         position_type = str(position.get("type_slug") or "").strip().casefold()
+        start_urls = _agent_market_start_urls(position.get("name"), queries, region)
         payload = {
             "schema_version": 2,
             "tender_id": tid,
@@ -10392,6 +10435,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "max_attempts": 1,
             "retry_policy": "network_only",
             "queue_priority": (60 if position_type in {"material", "product"} else 70) + search_rank,
+            "start_urls": start_urls,
             "result_schema": {
                 "schema_version": 2,
                 "position_key": key,
@@ -10438,13 +10482,19 @@ def api_tender_agent_market_jobs(tender_id: str):
                 }
             )
         else:
+            source_instruction = (
+                "Снача открой эти прямые источники по порядку: " + ", ".join(start_urls) + ". "
+                if start_urls
+                else ""
+            )
             payload.update(
                 {
                     "search_mode": "fast_web",
                     "excluded_domains": ["avito.ru"],
                     "task": (
                     "Быстрый поиск только по обычным сайтам поставщиков, производителей и подрядчиков. "
-                    f"Используй запросы из queries по порядку; товар/работа уже определены как {position_type}. "
+                    + source_instruction
+                    + f"Используй запросы из queries по порядку; товар/работа уже определены как {position_type}. "
                     "Не используй Авито. Открой не более 3 наиболее перспективных прямых страниц, "
                     "не делай искусственных пауз и не обходи CAPTCHA или ограничения сайта. "
                     "Остановись сразу после 2 валидных цен. Если 3 страницы не дали цену, сразу верни результат. "
