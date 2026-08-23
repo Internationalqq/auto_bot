@@ -10236,6 +10236,51 @@ def api_tender_agent_market_jobs(tender_id: str):
 
     if request.method == "GET":
         jobs = list_jobs(tid, mode=job_mode)
+        latest_jobs: dict[str, dict] = {}
+        for job in jobs:
+            key = str(job.get("position_key") or "").strip()
+            if key and key not in latest_jobs:
+                latest_jobs[key] = job
+
+        public_results: list[dict] = []
+        result_totals = {"found": 0, "verified": 0, "candidate": 0, "rejected": 0}
+        for job in latest_jobs.values():
+            result = job.get("result") or {}
+            imported = result.get("import") or {}
+            outcomes = {
+                str(item.get("url") or "").strip(): item
+                for item in list(imported.get("offer_outcomes") or [])
+                if isinstance(item, dict) and str(item.get("url") or "").strip()
+            }
+            raw_offers = [item for item in list(result.get("offers") or [])[:10] if isinstance(item, dict)]
+            for raw_offer in raw_offers:
+                url = str(raw_offer.get("url") or "").strip()
+                outcome = outcomes.get(url) or {}
+                verification = str(outcome.get("verification") or "").strip().casefold()
+                if not verification:
+                    if imported.get("offer_outcomes") is not None:
+                        verification = "rejected"
+                    else:
+                        verification = "verified" if len(raw_offers) == 1 and int(imported.get("verified") or 0) else "candidate"
+                if verification not in {"verified", "candidate"}:
+                    verification = "rejected"
+                result_totals["found"] += 1
+                result_totals[verification] += 1
+                public_results.append(
+                    {
+                        "job_id": job.get("id"),
+                        "position_key": job.get("position_key"),
+                        "position_name": job.get("position_name"),
+                        "title": str(raw_offer.get("title") or "Источник цены")[:500],
+                        "price": raw_offer.get("price"),
+                        "unit": str(raw_offer.get("unit") or outcome.get("matched_unit") or "")[:80],
+                        "url": url,
+                        "evidence": str(raw_offer.get("evidence") or "")[:800],
+                        "verification": verification,
+                        "reason": str(outcome.get("verification_reason") or imported.get("message") or "")[:800],
+                        "completed_at": job.get("completed_at"),
+                    }
+                )
         public_jobs = [
             {
                 "id": job.get("id"),
@@ -10263,6 +10308,8 @@ def api_tender_agent_market_jobs(tender_id: str):
                 "summary": job_summary(tid, mode=job_mode),
                 "progress": job_progress(tid, mode=job_mode),
                 "jobs": public_jobs,
+                "results": public_results[:60],
+                "result_totals": result_totals,
             }
         )
 
@@ -10287,18 +10334,43 @@ def api_tender_agent_market_jobs(tender_id: str):
     workflow_items, _ = _tenders_items()
     workflow = next((dict(item) for item in workflow_items if str(item.get("tender_id") or "") == tid), {})
     tender = build_tender_detail(tid, meta, workflow)
-    selected: list[dict] = []
-    for position in tender.get("positions") or []:
+    eligible_positions: list[tuple[int, int, dict, list[str]]] = []
+    skipped_ineligible: list[dict[str, str]] = []
+    type_priority = {"material": 0, "product": 0, "service": 1, "work": 1}
+    for row_index, position in enumerate(tender.get("positions") or []):
         key = str(position.get("position_key") or "")
         if requested_keys and key not in requested_keys:
             continue
         if not requested_keys and position.get("verified_count"):
             continue
-        queries = position.get("queries") or []
-        primary_query = str(next(iter(queries), "") if queries else position.get("name") or "").strip()
+        queries = [str(query or "").strip() for query in list(position.get("queries") or []) if str(query or "").strip()]
+        position_type = str(position.get("type_slug") or "").strip().casefold()
+        unit = str(position.get("unit") or "").strip()
+        can_auto_price = position.get("can_auto_price")
+        if can_auto_price is None:
+            can_auto_price = bool(queries and unit and unit != "—")
+        reason = ""
+        if not can_auto_price:
+            reason = str(position.get("warning") or "Позиция не готова к автоматическому сравнению")
+        elif not queries:
+            reason = "Нет безопасного рыночного запроса"
+        elif position_type in {"aggregate", "other"}:
+            reason = "Сводную или неоднозначную строку сначала нужно разложить"
+        elif not unit or unit == "—":
+            reason = "Нет единицы измерения"
+        if reason:
+            skipped_ineligible.append({"position_key": key, "name": str(position.get("name") or ""), "reason": reason})
+            continue
+        eligible_positions.append((type_priority.get(position_type, 2), row_index, position, queries))
+
+    selected: list[dict] = []
+    for search_rank, (_, row_index, position, queries) in enumerate(sorted(eligible_positions, key=lambda item: (item[0], item[1]))):
+        key = str(position.get("position_key") or "")
+        primary_query = queries[0]
         region = str(tender.get("region") or "").strip()
+        position_type = str(position.get("type_slug") or "").strip().casefold()
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "tender_id": tid,
             "position_key": key,
             "item_no": position.get("item_no"),
@@ -10308,17 +10380,20 @@ def api_tender_agent_market_jobs(tender_id: str):
             "section": position.get("section"),
             "source_file": position.get("source_file"),
             "basis_code": position.get("basis_code"),
-            "position_type": position.get("type_slug"),
+            "position_type": position_type,
             "region": region,
             "estimate_unit_price": position.get("estimate_unit"),
             "queries": queries,
             "job_mode": job_mode,
-            "max_offers": 2,
+            "max_offers": 3,
             "max_sources": 3,
-            "max_turns": 12,
-            "max_seconds": 150,
+            "max_turns": 16,
+            "max_seconds": 180,
+            "max_attempts": 2,
+            "retry_policy": "network_only",
+            "queue_priority": (60 if position_type in {"material", "product"} else 70) + search_rank,
             "result_schema": {
-                "schema_version": 1,
+                "schema_version": 2,
                 "position_key": key,
                 "offers": [
                     {
@@ -10354,6 +10429,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                         f"Начни с готовой страницы поиска: {avito_url}. "
                         "Открой не более 3 подходящих объявлений и верни только прямые ссылки вида avito.ru/..._123456789. "
                         "Для каждого предложения запиши точное название, цену, единицу, город и короткий видимый фрагмент страницы в evidence. "
+                        "В price пиши число ровно как на странице, а в unit — его знаменатель (например, 650 и м или 65000 и 100 м); не пересчитывай сам. "
                         "Не используй сниппеты поисковиков, другие домены, цену доставки, кредита или похожего товара. "
                         "Не обходи CAPTCHA и ограничения доступа, не перезагружай заблокированную страницу многократно. "
                         "Если Авито показал CAPTCHA или ограничение IP, сразу верни пустой offers и укажи причину в notes. "
@@ -10368,10 +10444,12 @@ def api_tender_agent_market_jobs(tender_id: str):
                     "excluded_domains": ["avito.ru"],
                     "task": (
                     "Быстрый поиск только по обычным сайтам поставщиков, производителей и подрядчиков. "
+                    f"Используй запросы из queries по порядку; товар/работа уже определены как {position_type}. "
                     "Не используй Авито. Открой не более 3 наиболее перспективных прямых страниц, "
                     "не делай искусственных пауз и не обходи CAPTCHA или ограничения сайта. "
                     "Остановись сразу после 2 валидных цен. Если 3 страницы не дали цену, сразу верни результат. "
                     "Не используй цену доставки, кредита или похожего товара. Верни только JSON по схеме result_schema."
+                    " В price верни цену ровно как она видна на странице, а в unit — точную единицу/блок; сам цену не умножай. Evidence должен содержать видимые название, цену и единицу."
                 ),
                 }
             )
@@ -10379,7 +10457,7 @@ def api_tender_agent_market_jobs(tender_id: str):
         if len(selected) >= limit:
             break
     if not selected:
-        return jsonify({"ok": False, "message": "Не выбраны позиции для поиска"}), 400
+        return jsonify({"ok": False, "message": "Нет позиций, которые можно безопасно сравнить с рынком", "skipped_ineligible": skipped_ineligible}), 400
     outcome = enqueue_jobs(tid, selected, priority=80 if job_mode == "avito" else 100)
     return jsonify(
         {
@@ -10387,6 +10465,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "mode": job_mode,
             "created": len(outcome["created"]),
             "skipped_active": len(outcome["skipped_active"]),
+            "skipped_ineligible": skipped_ineligible,
             "jobs": outcome["created"],
             "summary": job_summary(tid, mode=job_mode),
         }

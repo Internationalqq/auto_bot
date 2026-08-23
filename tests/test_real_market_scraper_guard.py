@@ -649,3 +649,51 @@ def test_agent_exact_title_selects_matching_supplier_table_row(tmp_path: Path, m
     assert checked[0].verification == "verified", checked[0].verification_reason.encode("unicode_escape")
     assert checked[0].matched_unit == "м3"
     assert checked[0].page_checked is True
+
+
+def test_agent_block_unit_is_normalized_to_base_market_unit() -> None:
+    assert market._agent_unit_multiplier("100 м") == 100
+    assert market._agent_unit_multiplier("1000 м²") == 1000
+    assert 65000 / market._agent_unit_multiplier("100 м") == 650
+
+
+def test_agent_evidence_price_is_not_replaced_by_another_page_row(tmp_path: Path, monkeypatch) -> None:
+    page = """
+    <h1>Песок в Ярославле</h1>
+    <div>Песок речной — 400 руб. за м3</div>
+    <div>Песок карьерный строительный — 650 руб. за м3</div>
+    """
+    monkeypatch.setattr(market, "_SOURCE_PAGE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(market, "_fetch_source_page", lambda *_args, **_kwargs: (page, "", "http"))
+    row = pd.Series(
+        {
+            market.COL_NAME: "Песок строительный карьерный",
+            "Ед. изм.": "м3",
+            "basis_code": "ФСБЦ-02.3",
+            "Раздел": "Материалы",
+            market.COL_UNIT_PRICE: 676.21,
+            market.COL_QTY: 10,
+            market.COL_SUM: 6762.1,
+        }
+    )
+    plan = market.build_search_plan(row[market.COL_NAME], row["Ед. изм."], row["basis_code"], row["Раздел"])
+    offer = market.MarketOffer(
+        source="Hermes Agent",
+        title="Песок карьерный строительный",
+        price=650,
+        url="https://supplier.example/pesok/",
+        snippet="Песок карьерный строительный — 650 руб. за м3",
+        evidence="Песок карьерный строительный — 650 руб. за м3",
+        matched_unit="м3",
+        adapter="hermes-browser-agent",
+        agent_price=650,
+        agent_unit="м3",
+        agent_evidence="Песок карьерный строительный — 650 руб. за м3",
+    )
+
+    checked = market._verify_offers(row, [offer], plan)
+
+    assert len(checked) == 1
+    assert checked[0].price == 650
+    assert checked[0].page_checked is True
+    assert checked[0].extractor == "hermes-evidence-confirmed"

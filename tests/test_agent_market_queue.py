@@ -124,6 +124,39 @@ class AgentMarketQueueTests(unittest.TestCase):
         self.assertEqual(jobs["second"]["payload"]["search_mode"], "fast_web")
         self.assertEqual(jobs["second"]["payload"]["max_sources"], 3)
 
+    def test_deterministic_empty_result_is_not_retried(self) -> None:
+        enqueue_jobs(
+            "12345678",
+            [{**self.position, "max_attempts": 2, "retry_policy": "network_only"}],
+            path=self.db_path,
+        )
+        job = claim_job("mac-mini", path=self.db_path)
+
+        self.assertTrue(
+            fail_job(
+                job["id"],
+                "mac-mini",
+                "result has no acceptable offers with direct URLs",
+                path=self.db_path,
+                retry=True,
+            )
+        )
+        self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "failed")
+
+    def test_transient_browser_failure_gets_one_retry(self) -> None:
+        enqueue_jobs(
+            "12345678",
+            [{**self.position, "max_attempts": 2, "retry_policy": "network_only"}],
+            path=self.db_path,
+        )
+        first = claim_job("mac-mini", path=self.db_path)
+        self.assertTrue(fail_job(first["id"], "mac-mini", "browser crash: DevToolsActivePort", path=self.db_path, retry=True))
+        self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "queued")
+
+        second = claim_job("mac-mini", path=self.db_path)
+        self.assertTrue(fail_job(second["id"], "mac-mini", "browser crash: DevToolsActivePort", path=self.db_path, retry=True))
+        self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,7 @@ from autobot.market_strategy import (
     build_search_plan,
     check_offer,
     market_query_name,
+    normalize_unit,
 )
 from autobot.merge_estimate_market import _norm_key
 from autobot.paths import REPO_ROOT
@@ -195,6 +196,9 @@ class MarketOffer:
     consensus_status: str = "unknown"
     consensus_median: float | None = None
     consensus_ratio: float | None = None
+    agent_price: float | None = None
+    agent_unit: str = ""
+    agent_evidence: str = ""
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -2101,6 +2105,9 @@ def _offer_bundle(offers: list[MarketOffer]) -> list[dict[str, object]]:
             "consensus_status": o.consensus_status,
             "consensus_median": o.consensus_median,
             "consensus_ratio": o.consensus_ratio,
+            "agent_price": o.agent_price,
+            "agent_unit": o.agent_unit,
+            "agent_evidence": o.agent_evidence[:1600],
         }
         for o in offers
     ]
@@ -2199,6 +2206,50 @@ def _fetch_source_page(
     return "", error, "error"
 
 
+def _agent_unit_multiplier(unit: object) -> float:
+    """Return the explicit denominator from an agent unit such as ``100 м``."""
+
+    text = re.sub(r"\s+", " ", str(unit or "").replace("\xa0", " ")).strip().casefold()
+    match = re.match(r"^(10|100|1000)\s*(?=[a-zа-я²³])", text)
+    return float(match.group(1)) if match else 1.0
+
+
+def _page_confirms_agent_evidence(page_html: str, offer: MarketOffer) -> bool:
+    """Confirm the price Hermes saw without replacing it by another page price.
+
+    Supplier price lists often contain dozens of products.  The universal page
+    extractor can legitimately select a different row, so the agent's exact
+    title/evidence wins only when the freshly fetched page contains both that
+    price and enough identifying words.
+    """
+
+    if not page_html or not offer.agent_evidence or not offer.agent_price:
+        return False
+    page_text = re.sub(r"\s+", " ", BeautifulSoup(page_html, "html.parser").get_text(" ", strip=True)).casefold()
+    if not page_text:
+        return False
+    raw_price = float(offer.agent_price)
+    if raw_price <= 0:
+        return False
+    integer, _, decimals = f"{raw_price:.2f}".partition(".")
+    grouped = r"[\s\u00a0\u202f]*".join(re.escape(char) for char in integer)
+    decimal_pattern = rf"(?:[,.]{re.escape(decimals.rstrip('0'))}\d*)?" if decimals.rstrip("0") else r"(?:[,.]0{1,2})?"
+    if not re.search(rf"(?<!\d){grouped}{decimal_pattern}(?!\d)", page_text):
+        return False
+    stop = {
+        "цена", "руб", "рублей", "рубля", "стоимость", "купить", "за", "для", "от",
+        "метр", "метра", "штука", "тонна", "прайс", "товар", "услуга",
+    }
+    identity_text = f"{offer.title} {offer.agent_evidence}".casefold().replace("ё", "е")
+    tokens = {
+        token
+        for token in re.findall(r"[0-9a-zа-я-]{4,}", identity_text)
+        if token not in stop and not token.isdigit()
+    }
+    matched = [token for token in tokens if token in page_text]
+    return len(matched) >= min(2, max(1, len(tokens)))
+
+
 def _enrich_offer_from_page(
     offer: MarketOffer,
     src_row: pd.Series,
@@ -2290,6 +2341,18 @@ def _enrich_offer_from_page(
             _save_source_page_cache(offer.url, page_html=browser_html, method="playwright")
             if browser_inspection.accepted or browser_inspection.evidence:
                 inspection = browser_inspection
+                page_html = browser_html
+    if offer.adapter == "hermes-browser-agent" and _page_confirms_agent_evidence(page_html, offer):
+        offer.evidence = offer.agent_evidence
+        offer.snippet = offer.agent_evidence[:500]
+        offer.matched_unit = normalize_unit(offer.agent_unit or offer.matched_unit)
+        offer.page_checked = True
+        offer.page_error = ""
+        offer.rejection_code = ""
+        offer.rejection_stage = ""
+        offer.extractor = "hermes-evidence-confirmed"
+        offer.price_facts_found = max(1, int(inspection.facts_found or 0))
+        return offer
     offer.adapter = inspection.adapter
     offer.price_scope = inspection.price_scope
     offer.evidence = inspection.evidence
@@ -3056,7 +3119,10 @@ def import_agent_market_result(
     for item in list(result.get("offers") or [])[:10]:
         if not isinstance(item, dict):
             continue
-        price = float(item.get("price") or 0)
+        raw_price = float(item.get("price") or 0)
+        raw_unit = str(item.get("unit") or "").strip()
+        unit_multiplier = _agent_unit_multiplier(raw_unit)
+        price = raw_price / unit_multiplier
         url = str(item.get("url") or "").strip()
         if price <= 0 or not url:
             continue
@@ -3123,6 +3189,9 @@ def import_agent_market_result(
                 rejection_code="" if avito_agent_mode else "agent_unverified",
                 rejection_stage="agent_import",
                 extractor="browser-agent",
+                agent_price=raw_price,
+                agent_unit=raw_unit,
+                agent_evidence=evidence,
             )
         )
     if not imported:
@@ -3155,6 +3224,21 @@ def import_agent_market_result(
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
+    offer_outcomes = [
+        {
+            "title": offer.title,
+            "price": round(float(offer.price), 2),
+            "raw_price": round(float(offer.agent_price or offer.price), 2),
+            "matched_unit": offer.matched_unit,
+            "raw_unit": offer.agent_unit,
+            "url": offer.url,
+            "verification": offer.verification,
+            "verification_reason": offer.verification_reason,
+            "page_checked": bool(offer.page_checked),
+            "plausibility": offer.plausibility,
+        }
+        for offer in imported
+    ]
     return {
         "imported": len(imported),
         "verified": sum(1 for offer in imported if offer.verification == "verified"),
@@ -3162,6 +3246,7 @@ def import_agent_market_result(
         "preserved_verified": sum(1 for offer in offers if offer.verification == "verified"),
         "indexed": stored_verified,
         "report": str(output_path),
+        "offer_outcomes": offer_outcomes,
     }
 
 

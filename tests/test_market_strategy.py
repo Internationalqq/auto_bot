@@ -210,6 +210,22 @@ class MarketStrategyTests(unittest.TestCase):
     def test_distance_up_to_ten_is_not_a_price_block(self) -> None:
         self.assertEqual(estimate_unit_multiplier("Перемещение грунта до 10", "м"), 1.0)
 
+    def test_road_marking_work_does_not_search_for_paint(self) -> None:
+        plan = build_search_plan(
+            "Нанесение горизонтальной дорожной разметки",
+            "м2",
+            "ГЭСН27-09-001-01",
+        )
+
+        self.assertEqual(plan.position.slug, "work")
+        self.assertIn("нанесение дорожной разметки", plan.queries[0].casefold())
+        self.assertNotIn("краска", plan.queries[0].casefold())
+
+    def test_ocr_geogrid_name_uses_clean_commercial_query(self) -> None:
+        plan = build_search_plan("Георешетка композитная Е И ОО 496,95488", "м2", "ФСБЦ")
+        self.assertIn("георешетка композитная", plan.queries[0].casefold())
+        self.assertNotIn("496", plan.queries[0])
+
 
 if __name__ == "__main__":
     unittest.main()

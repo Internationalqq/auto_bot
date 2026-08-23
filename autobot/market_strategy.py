@@ -367,20 +367,29 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
     return PositionClass("other", "Нужно определить", "other", "Требуют разбора", 0.25, "Недостаточно признаков", True)
 
 
-def _query_name(name: object, max_words: int = 16) -> str:
+def _query_name(name: object, max_words: int = 16, position_type: str = "") -> str:
     value = re.sub(r"\([^)]{0,180}\)", " ", _text(name))
     value = re.sub(r"[|¦]", " ", value)
     value = re.sub(r"\s+(?:10|100|1000)\s*$", "", value)
     value = re.sub(r"\s+", " ", value).strip(" ,.;:-")
     folded = value.casefold().replace("ё", "е")
+    position_slug = str(position_type or "").strip().casefold()
     # Сметные формулировки плохо ищутся дословно. Для рынка используем обычное
     # название той же операции, но исходное название в отчёте не меняем.
     if "тротуар" in folded and "плит" in folded and ("покрыт" in folded or "устройств" in folded):
         return "укладка тротуарной плитки"
     if "бортов" in folded and "кам" in folded and ("установ" in folded or "устройств" in folded):
         return "установка бетонного бордюра"
+    if (
+        position_slug in {"work", "service"}
+        and "размет" in folded
+        and any(marker in folded for marker in ("нанес", "устройств", "выполн"))
+    ):
+        return "нанесение дорожной разметки"
     if "разработка грунта" in folded and "самосвал" in folded:
         return "разработка грунта экскаватором с погрузкой"
+    if "разработка грунта" in folded and folded.endswith(" до"):
+        return "разработка грунта экскаватором"
     if "перевоз" in folded and "самосвал" in folded:
         return "перевозка грунта самосвалом"
     if "подстилающ" in folded and "пес" in folded:
@@ -398,6 +407,8 @@ def _query_name(name: object, max_words: int = 16) -> str:
         return "песок строительный мелкий" if "мелк" in folded else "песок строительный"
     if "геополотно" in folded or "геотекст" in folded:
         return "геотекстиль нетканый иглопробивной"
+    if "георешет" in folded:
+        return "георешетка композитная"
     if "цементно-песчан" in folded and ("смес" in folded or "cmecu" in folded):
         return "смесь цементно-песчаная"
     if "эмульси" in folded and "битум" in folded:
@@ -413,9 +424,9 @@ def _query_name(name: object, max_words: int = 16) -> str:
     return " ".join(value.split()[:max_words])
 
 
-def market_query_name(name: object) -> str:
+def market_query_name(name: object, position_type: str = "") -> str:
     """Обычное рыночное название для поиска и проверки найденной страницы."""
-    return _query_name(name)
+    return _query_name(name, position_type=position_type)
 
 
 def search_unit_marker(unit: object) -> str:
@@ -443,7 +454,7 @@ def build_search_plan(
     region: object = "",
 ) -> MarketSearchPlan:
     position = classify_position(name, unit, basis_code, section)
-    title = market_query_name(name)
+    title = market_query_name(name, position.slug)
     region_text = _text(region)
     unit_norm = normalize_unit(unit)
     place = f" {region_text}" if region_text else ""

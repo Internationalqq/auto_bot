@@ -155,7 +155,7 @@ def enqueue_jobs(
                         name,
                         job_mode,
                         json.dumps(payload, ensure_ascii=False),
-                        int(priority),
+                        int(payload.get("queue_priority") or priority),
                         now,
                         now,
                     ),
@@ -265,14 +265,57 @@ def fail_job(
     path: Path | str | None = None,
     retry: bool = False,
 ) -> bool:
-    status = "queued" if retry else "failed"
     now = _now()
     with closing(_connect(path)) as connection:
+        row = connection.execute(
+            "SELECT attempts, payload_json FROM agent_market_jobs "
+            "WHERE id = ? AND status = 'leased' AND worker_id = ?",
+            (job_id, worker_id),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except (TypeError, ValueError):
+            payload = {}
+        message = str(error or "Ошибка агента")[:2000]
+        folded = message.casefold()
+        deterministic_markers = (
+            "no acceptable offers",
+            "no valid offers",
+            "offers=[]",
+            "0 offers",
+            "нет пригодных предложений",
+            "не найдено подходящих цен",
+        )
+        transient_markers = (
+            "timeout",
+            "timed out",
+            "connection",
+            "network",
+            "browser crash",
+            "devtoolsactiveport",
+            "temporarily unavailable",
+            "временно недоступ",
+            "сбой браузера",
+        )
+        try:
+            max_attempts = max(1, min(3, int(payload.get("max_attempts") or 1)))
+        except (TypeError, ValueError):
+            max_attempts = 1
+        attempts = int(row["attempts"] or 0)
+        effective_retry = bool(
+            retry
+            and attempts < max_attempts
+            and not any(marker in folded for marker in deterministic_markers)
+            and any(marker in folded for marker in transient_markers)
+        )
+        status = "queued" if effective_retry else "failed"
         cursor = connection.execute(
             """UPDATE agent_market_jobs
                SET status = ?, error = ?, worker_id = '', lease_until = NULL, updated_at = ?
                WHERE id = ? AND status = 'leased' AND worker_id = ?""",
-            (status, str(error or "Ошибка агента")[:2000], now, job_id, worker_id),
+            (status, message, now, job_id, worker_id),
         )
     return cursor.rowcount == 1
 

@@ -210,6 +210,19 @@
         <span><small>Ошибки</small><b id="agentFailedCount">0</b></span>
       </div>
       <p class="agent-market-note" id="agentMarketNote">Проверяю подключение очереди…</p>
+      <div class="agent-results" id="agentResults" hidden>
+        <div class="agent-results-head">
+          <div><small>Результаты Hermes</small><strong>Что агент нашёл и что AutoBot принял</strong></div>
+          <button class="btn ghost" type="button" id="agentReloadTable">Обновить таблицу сметы</button>
+        </div>
+        <div class="agent-result-totals">
+          <span><small>Найдено</small><b id="agentResultFound">0</b></span>
+          <span class="is-verified"><small>Принято</small><b id="agentResultVerified">0</b></span>
+          <span class="is-candidate"><small>На проверке</small><b id="agentResultCandidate">0</b></span>
+          <span class="is-rejected"><small>Отклонено</small><b id="agentResultRejected">0</b></span>
+        </div>
+        <div class="agent-result-list" id="agentResultList"></div>
+      </div>
       <div class="agent-journal" id="agentJournal" hidden>
         <div class="agent-journal-head"><strong>Последние события</strong><span>Обновляется каждые 15 секунд</span></div>
         <div class="agent-market-jobs" id="agentMarketJobs"></div>
@@ -548,6 +561,15 @@
       return node.innerHTML;
     }
 
+    function formatAgentPrice(value) {
+      const number = Number(value || 0);
+      return Number.isFinite(number) && number > 0
+        ? number.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽"
+        : "Цена не указана";
+    }
+
+    document.getElementById("agentReloadTable")?.addEventListener("click", function() { window.location.reload(); });
+
     function refreshAgentSelection() {
       const count = selectedAgentKeys().length;
       const countNode = document.getElementById("agentSelectedCount");
@@ -609,7 +631,6 @@
           agentQueueObservedRunning = true;
         } else if (agentQueueObservedRunning && total && processed >= total) {
           agentQueueObservedRunning = false;
-          window.setTimeout(function() { window.location.reload(); }, 900);
         }
         const headline = document.getElementById("agentProgressHeadline");
         const percentNode = document.getElementById("agentProgressPercent");
@@ -675,6 +696,30 @@
             const eventTime = job.updated_at ? new Date(Number(job.updated_at) * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
             if (eventTime) detail = eventTime + " · " + detail;
             return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+          }).join("");
+        }
+        const resultRows = Array.isArray(data.results) ? data.results : [];
+        const resultTotals = data.result_totals || {};
+        const resultsPanel = document.getElementById("agentResults");
+        const resultList = document.getElementById("agentResultList");
+        [["agentResultFound", "found"], ["agentResultVerified", "verified"], ["agentResultCandidate", "candidate"], ["agentResultRejected", "rejected"]].forEach(function(pair) {
+          const node = document.getElementById(pair[0]);
+          if (node) node.textContent = String(Number(resultTotals[pair[1]] || 0));
+        });
+        if (resultsPanel) resultsPanel.hidden = resultRows.length === 0;
+        if (resultList) {
+          const resultLabels = { verified: "Принята", candidate: "На проверке", rejected: "Отклонена" };
+          resultList.innerHTML = resultRows.map(function(item) {
+            const verification = ["verified", "candidate", "rejected"].includes(item.verification) ? item.verification : "candidate";
+            const price = formatAgentPrice(item.price) + (item.unit ? " / " + escapeHtml(item.unit) : "");
+            const reason = item.reason || (verification === "verified" ? "Страница, цена и единица подтверждены" : "Проверяется соответствие смете");
+            const sourceLink = item.url
+              ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener noreferrer">Открыть источник ↗</a>'
+              : "";
+            return '<article class="agent-result is-' + verification + '">' +
+              '<div class="agent-result-state"><span>' + escapeHtml(resultLabels[verification]) + '</span><b>' + price + '</b></div>' +
+              '<div class="agent-result-copy"><small>' + escapeHtml(item.position_name || "Позиция сметы") + '</small><strong>' + escapeHtml(item.title || "Источник цены") + '</strong><p>' + escapeHtml(reason) + '</p></div>' +
+              '<div class="agent-result-link">' + sourceLink + '</div></article>';
           }).join("");
         }
       } catch (error) {
@@ -766,7 +811,10 @@
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
         document.querySelectorAll("[data-agent-position]:checked").forEach(function(input) { input.checked = false; });
         refreshAgentSelection();
-        if (agentMarketNote) agentMarketNote.textContent = "Добавлено заданий: " + data.created + (data.skipped_active ? ". Уже были в очереди: " + data.skipped_active : "") + ".";
+        if (agentMarketNote) {
+          const ineligible = Array.isArray(data.skipped_ineligible) ? data.skipped_ineligible.length : 0;
+          agentMarketNote.textContent = "Добавлено заданий: " + data.created + (data.skipped_active ? ". Уже были в очереди: " + data.skipped_active : "") + (ineligible ? ". Не отправлено мусорных/несравнимых строк: " + ineligible : "") + ".";
+        }
         await refreshAgentJobs();
       } catch (error) {
         if (agentMarketNote) {
