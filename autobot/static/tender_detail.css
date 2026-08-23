@@ -187,11 +187,14 @@ button.metric { color: inherit; cursor: pointer; font: inherit; }.metric:hover, 
 .agent-job { min-height: 45px; padding: 8px 10px; display: grid; grid-template-columns: 100px minmax(0,1fr) auto; align-items: center; gap: 12px; background: #f8fafc; border: 1px solid #e2e8f1; border-radius: 8px; }
 .agent-job span { color: #52647e; font-size: 9px; font-weight: 900; text-transform: uppercase; }.agent-job strong { overflow: hidden; color: #2b3e5b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.agent-job small { color: var(--muted); font-size: 10px; }.agent-job.is-completed span { color: var(--green); }.agent-job.is-failed span { color: var(--red); }.agent-job.is-leased span { color: var(--blue); }
 
-.avito-safe-card { margin-top: 14px; padding: 20px 22px; display: flex; align-items: center; justify-content: space-between; gap: 28px; background: #fff; border: 1px solid #d9e1ec; border-radius: 14px; box-shadow: 0 6px 20px rgba(23,43,77,.035); }
+.avito-safe-card { margin-top: 14px; padding: 20px 22px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, auto); align-items: center; gap: 18px 28px; background: #fff; border: 1px solid #d9e1ec; border-radius: 14px; box-shadow: 0 6px 20px rgba(23,43,77,.035); }
 .avito-safe-card.is-paused { background: #fffaf7; border-color: #f0d8ca; }.avito-safe-card.is-ready { background: #f7fcf9; border-color: #c9e5d6; }
 .avito-safe-copy { min-width: 0; display: grid; gap: 5px; }.avito-safe-copy small { color: #a64b31; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }.avito-safe-card.is-ready .avito-safe-copy small { color: #087344; }
 .avito-safe-copy strong { color: #203554; font-size: 16px; }.avito-safe-copy span { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .avito-safe-actions { max-width: 520px; display: flex; align-items: center; justify-content: flex-end; gap: 16px; }.avito-safe-actions > span { color: #6a778b; font-size: 10px; line-height: 1.45; text-align: right; }.avito-safe-actions .btn { min-width: 230px; flex: 0 0 auto; }
+.avito-agent-state { grid-column: 1 / -1; padding: 14px; display: grid; grid-template-columns: minmax(150px, .45fr) minmax(240px, 1fr); gap: 10px 18px; background: #f7f9fd; border: 1px solid #e0e7f0; border-radius: 11px; }
+.avito-agent-state > div { min-width: 0; display: grid; gap: 4px; }.avito-agent-state small { color: #8a5ba8; font-size: 9px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }.avito-agent-state strong { overflow: hidden; color: #273e5e; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }.avito-agent-state p { grid-column: 1 / -1; margin: 0; color: #687b95; font-size: 11px; line-height: 1.5; }
+.avito-agent-jobs { grid-column: 1 / -1; }
 
 .positions-card { margin-top: 18px; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
 .positions-head { min-height: 78px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
@@ -324,7 +327,7 @@ body.feature-modal-open { overflow: hidden; }
 .feature-modal-head > button { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; color: #5e718b; background: #f5f8fc; border: 1px solid #dbe4ef; border-radius: 9px; cursor: pointer; font-size: 23px; line-height: 1; }.feature-modal-head > button:hover { color: var(--blue); background: #edf5ff; }
 .feature-modal-body { min-height: 0; padding: 14px; overflow: auto; }
 .feature-modal-body > .estimate-check, .feature-modal-body > .progress-card, .feature-modal-body > .market-rules, .feature-modal-body > .agent-market-card { display: block; margin: 0; box-shadow: none; }
-.feature-modal-body > .avito-safe-card { margin: 0; display: flex; box-shadow: none; }
+.feature-modal-body > .avito-safe-card { margin: 0; display: grid; box-shadow: none; }
 .feature-modal-body > .agent-market-card { border-color: #d7e2ef; }.feature-modal-body > .market-rules { background: #eef6ff; }
 
 .source-preview-drawer[hidden] { display: none; }
@@ -347,7 +350,7 @@ body.feature-modal-open { overflow: hidden; }
 
 @media (max-width: 1050px) {
   .eis-card { grid-template-columns: 1fr; }.eis-main { border-right: 0; border-bottom: 1px solid var(--line); }.eis-side { min-height: 0; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }.dates, .region { margin-top: 0; }
-  .action-panel, .downloads, .avito-safe-card, .agent-market-head { align-items: flex-start; flex-direction: column; }.action-buttons, .agent-market-actions { justify-content: flex-start; }.market-health-alert { grid-template-columns: 1fr; }
+  .action-panel, .downloads, .agent-market-head { align-items: flex-start; flex-direction: column; }.action-buttons, .agent-market-actions { justify-content: flex-start; }.market-health-alert { grid-template-columns: 1fr; }.avito-safe-card { grid-template-columns: 1fr; }
   .avito-safe-actions { width: 100%; max-width: none; justify-content: space-between; }.avito-safe-actions > span { text-align: left; }
   .agent-live { grid-template-columns: 1fr; }.agent-market-summary { width: 100%; grid-template-columns: repeat(5, minmax(80px, 1fr)); }
   .estimate-check-grid { grid-template-columns: 1fr; }
@@ -369,7 +372,7 @@ body.feature-modal-open { overflow: hidden; }
   .preview-actions { width: 100%; }.preview-actions .btn { flex: 1; }.preview-shell { width: min(100% - 22px, 1500px); padding-top: 14px; }.preview-heading { align-items: flex-start; flex-direction: column; }.document-preview { padding: 24px 20px; }
   .archive-estimate-list > div { grid-template-columns: 38px minmax(0, 1fr); }.archive-estimate-list .archive-entry-actions { grid-column: 1 / -1; }.archive-estimate-list .archive-entry-actions a { flex: 1; }.archive-section-heading { flex-direction: column; }.archive-entry { grid-template-columns: 52px minmax(0, 1fr) auto; }.archive-entry-actions { grid-column: 1 / -1; }.archive-entry-actions a { flex: 1; }.archive-nested { margin-left: 8px; }.archive-nested > header { grid-template-columns: 1fr; gap: 3px; }
   .rules-grid { grid-template-columns: 1fr; }.source-preview-panel { width: 100vw; }
-  .avito-safe-card { padding: 18px; }.avito-safe-actions { align-items: stretch; flex-direction: column; }.avito-safe-actions .btn { width: 100%; min-width: 0; }
+  .avito-safe-card { padding: 18px; }.avito-safe-actions { align-items: stretch; flex-direction: column; }.avito-safe-actions .btn { width: 100%; min-width: 0; }.avito-agent-state { grid-template-columns: 1fr; }.avito-agent-state p { grid-column: 1; }
   .agent-market-card { padding: 18px; }.agent-market-actions { width: 100%; }.agent-market-actions .btn { flex: 1; }.agent-live { padding: 13px; }.agent-live-title { align-items: flex-start; }.agent-live-title strong { font-size: 17px; white-space: normal; }.agent-current { grid-template-columns: 12px minmax(0, 1fr); }.agent-current time { grid-column: 2; }.agent-market-summary { grid-template-columns: 1fr 1fr; }.agent-market-summary > span { border-bottom: 1px solid #e0e7f0; }.agent-journal-head { align-items: flex-start; flex-direction: column; gap: 3px; }.agent-job { grid-template-columns: 88px minmax(0,1fr); }.agent-job small { grid-column: 1 / -1; }
   .feature-modal { padding: 0; align-items: end; }.feature-modal-panel, .feature-modal-panel.is-wide { width: 100%; max-height: 100vh; max-height: 100dvh; border-radius: 17px 17px 0 0; transform: translateY(28px); }.feature-modal-head { padding: 14px 16px 12px; }.feature-modal-head h2 { font-size: 19px; }.feature-modal-body { padding: 10px; }#agentMarketModal .feature-modal-panel { height: 100vh; height: 100dvh; }
 }

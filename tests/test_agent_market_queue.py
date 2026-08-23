@@ -38,6 +38,24 @@ class AgentMarketQueueTests(unittest.TestCase):
         self.assertEqual(second["created"], [])
         self.assertEqual(second["skipped_active"], ["abc123"])
 
+    def test_web_and_avito_jobs_can_coexist_for_same_position(self) -> None:
+        web = enqueue_jobs(
+            "12345678",
+            [{**self.position, "search_mode": "fast_web"}],
+            path=self.db_path,
+        )
+        avito = enqueue_jobs(
+            "12345678",
+            [{**self.position, "search_mode": "avito_agent"}],
+            path=self.db_path,
+        )
+
+        self.assertEqual(len(web["created"]), 1)
+        self.assertEqual(len(avito["created"]), 1)
+        self.assertEqual(len(list_jobs("12345678", path=self.db_path, mode="web")), 1)
+        self.assertEqual(len(list_jobs("12345678", path=self.db_path, mode="avito")), 1)
+        self.assertEqual(job_progress("12345678", path=self.db_path, mode="avito")["total"], 1)
+
     def test_claim_heartbeat_and_complete(self) -> None:
         enqueue_jobs("12345678", [self.position], path=self.db_path)
         job = claim_job("mac-mini", path=self.db_path, lease_seconds=120)

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-3" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-4" />
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
@@ -109,7 +109,7 @@
         </button>
         <button class="command-tool is-live" type="button" data-feature-open="agentMarketModal">
           <span class="command-tool-icon is-blue" aria-hidden="true"><i></i></span>
-          <span class="command-tool-copy"><small>Hermes · Mac mini</small><strong id="agentLauncherTitle">Проверяю очередь…</strong><span id="agentLauncherStatus">Загружаю текущую позицию</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
+          <span class="command-tool-copy"><small>Hermes · обычные сайты</small><strong id="agentLauncherTitle">Дожать без цены</strong><span id="agentLauncherStatus">Только сложные позиции после веб-поиска</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
           <b aria-hidden="true">→</b>
         </button>
         <button class="command-tool" type="button" data-feature-open="rulesModal">
@@ -121,7 +121,7 @@
           <span class="command-tool-icon is-avito" aria-hidden="true">
             <i></i><i></i><i></i><i></i>
           </span>
-          <span class="command-tool-copy"><small>Авито · бережный режим</small><strong>Контрольный сбор</strong><span id="avitoLauncherStatus">Проверяю доступ…</span></span>
+          <span class="command-tool-copy"><small>Авито · Hermes на Mac mini</small><strong>Поиск по Авито</strong><span id="avitoLauncherStatus">Отдельная браузерная очередь</span></span>
           <b aria-hidden="true">→</b>
         </button>
       </div>
@@ -184,13 +184,13 @@
       <div class="agent-market-head">
         <div>
           <small>Hermes на Mac mini</small>
-          <strong>Фоновый поиск цен браузерным агентом</strong>
-          <span>Отметьте позиции в смете. Агент откроет источники на Mac, а AutoBot примет найденные цены как кандидатов для проверки.</span>
+          <strong>Дожать позиции без подтверждённой цены</strong>
+          <span>AutoBot уже сделал массовый веб-поиск. Hermes получает только сложные строки и проверяет обычные сайты поставщиков в браузере Mac mini.</span>
         </div>
         <div class="agent-market-actions">
           <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
           <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
-          <button class="btn primary" type="button" id="queueAgentMarketBtn" disabled>Отправить агенту</button>
+          <button class="btn primary" type="button" id="queueAgentMarketBtn">Дожать 20 без цены</button>
         </div>
       </div>
       <div class="agent-live" id="agentLive" aria-live="polite">
@@ -231,16 +231,22 @@
       </div>
     </section>
 
-    <section class="avito-safe-card is-loading" id="avitoSafeCard" data-feature-content="avitoModal">
+    <section class="avito-safe-card" id="avitoSafeCard" data-feature-content="avitoModal">
       <div class="avito-safe-copy">
-        <small>Авито · бережный режим</small>
-        <strong id="avitoSafeTitle">Проверяю оставшуюся паузу…</strong>
-        <span id="avitoSafeStatus">К сайту при этой проверке AutoBot не обращается.</span>
+        <small>Авито · браузерная сессия Mac mini</small>
+        <strong id="avitoSafeTitle">Отдельный поиск объявлений через Hermes</strong>
+        <span id="avitoSafeStatus">AutoBot передаст позиции агенту, а Hermes откроет Авито в постоянном браузерном профиле на Mac.</span>
       </div>
       <div class="avito-safe-actions">
-        <span>До 2 новых позиций · 1 страница на позицию · не чаще раза в 90 секунд · объявления не открываются</span>
-        <button class="btn secondary" type="button" id="runAvitoSafeBtn" disabled>Проверяю доступ…</button>
+        <span>До 5 позиций за запуск · до 3 объявлений на позицию · без обхода CAPTCHA и повторного штурма блокировки</span>
+        <button class="btn primary" type="button" id="runAvitoSafeBtn">Искать 5 без цены</button>
       </div>
+      <div class="avito-agent-state" aria-live="polite">
+        <div><small>Прогресс</small><strong id="avitoAgentProgress">Очередь свободна</strong></div>
+        <div><small>Сейчас</small><strong id="avitoAgentCurrent">Hermes ничего не ищет</strong></div>
+        <p id="avitoAgentNote">Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.</p>
+      </div>
+      <div class="agent-market-jobs avito-agent-jobs" id="avitoAgentJobs" hidden></div>
     </section>
 
     <section class="positions-card">
@@ -384,7 +390,7 @@
   <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Hermes · Mac mini</small><h2 id="agentMarketModalTitle">Фоновый поиск цен</h2><p>Живая очередь, текущая позиция, найденные предложения и ошибки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Hermes · обычные сайты</small><h2 id="agentMarketModalTitle">Дожать без цены</h2><p>Вторая попытка только для сложных позиций, которые не закрыл быстрый веб-поиск AutoBot.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -400,7 +406,7 @@
   <aside class="feature-modal" id="avitoModal" hidden aria-labelledby="avitoModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Ограниченный источник</small><h2 id="avitoModalTitle">Безопасная проверка Авито</h2><p>Статус паузы, профиль браузера и ручной контрольный запуск.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Hermes · браузер Mac mini</small><h2 id="avitoModalTitle">Поиск по Авито</h2><p>Отдельная очередь объявлений: прямые ссылки, цены, единицы и понятный статус блокировки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -431,6 +437,10 @@
     const avitoSafeButton = document.getElementById("runAvitoSafeBtn");
     const avitoSafeTitle = document.getElementById("avitoSafeTitle");
     const avitoSafeStatus = document.getElementById("avitoSafeStatus");
+    const avitoAgentProgress = document.getElementById("avitoAgentProgress");
+    const avitoAgentCurrent = document.getElementById("avitoAgentCurrent");
+    const avitoAgentNote = document.getElementById("avitoAgentNote");
+    const avitoAgentJobs = document.getElementById("avitoAgentJobs");
     const queueAgentMarketButton = document.getElementById("queueAgentMarketBtn");
     const agentMarketNote = document.getElementById("agentMarketNote");
     const agentMarketJobs = document.getElementById("agentMarketJobs");
@@ -443,7 +453,12 @@
     let wasRunning = false;
     let runPendingUntil = 0;
     let marketBusy = false;
-    let avitoBlocked = true;
+    let agentQueueEnabled = true;
+    let avitoAgentQueueEnabled = true;
+    let agentQueuePosting = false;
+    let avitoAgentQueuePosting = false;
+    let agentQueueObservedRunning = false;
+    let avitoQueueObservedRunning = false;
     let activeFeatureModal = null;
     let activeFeatureTrigger = null;
 
@@ -497,57 +512,8 @@
       if (event.key === "Escape" && activeFeatureModal) setFeatureModalOpen(activeFeatureModal, false);
     });
 
-    function formatRemaining(seconds) {
-      const totalMinutes = Math.max(1, Math.ceil(Number(seconds || 0) / 60));
-      const hours = Math.floor(totalMinutes / 60);
-      const minutes = totalMinutes % 60;
-      if (hours && minutes) return hours + " ч " + minutes + " мин";
-      if (hours) return hours + " ч";
-      return minutes + " мин";
-    }
-
     async function refreshAvitoStatus() {
-      if (!avitoSafeButton) return;
-      try {
-        const response = await fetch("/api/avito-status?t=" + Date.now(), { cache: "no-store" });
-        const state = await response.json().catch(function() { return {}; });
-        if (!response.ok || !state.ok) throw new Error(state.message || ("HTTP " + response.status));
-        avitoBlocked = !!state.blocked;
-        avitoSafeCard?.classList.remove("is-loading", "is-paused", "is-ready");
-        if (avitoBlocked) {
-          avitoSafeCard?.classList.add("is-paused");
-          const until = state.blocked_until ? new Date(Number(state.blocked_until) * 1000) : null;
-          const untilText = until && !Number.isNaN(until.getTime())
-            ? until.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
-            : "позже";
-          if (avitoSafeTitle) avitoSafeTitle.textContent = "Пауза действует до " + untilText;
-          if (avitoSafeStatus) avitoSafeStatus.textContent = (state.reason || "Авито ограничил доступ") + ". Осталось примерно " + formatRemaining(state.remaining_seconds) + ".";
-          avitoSafeButton.disabled = true;
-          avitoSafeButton.textContent = "Пауза до " + (until ? until.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "позже");
-          const launcher = document.getElementById("avitoLauncherStatus");
-          if (launcher) launcher.textContent = "Пауза · осталось " + formatRemaining(state.remaining_seconds);
-        } else {
-          avitoSafeCard?.classList.add("is-ready");
-          if (avitoSafeTitle) avitoSafeTitle.textContent = "Можно сделать контрольный сбор";
-          if (avitoSafeStatus) avitoSafeStatus.textContent = state.profile_ready
-            ? "Сохранённый профиль браузера готов. Хорошие цены из других источников останутся на месте."
-            : "Профиль браузера создастся при первом запуске. Хорошие цены из других источников останутся на месте.";
-          avitoSafeButton.disabled = marketBusy;
-          avitoSafeButton.textContent = marketBusy ? "Дождитесь текущего анализа" : "Собрать Авито по 2 позициям";
-          const launcher = document.getElementById("avitoLauncherStatus");
-          if (launcher) launcher.textContent = marketBusy ? "Дождитесь текущего анализа" : "Доступен контрольный запуск";
-        }
-      } catch (error) {
-        avitoBlocked = true;
-        avitoSafeCard?.classList.remove("is-ready");
-        avitoSafeCard?.classList.add("is-paused");
-        if (avitoSafeTitle) avitoSafeTitle.textContent = "Не удалось проверить локальную паузу";
-        if (avitoSafeStatus) avitoSafeStatus.textContent = error.message || String(error);
-        avitoSafeButton.disabled = true;
-        avitoSafeButton.textContent = "Статус недоступен";
-        const launcher = document.getElementById("avitoLauncherStatus");
-        if (launcher) launcher.textContent = "Статус временно недоступен";
-      }
+      return refreshAvitoAgentJobs();
     }
 
     function filterRows() {
@@ -610,8 +576,16 @@
       const countNode = document.getElementById("agentSelectedCount");
       if (countNode) countNode.textContent = String(count);
       if (queueAgentMarketButton) {
-        queueAgentMarketButton.disabled = count === 0;
-        queueAgentMarketButton.textContent = count ? "Отправить агенту · " + count : "Отправить агенту";
+        queueAgentMarketButton.disabled = marketBusy || !agentQueueEnabled || agentQueuePosting;
+        queueAgentMarketButton.textContent = agentQueuePosting
+          ? "Ставлю в очередь…"
+          : (count ? "Дожать выбранные · " + count : "Дожать 20 без цены");
+      }
+      if (avitoSafeButton) {
+        avitoSafeButton.disabled = marketBusy || !avitoAgentQueueEnabled || avitoAgentQueuePosting;
+        avitoSafeButton.textContent = avitoAgentQueuePosting
+          ? "Ставлю в очередь…"
+          : (count ? "Искать на Авито · " + count : "Искать 5 без цены");
       }
     }
 
@@ -639,9 +613,11 @@
     async function refreshAgentJobs() {
       if (!document.getElementById("agentMarketCard")) return;
       try {
-        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs?t=" + Date.now(), { cache: "no-store" });
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs?mode=web&t=" + Date.now(), { cache: "no-store" });
         const data = await response.json().catch(function() { return {}; });
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        agentQueueEnabled = !!data.enabled;
+        refreshAgentSelection();
         const summary = data.summary || {};
         const progress = data.progress || summary;
         [["agentQueuedCount", "queued"], ["agentLeasedCount", "leased"], ["agentCompletedCount", "completed"], ["agentFailedCount", "failed"]].forEach(function(pair) {
@@ -652,6 +628,12 @@
         const processed = Number(progress.processed || 0);
         const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
         const current = progress.current || null;
+        if (progress.running) {
+          agentQueueObservedRunning = true;
+        } else if (agentQueueObservedRunning && total && processed >= total) {
+          agentQueueObservedRunning = false;
+          window.setTimeout(function() { window.location.reload(); }, 900);
+        }
         const headline = document.getElementById("agentProgressHeadline");
         const percentNode = document.getElementById("agentProgressPercent");
         const fill = document.getElementById("agentProgressFill");
@@ -674,7 +656,7 @@
         if (meta) {
           meta.textContent = total
             ? ("Осталось: " + Number(progress.remaining || 0) + " · найдено предложений: " + Number(progress.offers_found || 0) + (progress.failed ? " · ошибок: " + Number(progress.failed) : ""))
-            : "Выберите позиции ниже и отправьте их агенту";
+            : "Нажмите «Дожать», чтобы отправить первые 20 позиций без цены";
         }
         live?.classList.toggle("is-running", !!progress.running);
         live?.classList.toggle("is-done", !!total && processed >= total);
@@ -696,8 +678,8 @@
           if (position) position.textContent = total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
           if (currentStatus) currentStatus.textContent = total && processed >= total ? "Результаты уже добавлены в таблицу сметы" : "Hermes сейчас ничего не обрабатывает";
           if (updated) updated.textContent = "";
-          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Очередь свободна";
-          if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "Можно отправить выбранные позиции";
+          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Дожать без цены";
+          if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "Только сложные позиции после веб-поиска";
           if (commandState) commandState.textContent = total && processed >= total ? "Фоновый анализ завершён" : "Инструменты готовы";
         }
         if (agentMarketNote) {
@@ -719,6 +701,8 @@
           }).join("");
         }
       } catch (error) {
+        agentQueueEnabled = false;
+        refreshAgentSelection();
         if (agentMarketNote) {
           agentMarketNote.textContent = "Не удалось прочитать очередь: " + (error.message || error);
           agentMarketNote.classList.add("is-warning");
@@ -726,16 +710,80 @@
       }
     }
 
+    async function refreshAvitoAgentJobs() {
+      if (!avitoSafeButton) return;
+      try {
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs?mode=avito&t=" + Date.now(), { cache: "no-store" });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        avitoAgentQueueEnabled = !!data.enabled;
+        const progress = data.progress || data.summary || {};
+        const total = Number(progress.total || 0);
+        const processed = Number(progress.processed || 0);
+        const current = progress.current || null;
+        if (progress.running) {
+          avitoQueueObservedRunning = true;
+        } else if (avitoQueueObservedRunning && total && processed >= total) {
+          avitoQueueObservedRunning = false;
+          window.setTimeout(function() { window.location.reload(); }, 900);
+        }
+        const launcher = document.getElementById("avitoLauncherStatus");
+        avitoSafeCard?.classList.toggle("is-ready", !!data.enabled && !progress.failed);
+        avitoSafeCard?.classList.toggle("is-paused", !!progress.failed);
+        if (avitoAgentProgress) {
+          avitoAgentProgress.textContent = total
+            ? (processed + " из " + total + " · найдено " + Number(progress.offers_found || 0))
+            : "Очередь свободна";
+        }
+        if (current) {
+          if (avitoAgentCurrent) avitoAgentCurrent.textContent = current.position_name || "Позиция без названия";
+          if (avitoAgentNote) avitoAgentNote.textContent = current.status === "leased"
+            ? "Hermes открыл Авито на Mac mini. При CAPTCHA или блокировке задание остановится без повторного штурма."
+            : "Задание ждёт следующего опроса Mac mini.";
+          if (avitoSafeTitle) avitoSafeTitle.textContent = "Hermes ищет объявления";
+          if (avitoSafeStatus) avitoSafeStatus.textContent = "Текущая позиция: " + (current.position_name || "без названия");
+          if (launcher) launcher.textContent = "Сейчас: " + (current.position_name || "позиция");
+        } else {
+          if (avitoAgentCurrent) avitoAgentCurrent.textContent = total && processed >= total ? "Все задания обработаны" : "Hermes ничего не ищет";
+          if (avitoAgentNote) avitoAgentNote.textContent = data.enabled
+            ? (total && processed >= total ? "Результаты добавлены к позициям сметы." : "Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.")
+            : "Для подключения Mac mini не настроен MARKET_AGENT_TOKEN.";
+          if (avitoSafeTitle) avitoSafeTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Отдельный поиск объявлений через Hermes";
+          if (avitoSafeStatus) avitoSafeStatus.textContent = "Поиск выполняется браузерной сессией Mac mini, а не IP сервера AutoBot.";
+          if (launcher) launcher.textContent = total && processed >= total ? "Последняя очередь завершена" : "Отдельная браузерная очередь";
+        }
+        const jobs = (current ? [current] : []).concat(progress.recent || []).slice(0, 6);
+        if (avitoAgentJobs) {
+          avitoAgentJobs.hidden = jobs.length === 0;
+          avitoAgentJobs.innerHTML = jobs.map(function(job) {
+            const status = agentStatusLabels[job.status] || job.status;
+            const detail = job.status === "completed"
+              ? (Number(job.offers_found || 0) ? ("Объявлений: " + Number(job.offers_found || 0)) : (job.notes || "Подходящих объявлений не найдено"))
+              : (job.error || (job.status === "leased" ? "Открывает объявления" : "Ожидает обработки"));
+            return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+          }).join("");
+        }
+        refreshAgentSelection();
+      } catch (error) {
+        avitoAgentQueueEnabled = false;
+        avitoSafeCard?.classList.remove("is-ready");
+        avitoSafeCard?.classList.add("is-paused");
+        if (avitoAgentNote) avitoAgentNote.textContent = "Не удалось прочитать очередь Авито: " + (error.message || error);
+        const launcher = document.getElementById("avitoLauncherStatus");
+        if (launcher) launcher.textContent = "Очередь временно недоступна";
+        refreshAgentSelection();
+      }
+    }
+
     queueAgentMarketButton?.addEventListener("click", async function() {
       const keys = selectedAgentKeys();
-      if (!keys.length) return;
-      queueAgentMarketButton.disabled = true;
-      queueAgentMarketButton.textContent = "Ставлю в очередь…";
+      agentQueuePosting = true;
+      refreshAgentSelection();
       try {
         const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({ position_keys: keys, limit: 50 }),
+          body: JSON.stringify({ mode: "web", position_keys: keys, limit: keys.length ? 50 : 20 }),
         });
         const data = await response.json().catch(function() { return {}; });
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
@@ -749,6 +797,7 @@
           agentMarketNote.classList.add("is-warning");
         }
       } finally {
+        agentQueuePosting = false;
         refreshAgentSelection();
       }
     });
@@ -797,29 +846,30 @@
     marketSampleButton?.addEventListener("click", function() { postRun(false, 10); });
     document.getElementById("runEmptyTender")?.addEventListener("click", function() { postRun(false, 0); });
     avitoSafeButton?.addEventListener("click", async function() {
-      avitoSafeButton.disabled = true;
-      avitoSafeButton.textContent = "Запускаю бережный сбор…";
-      if (avitoSafeTitle) avitoSafeTitle.textContent = "Передаю до 2 позиций AutoBot";
-      if (avitoSafeStatus) avitoSafeStatus.textContent = "Будут выбраны только уникальные позиции без подтверждённой цены.";
+      const keys = selectedAgentKeys();
+      avitoAgentQueuePosting = true;
+      refreshAgentSelection();
+      if (avitoSafeTitle) avitoSafeTitle.textContent = "Передаю позиции Hermes";
+      if (avitoSafeStatus) avitoSafeStatus.textContent = keys.length
+        ? ("Выбрано позиций: " + keys.length + ". Поиск будет выполнен только на Авито.")
+        : "Будут взяты первые пять позиций без подтверждённой цены.";
       try {
-        const response = await fetch("/api/generate-avito-safe-sample", {
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({ tender_id: TENDER_ID, sample_rows: 2 }),
+          body: JSON.stringify({ mode: "avito", position_keys: keys, limit: keys.length ? 50 : 5 }),
         });
         const data = await response.json().catch(function() { return {}; });
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
-        wasRunning = true;
-        runPendingUntil = Date.now() + 10000;
-        marketBusy = true;
-        if (runProgress) runProgress.hidden = false;
-        if (runStatus) runStatus.textContent = "Авито: бережный сбор запущен";
-        if (avitoSafeTitle) avitoSafeTitle.textContent = "Сбор запущен";
-        if (avitoSafeStatus) avitoSafeStatus.textContent = "Если Авито снова покажет ограничение, AutoBot остановится после первой такой страницы.";
-        pollStatus();
+        document.querySelectorAll("[data-agent-position]:checked").forEach(function(input) { input.checked = false; });
+        if (avitoSafeTitle) avitoSafeTitle.textContent = "Поиск поставлен в очередь";
+        if (avitoSafeStatus) avitoSafeStatus.textContent = "Добавлено заданий: " + data.created + (data.skipped_active ? ". Уже выполнялись: " + data.skipped_active : "") + ".";
+        await refreshAvitoAgentJobs();
       } catch (error) {
-        if (avitoSafeStatus) avitoSafeStatus.textContent = error.message || String(error);
-        await refreshAvitoStatus();
+        if (avitoSafeStatus) avitoSafeStatus.textContent = "Не удалось создать очередь: " + (error.message || String(error));
+      } finally {
+        avitoAgentQueuePosting = false;
+        refreshAgentSelection();
       }
     });
 
@@ -918,6 +968,7 @@
         const state = await response.json();
         const wasBusy = marketBusy;
         marketBusy = !!state.running;
+        refreshAgentSelection();
         const current = state.running && state.current_tid === TENDER_ID;
         const percent = current ? Number(state.market_percent || state.percent || 2) : 0;
         const readinessLauncher = document.getElementById("readinessLauncherStatus");
@@ -930,7 +981,6 @@
           if (readinessLauncher) readinessLauncher.textContent = state.market_total ? ("Проверено строк: " + state.market_done + " из " + state.market_total) : "AutoBot подготавливает документы";
           if (marketButton) { marketButton.disabled = true; marketButton.textContent = "Анализ выполняется"; }
           if (marketSampleButton) { marketSampleButton.disabled = true; marketSampleButton.textContent = "Проверяю позиции"; }
-          if (avitoSafeButton) { avitoSafeButton.disabled = true; avitoSafeButton.textContent = "Сбор выполняется"; }
         } else if (wasRunning && Date.now() >= runPendingUntil) {
           if (runStatus) runStatus.textContent = state.error_ids?.length ? "Завершено с ошибкой" : "Готово. Обновляю карточку…";
           if (readinessLauncher) readinessLauncher.textContent = state.error_ids?.length ? "Последний запуск завершён с ошибкой" : "Последний запуск завершён";
@@ -939,7 +989,6 @@
         } else if (marketButton) {
           marketButton.disabled = marketBusy;
           if (marketSampleButton) { marketSampleButton.disabled = marketBusy; marketSampleButton.textContent = marketBusy ? "Дождитесь текущего анализа" : "Проверить 10 позиций"; }
-          if (marketBusy && avitoSafeButton) { avitoSafeButton.disabled = true; avitoSafeButton.textContent = "Дождитесь текущего анализа"; }
           if (wasBusy && !marketBusy) refreshAvitoStatus();
           if (readinessLauncher && !marketBusy) readinessLauncher.textContent = "Этапы и журнал выполнения";
         }
@@ -954,7 +1003,7 @@
     refreshAgentSelection();
     refreshAgentJobs();
     pollStatus();
-    window.setInterval(refreshAvitoStatus, 30000);
+    window.setInterval(refreshAvitoStatus, 15000);
     window.setInterval(refreshAgentJobs, 15000);
     window.setInterval(pollStatus, 2500);
   </script>

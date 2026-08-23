@@ -69,6 +69,7 @@ def init_db(path: Path | str | None = None) -> Path:
                 tender_id TEXT NOT NULL,
                 position_key TEXT NOT NULL,
                 position_name TEXT NOT NULL,
+                job_mode TEXT NOT NULL DEFAULT 'web',
                 payload_json TEXT NOT NULL,
                 result_json TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'queued',
@@ -86,6 +87,13 @@ def init_db(path: Path | str | None = None) -> Path:
             CREATE INDEX IF NOT EXISTS idx_agent_market_tender
                 ON agent_market_jobs(tender_id, created_at DESC);
             """
+        )
+        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(agent_market_jobs)").fetchall()}
+        if "job_mode" not in columns:
+            connection.execute("ALTER TABLE agent_market_jobs ADD COLUMN job_mode TEXT NOT NULL DEFAULT 'web'")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_market_tender_mode "
+            "ON agent_market_jobs(tender_id, job_mode, created_at DESC)"
         )
     return db_path
 
@@ -122,11 +130,14 @@ def enqueue_jobs(
                 name = str(payload.get("name") or "").strip()
                 if not key or not name:
                     continue
+                raw_mode = str(payload.get("job_mode") or payload.get("search_mode") or "web").strip().casefold()
+                job_mode = "avito" if "avito" in raw_mode else "web"
                 active = connection.execute(
                     """SELECT id FROM agent_market_jobs
-                       WHERE tender_id = ? AND position_key = ? AND status IN ('queued', 'leased')
+                       WHERE tender_id = ? AND position_key = ? AND job_mode = ?
+                         AND status IN ('queued', 'leased')
                        LIMIT 1""",
-                    (tender_id, key),
+                    (tender_id, key, job_mode),
                 ).fetchone()
                 if active:
                     skipped.append(key)
@@ -134,21 +145,22 @@ def enqueue_jobs(
                 job_id = uuid.uuid4().hex
                 connection.execute(
                     """INSERT INTO agent_market_jobs
-                       (id, tender_id, position_key, position_name, payload_json, status,
+                       (id, tender_id, position_key, position_name, job_mode, payload_json, status,
                         priority, attempts, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)""",
                     (
                         job_id,
                         tender_id,
                         key,
                         name,
+                        job_mode,
                         json.dumps(payload, ensure_ascii=False),
                         int(priority),
                         now,
                         now,
                     ),
                 )
-                created.append({"id": job_id, "position_key": key, "position_name": name})
+                created.append({"id": job_id, "position_key": key, "position_name": name, "job_mode": job_mode})
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
@@ -282,28 +294,48 @@ def list_jobs(
     *,
     path: Path | str | None = None,
     limit: int = 250,
+    mode: str | None = None,
 ) -> list[dict[str, Any]]:
     init_db(path)
     with closing(_connect(path)) as connection:
-        rows = connection.execute(
-            """SELECT * FROM agent_market_jobs WHERE tender_id = ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (tender_id, max(1, min(int(limit), 1000))),
-        ).fetchall()
+        safe_limit = max(1, min(int(limit), 1000))
+        normalized_mode = str(mode or "").strip().casefold()
+        if normalized_mode in {"web", "avito"}:
+            rows = connection.execute(
+                """SELECT * FROM agent_market_jobs WHERE tender_id = ? AND job_mode = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (tender_id, normalized_mode, safe_limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT * FROM agent_market_jobs WHERE tender_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (tender_id, safe_limit),
+            ).fetchall()
     return [_row_payload(row) or {} for row in rows]
 
 
-def job_summary(tender_id: str, *, path: Path | str | None = None) -> dict[str, int]:
+def job_summary(
+    tender_id: str,
+    *,
+    path: Path | str | None = None,
+    mode: str | None = None,
+) -> dict[str, int]:
     counts = {status: 0 for status in (*ACTIVE_STATUSES, *FINAL_STATUSES)}
     counts["total"] = 0
-    for job in list_jobs(tender_id, path=path):
+    for job in list_jobs(tender_id, path=path, mode=mode):
         status = str(job.get("status") or "")
         counts[status] = counts.get(status, 0) + 1
         counts["total"] += 1
     return counts
 
 
-def job_progress(tender_id: str, *, path: Path | str | None = None) -> dict[str, Any]:
+def job_progress(
+    tender_id: str,
+    *,
+    path: Path | str | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
     """Return progress for the latest attempt of every unique position.
 
     A tender can contain retries and old canceled jobs. Counting raw database
@@ -311,7 +343,7 @@ def job_progress(tender_id: str, *, path: Path | str | None = None) -> dict[str,
     view intentionally keeps only the newest job for each position key.
     """
     latest_by_position: dict[str, dict[str, Any]] = {}
-    for job in list_jobs(tender_id, path=path, limit=1000):
+    for job in list_jobs(tender_id, path=path, limit=1000, mode=mode):
         key = str(job.get("position_key") or "").strip()
         if key and key not in latest_by_position:
             latest_by_position[key] = job
@@ -351,11 +383,13 @@ def job_progress(tender_id: str, *, path: Path | str | None = None) -> dict[str,
             "id": job.get("id"),
             "position_key": job.get("position_key"),
             "position_name": job.get("position_name"),
+            "job_mode": job.get("job_mode") or "web",
             "status": job.get("status"),
             "attempts": int(job.get("attempts") or 0),
             "worker_id": job.get("worker_id") or "",
             "error": job.get("error") or "",
             "offers_found": len(result.get("offers") or []),
+            "notes": str(result.get("notes") or "")[:500],
             "created_at": job.get("created_at"),
             "updated_at": job.get("updated_at"),
             "completed_at": job.get("completed_at"),

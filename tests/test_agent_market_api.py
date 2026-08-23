@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autobot.agent_market_queue as queue
+import autobot.web_ui as web_ui
 from autobot.web_ui import app
 
 
@@ -46,6 +47,52 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual(progress["processed"], 0)
         self.assertEqual(progress["current_index"], 1)
         self.assertEqual(progress["current"]["position_key"], "pos-1")
+
+    def test_tender_jobs_filters_avito_queue(self) -> None:
+        queue.enqueue_jobs(
+            "12345678",
+            [{"position_key": "pos-1", "name": "Щебень 20-40", "search_mode": "avito_agent"}],
+        )
+        response = self.client.get("/api/tenders/12345678/agent-market/jobs?mode=avito")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["mode"], "avito")
+        self.assertEqual(payload["progress"]["total"], 1)
+        self.assertEqual(payload["progress"]["current"]["job_mode"], "avito")
+
+    def test_post_avito_mode_builds_mac_browser_task(self) -> None:
+        reports_dir = Path(self.tempdir.name) / "reports"
+        reports_dir.mkdir()
+        (reports_dir / "ОТЧЕТ_ПО_СМЕТАМ_12345678.xlsx").touch()
+        tender = {
+            "region": "Ярославская область",
+            "positions": [{
+                "position_key": "pos-1",
+                "item_no": 1,
+                "name": "Щебень 20-40",
+                "unit": "м3",
+                "verified_count": 0,
+                "queries": ["щебень 20-40 цена за м3"],
+            }],
+        }
+        with (
+            patch.object(web_ui, "REPORTS_DIR", reports_dir),
+            patch.object(web_ui, "load_tender_metadata", return_value={"12345678": {}}),
+            patch.object(web_ui, "_tenders_items", return_value=([], {})),
+            patch.object(web_ui, "build_tender_detail", return_value=tender),
+        ):
+            response = self.client.post(
+                "/api/tenders/12345678/agent-market/jobs",
+                json={"mode": "avito", "position_keys": ["pos-1"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        job = queue.list_jobs("12345678", mode="avito")[0]
+        self.assertEqual(job["payload"]["search_mode"], "avito_agent")
+        self.assertEqual(job["payload"]["allowed_domains"], ["avito.ru"])
+        self.assertIn("https://www.avito.ru/all?", job["payload"]["start_urls"][0])
+        self.assertIn("не обходи captcha", job["payload"]["task"].casefold())
 
     @patch("autobot.real_market_scraper.import_agent_market_result")
     def test_claim_and_complete_normalizes_agent_result(self, import_result) -> None:

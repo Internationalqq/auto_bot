@@ -1627,8 +1627,14 @@ def _dedupe_and_sort(offers: list[MarketOffer], *, max_results: int) -> list[Mar
             offer.url = canonical_url
             by_url[canonical_url] = offer
             continue
-        engines = [part.strip() for part in f"{prev.discovery_engine},{offer.discovery_engine}".split(",") if part.strip()]
-        combined_engines = ", ".join(dict.fromkeys(engines))
+        raw_engines = [part.strip() for part in f"{prev.discovery_engine},{offer.discovery_engine}".split(",") if part.strip()]
+        engines: list[str] = []
+        for engine in raw_engines:
+            if any(engine == current or engine.startswith(current + "/") for current in engines):
+                continue
+            engines = [current for current in engines if not current.startswith(engine + "/")]
+            engines.append(engine)
+        combined_engines = ", ".join(engines)
         best_discovery_score = max(float(prev.discovery_score or 0), float(offer.discovery_score or 0))
         best_discovery_reason = offer.discovery_reason if float(offer.discovery_score or 0) > float(prev.discovery_score or 0) else prev.discovery_reason
         verification_rank = {"verified": 0, "candidate": 1, "rejected": 2}
@@ -1712,7 +1718,8 @@ def search_avito(
     offers = browser_fetcher.current_avito_offers(base_url=url, max_results=max_results)
     if not offers:
         offers = _parse_avito_html(page, url, max_results=max_results)
-    seen = browser_fetcher.last_scroll_counts[-1] if browser_fetcher.last_scroll_counts else 0
+    scroll_counts = list(getattr(browser_fetcher, "last_scroll_counts", []) or [])
+    seen = scroll_counts[-1] if scroll_counts else 0
     _record_avito_page_success(cards=seen, query=q)
     if offers:
         _save_search_cache("avito", query, region, offers)
@@ -2365,7 +2372,8 @@ def _verify_offers(
     for offer in offers:
         started_at = time.monotonic()
         is_avito = "avito.ru" in urlparse(offer.url or "").netloc.casefold()
-        is_agent_offer = offer.adapter == "hermes-browser-agent"
+        is_agent_offer = offer.adapter in {"hermes-browser-agent", "hermes-avito-agent"}
+        is_agent_avito = offer.adapter == "hermes-avito-agent" and is_avito
         page_row = src_row
         if is_agent_offer and offer.title:
             # Agent-discovered pages can contain many prices. Its exact title
@@ -2373,7 +2381,13 @@ def _verify_offers(
             # the original estimate row below.
             page_row = src_row.copy()
             page_row[COL_NAME] = offer.title
-        if avito_collect_only and is_avito:
+        if is_agent_avito and offer.page_checked and offer.evidence:
+            # Hermes has already opened the direct listing in the persistent Mac
+            # browser session. Reopening it from the server would use another IP
+            # and defeat the purpose of the dedicated Avito mode.
+            offer.snippet = offer.evidence
+            offer.page_error = ""
+        elif avito_collect_only and is_avito:
             offer.page_checked = False
             offer.page_error = (
                 "Карточка выдачи Авито сохранена без открытия объявления — "
@@ -3036,6 +3050,8 @@ def import_agent_market_result(
         source_row.get("Раздел", ""),
         str(metadata.get("region") or ""),
     )
+    search_mode = str(position_payload.get("search_mode") or "").strip().casefold()
+    avito_agent_mode = search_mode == "avito_agent"
     imported: list[MarketOffer] = []
     for item in list(result.get("offers") or [])[:10]:
         if not isinstance(item, dict):
@@ -3045,6 +3061,17 @@ def import_agent_market_result(
         if price <= 0 or not url:
             continue
         host = urlparse(url).netloc.casefold().removeprefix("www.")
+        parsed_url = urlparse(url)
+        evidence = str(item.get("evidence") or item.get("snippet") or "").strip()[:1600]
+        if avito_agent_mode:
+            is_avito_host = host == "avito.ru" or host.endswith(".avito.ru")
+            is_direct_listing = bool(re.search(r"_\d{6,}(?:/)?$", parsed_url.path or ""))
+            if not is_avito_host or not is_direct_listing or len(evidence) < 12:
+                continue
+        elif host == "avito.ru" or host.endswith(".avito.ru"):
+            # Ordinary Hermes jobs must not accidentally smuggle Avito results
+            # into the dedicated browser-session workflow.
+            continue
         observed_at = str(item.get("observed_at") or result.get("observed_at") or "").strip()
         if not observed_at:
             observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -3056,36 +3083,44 @@ def import_agent_market_result(
             quantity=source_row.get(COL_QTY, ""),
             total=source_row.get(COL_SUM, ""),
         )
-        reason = "Получено браузерным агентом; AutoBot ещё не подтвердил страницу и соответствие позиции"
+        reason = (
+            "Прямое объявление открыто Hermes в браузерной сессии Mac mini; AutoBot проверяет соответствие позиции и единицы"
+            if avito_agent_mode
+            else "Получено браузерным агентом; AutoBot ещё не подтвердил страницу и соответствие позиции"
+        )
         if plausibility.status in {"review", "extreme"}:
             reason += f"; {plausibility.reason}"
         imported.append(
             MarketOffer(
-                source=f"Hermes Agent · {host or 'веб'}",
+                source=("Hermes · Авито" if avito_agent_mode else f"Hermes Agent · {host or 'веб'}"),
                 title=str(item.get("title") or name).strip()[:500],
                 price=price,
                 url=url,
-                snippet=str(item.get("snippet") or item.get("evidence") or "").strip()[:500],
+                snippet=evidence[:500],
                 verification="candidate",
                 confidence=max(0.05, min(0.58, float(item.get("confidence") or 0.45))),
                 verification_reason=reason,
                 matched_unit=str(item.get("unit") or "").strip(),
                 observed_at=observed_at,
                 position_type=plan.position.slug,
-                page_checked=False,
-                adapter="hermes-browser-agent",
+                page_checked=avito_agent_mode,
+                adapter="hermes-avito-agent" if avito_agent_mode else "hermes-browser-agent",
                 price_scope=str(item.get("price_scope") or "").strip(),
-                evidence=str(item.get("evidence") or item.get("snippet") or "").strip()[:1600],
+                evidence=evidence,
                 published_at=str(item.get("published_at") or "").strip(),
                 location=str(item.get("location") or "").strip(),
                 estimate_ratio=plausibility.ratio,
                 plausibility=plausibility.status,
                 identity_verified=False,
                 source_weight=source_quality(url, host),
-                discovery_engine="Hermes browser",
+                discovery_engine="Hermes Avito browser" if avito_agent_mode else "Hermes browser",
                 discovery_score=max(0.0, min(1.0, float(item.get("confidence") or 0.45))),
-                discovery_reason="Результат фонового браузерного агента",
-                rejection_code="agent_unverified",
+                discovery_reason=(
+                    "Прямое объявление открыто постоянной браузерной сессией Mac mini"
+                    if avito_agent_mode
+                    else "Результат фонового браузерного агента"
+                ),
+                rejection_code="" if avito_agent_mode else "agent_unverified",
                 rejection_stage="agent_import",
                 extractor="browser-agent",
             )

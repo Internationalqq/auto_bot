@@ -10231,13 +10231,17 @@ def api_tender_agent_market_jobs(tender_id: str):
         return jsonify({"ok": False, "message": "Некорректный номер тендера"}), 400
     from autobot.agent_market_queue import enqueue_jobs, job_progress, job_summary, list_jobs
 
+    requested_mode = str(request.args.get("mode") or "web").strip().casefold()
+    job_mode = "avito" if requested_mode == "avito" else "web"
+
     if request.method == "GET":
-        jobs = list_jobs(tid)
+        jobs = list_jobs(tid, mode=job_mode)
         public_jobs = [
             {
                 "id": job.get("id"),
                 "position_key": job.get("position_key"),
                 "position_name": job.get("position_name"),
+                "job_mode": job.get("job_mode") or "web",
                 "status": job.get("status"),
                 "attempts": job.get("attempts"),
                 "worker_id": job.get("worker_id"),
@@ -10246,6 +10250,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                 "updated_at": job.get("updated_at"),
                 "completed_at": job.get("completed_at"),
                 "offers_found": len((job.get("result") or {}).get("offers") or []),
+                "notes": str((job.get("result") or {}).get("notes") or "")[:500],
                 "import": (job.get("result") or {}).get("import") or {},
             }
             for job in jobs
@@ -10254,8 +10259,9 @@ def api_tender_agent_market_jobs(tender_id: str):
             {
                 "ok": True,
                 "enabled": bool(_agent_market_token()),
-                "summary": job_summary(tid),
-                "progress": job_progress(tid),
+                "mode": job_mode,
+                "summary": job_summary(tid, mode=job_mode),
+                "progress": job_progress(tid, mode=job_mode),
                 "jobs": public_jobs,
             }
         )
@@ -10264,15 +10270,18 @@ def api_tender_agent_market_jobs(tender_id: str):
     if not estimate_path.is_file():
         return jsonify({"ok": False, "message": "Для тендера ещё нет распознанной сметы"}), 404
     data = request.get_json(silent=True) or {}
+    requested_mode = str(data.get("mode") or requested_mode).strip().casefold()
+    job_mode = "avito" if requested_mode == "avito" else "web"
     requested_keys = {
         str(value or "").strip()
         for value in list(data.get("position_keys") or [])[:100]
         if str(value or "").strip()
     }
     try:
-        limit = max(1, min(int(data.get("limit") or 20), 50))
+        default_limit = 5 if job_mode == "avito" else 20
+        limit = max(1, min(int(data.get("limit") or default_limit), 50))
     except (TypeError, ValueError):
-        limit = 20
+        limit = 5 if job_mode == "avito" else 20
     metadata = load_tender_metadata()
     meta = dict(metadata.get(tid) or {})
     workflow_items, _ = _tenders_items()
@@ -10285,68 +10294,101 @@ def api_tender_agent_market_jobs(tender_id: str):
             continue
         if not requested_keys and position.get("verified_count"):
             continue
-        selected.append(
-            {
+        queries = position.get("queries") or []
+        primary_query = str(next(iter(queries), "") if queries else position.get("name") or "").strip()
+        region = str(tender.get("region") or "").strip()
+        payload = {
+            "schema_version": 1,
+            "tender_id": tid,
+            "position_key": key,
+            "item_no": position.get("item_no"),
+            "name": position.get("name"),
+            "unit": position.get("unit"),
+            "quantity": position.get("quantity"),
+            "section": position.get("section"),
+            "source_file": position.get("source_file"),
+            "basis_code": position.get("basis_code"),
+            "position_type": position.get("type_slug"),
+            "region": region,
+            "estimate_unit_price": position.get("estimate_unit"),
+            "queries": queries,
+            "job_mode": job_mode,
+            "max_offers": 2,
+            "max_sources": 3,
+            "max_turns": 12,
+            "max_seconds": 150,
+            "result_schema": {
                 "schema_version": 1,
-                "tender_id": tid,
                 "position_key": key,
-                "item_no": position.get("item_no"),
-                "name": position.get("name"),
-                "unit": position.get("unit"),
-                "quantity": position.get("quantity"),
-                "section": position.get("section"),
-                "source_file": position.get("source_file"),
-                "basis_code": position.get("basis_code"),
-                "position_type": position.get("type_slug"),
-                "region": tender.get("region"),
-                "estimate_unit_price": position.get("estimate_unit"),
-                "queries": position.get("queries") or [],
-                "search_mode": "fast_web",
-                "max_offers": 2,
-                "max_sources": 3,
-                "max_turns": 12,
-                "max_seconds": 150,
-                "excluded_domains": ["avito.ru"],
-                "task": (
+                "offers": [
+                    {
+                        "title": "",
+                        "price": 0,
+                        "currency": "RUB",
+                        "unit": "",
+                        "url": "",
+                        "evidence": "",
+                        "observed_at": "ISO-8601",
+                        "published_at": "",
+                        "location": "",
+                        "confidence": 0.0,
+                    }
+                ],
+                "notes": "",
+            },
+        }
+        if job_mode == "avito":
+            avito_query = re.sub(r"\s+", " ", f"{primary_query} {region}".strip())
+            avito_url = "https://www.avito.ru/all?" + urlencode({"q": avito_query})
+            payload.update(
+                {
+                    "search_mode": "avito_agent",
+                    "max_offers": 3,
+                    "max_sources": 3,
+                    "max_turns": 24,
+                    "max_seconds": 360,
+                    "allowed_domains": ["avito.ru"],
+                    "start_urls": [avito_url],
+                    "task": (
+                        "Ищи цену только на Авито через браузерную сессию Mac mini. "
+                        f"Начни с готовой страницы поиска: {avito_url}. "
+                        "Открой не более 3 подходящих объявлений и верни только прямые ссылки вида avito.ru/..._123456789. "
+                        "Для каждого предложения запиши точное название, цену, единицу, город и короткий видимый фрагмент страницы в evidence. "
+                        "Не используй сниппеты поисковиков, другие домены, цену доставки, кредита или похожего товара. "
+                        "Не обходи CAPTCHA и ограничения доступа, не перезагружай заблокированную страницу многократно. "
+                        "Если Авито показал CAPTCHA или ограничение IP, сразу верни пустой offers и укажи причину в notes. "
+                        "Остановись после 3 валидных объявлений и верни только JSON по схеме result_schema."
+                    ),
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "search_mode": "fast_web",
+                    "excluded_domains": ["avito.ru"],
+                    "task": (
                     "Быстрый поиск только по обычным сайтам поставщиков, производителей и подрядчиков. "
                     "Не используй Авито. Открой не более 3 наиболее перспективных прямых страниц, "
                     "не делай искусственных пауз и не обходи CAPTCHA или ограничения сайта. "
                     "Остановись сразу после 2 валидных цен. Если 3 страницы не дали цену, сразу верни результат. "
                     "Не используй цену доставки, кредита или похожего товара. Верни только JSON по схеме result_schema."
                 ),
-                "result_schema": {
-                    "schema_version": 1,
-                    "position_key": key,
-                    "offers": [
-                        {
-                            "title": "",
-                            "price": 0,
-                            "currency": "RUB",
-                            "unit": "",
-                            "url": "",
-                            "evidence": "",
-                            "observed_at": "ISO-8601",
-                            "published_at": "",
-                            "location": "",
-                            "confidence": 0.0,
-                        }
-                    ],
-                    "notes": "",
-                },
-            }
-        )
+                }
+            )
+        selected.append(payload)
         if len(selected) >= limit:
             break
     if not selected:
         return jsonify({"ok": False, "message": "Не выбраны позиции для поиска"}), 400
-    outcome = enqueue_jobs(tid, selected)
+    outcome = enqueue_jobs(tid, selected, priority=80 if job_mode == "avito" else 100)
     return jsonify(
         {
             "ok": True,
+            "mode": job_mode,
             "created": len(outcome["created"]),
             "skipped_active": len(outcome["skipped_active"]),
             "jobs": outcome["created"],
-            "summary": job_summary(tid),
+            "summary": job_summary(tid, mode=job_mode),
         }
     )
 

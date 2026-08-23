@@ -80,3 +80,7 @@ def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     assert 'type: "autobot:feature-modal", open: false' in template
     assert ".command-tool-icon.is-avito i:nth-child(4)" in styles
     assert "max-height: calc(100dvh - 20px)" in styles
+    assert 'JSON.stringify({ mode: "web"' in template
+    assert 'JSON.stringify({ mode: "avito"' in template
+    assert "Дожать 20 без цены" in template
+    assert "Поиск по Авито" in template

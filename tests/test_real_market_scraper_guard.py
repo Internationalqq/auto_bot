@@ -541,6 +541,63 @@ def test_agent_result_is_verified_by_autobot_before_market_import(tmp_path: Path
     assert output_path.is_file()
 
 
+def test_avito_agent_import_accepts_only_opened_direct_listing(tmp_path: Path, monkeypatch) -> None:
+    tender_id = "0171200001926000664"
+    estimate_path = tmp_path / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
+    output_path = tmp_path / f"РЫНОК_ИСТОЧНИКИ_ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
+    name = "Щебень гранитный фракции 20-40"
+    pd.DataFrame(
+        [{
+            market.COL_NAME: name,
+            "Ед. изм.": "м3",
+            market.COL_QTY: 10,
+            market.COL_UNIT_PRICE: 2400,
+            market.COL_SUM: 24000,
+            "Раздел": "Материалы",
+        }]
+    ).to_excel(estimate_path, index=False)
+    monkeypatch.setattr(market, "estimate_path_for_tender", lambda _tid: estimate_path)
+    monkeypatch.setattr(market, "output_path_for_tender", lambda _tid: output_path)
+    monkeypatch.setattr(market, "load_tender_metadata", lambda: {tender_id: {"region": "Ярославская область"}})
+    captured: dict[str, object] = {}
+
+    def fake_verify(_src_row, offers, _plan, **_kwargs):
+        captured["offers"] = offers
+        offers[0].verification = "verified"
+        return offers
+
+    monkeypatch.setattr(market, "_verify_offers", fake_verify)
+    monkeypatch.setattr(market, "_store_verified_offers_in_index", lambda *_args, **_kwargs: 1)
+
+    imported = market.import_agent_market_result(
+        tender_id,
+        {"name": name, "search_mode": "avito_agent"},
+        {"offers": [
+            {
+                "title": "Щебень гранитный 20-40",
+                "price": 2500,
+                "unit": "м3",
+                "url": "https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/scheben_20_40_1234567890",
+                "evidence": "Щебень гранитный 20-40, цена 2500 рублей за м3, Ярославль",
+            },
+            {
+                "title": "Поисковая выдача",
+                "price": 2000,
+                "unit": "м3",
+                "url": "https://www.avito.ru/all?q=scheben",
+                "evidence": "Эта ссылка не ведёт на прямое объявление Авито",
+            },
+        ]},
+    )
+
+    offers = captured["offers"]
+    assert len(offers) == 1
+    assert offers[0].adapter == "hermes-avito-agent"
+    assert offers[0].page_checked is True
+    assert offers[0].source == "Hermes · Авито"
+    assert imported["imported"] == 1
+
+
 def test_agent_exact_title_selects_matching_supplier_table_row(tmp_path: Path, monkeypatch) -> None:
     page = """
     <h1>Щебень гранитный в Ярославле</h1>
