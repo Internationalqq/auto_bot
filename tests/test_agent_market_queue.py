@@ -11,6 +11,7 @@ from autobot.agent_market_queue import (
     fail_job,
     heartbeat_job,
     get_or_create_worker_token,
+    job_progress,
     job_summary,
     list_jobs,
 )
@@ -57,6 +58,26 @@ class AgentMarketQueueTests(unittest.TestCase):
         self.assertIsNone(complete_job(job["id"], "other", {"offers": []}, path=self.db_path))
         self.assertFalse(fail_job(job["id"], "other", "no", path=self.db_path))
         self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "leased")
+
+    def test_progress_uses_latest_attempt_per_position(self) -> None:
+        second = {**self.position, "position_key": "second", "name": "Second position"}
+        enqueue_jobs("12345678", [self.position, second], path=self.db_path)
+        first_job = claim_job("mac-mini", path=self.db_path)
+        self.assertTrue(fail_job(first_job["id"], "mac-mini", "temporary", path=self.db_path))
+        enqueue_jobs("12345678", [self.position], path=self.db_path)
+
+        second_job = claim_job("mac-mini", path=self.db_path)
+        complete_job(second_job["id"], "mac-mini", {"offers": [{"price": 100}]}, path=self.db_path)
+
+        progress = job_progress("12345678", path=self.db_path)
+        self.assertEqual(progress["total"], 2)
+        self.assertEqual(progress["processed"], 1)
+        self.assertEqual(progress["completed"], 1)
+        self.assertEqual(progress["failed"], 0)
+        self.assertEqual(progress["queued"], 1)
+        self.assertEqual(progress["current_index"], 2)
+        self.assertEqual(progress["offers_found"], 1)
+        self.assertEqual(progress["current"]["position_key"], "abc123")
 
     def test_worker_token_is_generated_once_and_persisted(self) -> None:
         token_path = Path(self.tempdir.name) / "worker.token"

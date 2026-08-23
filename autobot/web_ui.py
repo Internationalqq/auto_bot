@@ -10229,7 +10229,7 @@ def api_tender_agent_market_jobs(tender_id: str):
     tid = str(tender_id or "").strip()
     if not re.fullmatch(r"\d{8,25}", tid):
         return jsonify({"ok": False, "message": "Некорректный номер тендера"}), 400
-    from autobot.agent_market_queue import enqueue_jobs, job_summary, list_jobs
+    from autobot.agent_market_queue import enqueue_jobs, job_progress, job_summary, list_jobs
 
     if request.method == "GET":
         jobs = list_jobs(tid)
@@ -10255,6 +10255,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                 "ok": True,
                 "enabled": bool(_agent_market_token()),
                 "summary": job_summary(tid),
+                "progress": job_progress(tid),
                 "jobs": public_jobs,
             }
         )

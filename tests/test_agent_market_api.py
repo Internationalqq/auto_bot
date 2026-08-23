@@ -38,6 +38,15 @@ class AgentMarketApiTests(unittest.TestCase):
         response = self.client.post("/api/agent-market/v1/claim", json={"worker_id": "mac-mini"})
         self.assertEqual(response.status_code, 401)
 
+    def test_tender_jobs_exposes_unique_position_progress(self) -> None:
+        response = self.client.get("/api/tenders/12345678/agent-market/jobs")
+        self.assertEqual(response.status_code, 200)
+        progress = response.get_json()["progress"]
+        self.assertEqual(progress["total"], 1)
+        self.assertEqual(progress["processed"], 0)
+        self.assertEqual(progress["current_index"], 1)
+        self.assertEqual(progress["current"]["position_key"], "pos-1")
+
     @patch("autobot.real_market_scraper.import_agent_market_result")
     def test_claim_and_complete_normalizes_agent_result(self, import_result) -> None:
         import_result.return_value = {"imported": 1}

@@ -150,6 +150,30 @@
           <button class="btn primary" type="button" id="queueAgentMarketBtn" disabled>Отправить агенту</button>
         </div>
       </div>
+      <div class="agent-live" id="agentLive" aria-live="polite">
+        <div class="agent-live-progress">
+          <div class="agent-live-title">
+            <div>
+              <small>Прогресс фонового анализа</small>
+              <strong id="agentProgressHeadline">Проверяю очередь…</strong>
+            </div>
+            <b id="agentProgressPercent">0%</b>
+          </div>
+          <div class="agent-progress-track" role="progressbar" aria-label="Прогресс анализа цен" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <i id="agentProgressFill"></i>
+          </div>
+          <div class="agent-progress-meta" id="agentProgressMeta">Загружаю состояние заданий</div>
+        </div>
+        <div class="agent-current" id="agentCurrent">
+          <span class="agent-current-pulse" aria-hidden="true"></span>
+          <div>
+            <small id="agentCurrentOrdinal">Текущая позиция</small>
+            <strong id="agentCurrentPosition">Ожидаю данные от Mac mini</strong>
+            <span id="agentCurrentStatus">Hermes ещё не забрал задание</span>
+          </div>
+          <time id="agentUpdatedAt"></time>
+        </div>
+      </div>
       <div class="agent-market-summary" id="agentMarketSummary" aria-live="polite">
         <span><small>Выбрано</small><b id="agentSelectedCount">0</b></span>
         <span><small>В очереди</small><b id="agentQueuedCount">0</b></span>
@@ -158,7 +182,10 @@
         <span><small>Ошибки</small><b id="agentFailedCount">0</b></span>
       </div>
       <p class="agent-market-note" id="agentMarketNote">Проверяю подключение очереди…</p>
-      <div class="agent-market-jobs" id="agentMarketJobs" hidden></div>
+      <div class="agent-journal" id="agentJournal" hidden>
+        <div class="agent-journal-head"><strong>Последние события</strong><span>Обновляется каждые 15 секунд</span></div>
+        <div class="agent-market-jobs" id="agentMarketJobs"></div>
+      </div>
     </section>
 
     <section class="avito-safe-card is-loading" id="avitoSafeCard">
@@ -471,23 +498,68 @@
         const data = await response.json().catch(function() { return {}; });
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
         const summary = data.summary || {};
+        const progress = data.progress || summary;
         [["agentQueuedCount", "queued"], ["agentLeasedCount", "leased"], ["agentCompletedCount", "completed"], ["agentFailedCount", "failed"]].forEach(function(pair) {
           const node = document.getElementById(pair[0]);
-          if (node) node.textContent = String(summary[pair[1]] || 0);
+          if (node) node.textContent = String(progress[pair[1]] || 0);
         });
+        const total = Number(progress.total || 0);
+        const processed = Number(progress.processed || 0);
+        const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+        const current = progress.current || null;
+        const headline = document.getElementById("agentProgressHeadline");
+        const percentNode = document.getElementById("agentProgressPercent");
+        const fill = document.getElementById("agentProgressFill");
+        const track = fill?.parentElement;
+        const meta = document.getElementById("agentProgressMeta");
+        const live = document.getElementById("agentLive");
+        const ordinal = document.getElementById("agentCurrentOrdinal");
+        const position = document.getElementById("agentCurrentPosition");
+        const currentStatus = document.getElementById("agentCurrentStatus");
+        const updated = document.getElementById("agentUpdatedAt");
+        if (headline) headline.textContent = total ? ("Обработано " + processed + " из " + total) : "Заданий пока нет";
+        if (percentNode) percentNode.textContent = percent + "%";
+        if (fill) fill.style.width = percent + "%";
+        if (track) track.setAttribute("aria-valuenow", String(percent));
+        if (meta) {
+          meta.textContent = total
+            ? ("Осталось: " + Number(progress.remaining || 0) + " · найдено предложений: " + Number(progress.offers_found || 0) + (progress.failed ? " · ошибок: " + Number(progress.failed) : ""))
+            : "Выберите позиции ниже и отправьте их агенту";
+        }
+        live?.classList.toggle("is-running", !!progress.running);
+        live?.classList.toggle("is-done", !!total && processed >= total);
+        if (current) {
+          const currentNo = Number(progress.current_index || Math.min(total, processed + 1));
+          if (ordinal) ordinal.textContent = "Сейчас · позиция " + currentNo + " из " + total;
+          if (position) position.textContent = current.position_name || "Позиция без названия";
+          if (currentStatus) currentStatus.textContent = current.status === "leased"
+            ? "Hermes открыл браузер и ищет прямые страницы с ценами"
+            : "Задание ждёт, когда Mac mini заберёт его из очереди";
+          if (updated) updated.textContent = current.updated_at
+            ? new Date(Number(current.updated_at) * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+            : "";
+        } else {
+          if (ordinal) ordinal.textContent = total && processed >= total ? "Очередь завершена" : "Текущая позиция";
+          if (position) position.textContent = total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
+          if (currentStatus) currentStatus.textContent = total && processed >= total ? "Результаты уже добавлены в таблицу сметы" : "Hermes сейчас ничего не обрабатывает";
+          if (updated) updated.textContent = "";
+        }
         if (agentMarketNote) {
           agentMarketNote.textContent = data.enabled
-            ? "Очередь готова. Mac mini заберёт задания при следующем опросе. Полученные цены появятся здесь как кандидаты."
+            ? (progress.running ? "Фоновый анализ идёт. Страницу можно закрыть — Mac mini продолжит работу." : "Очередь готова. Mac mini заберёт новое задание при следующем опросе.")
             : "Очередь работает, но для подключения Mac нужно задать MARKET_AGENT_TOKEN в AutoBot.";
           agentMarketNote.classList.toggle("is-warning", !data.enabled);
         }
-        const jobs = (data.jobs || []).slice(0, 8);
+        const jobs = (current ? [current] : []).concat(progress.recent || []).slice(0, 7);
+        const journal = document.getElementById("agentJournal");
         if (agentMarketJobs) {
-          agentMarketJobs.hidden = jobs.length === 0;
+          if (journal) journal.hidden = jobs.length === 0;
           agentMarketJobs.innerHTML = jobs.map(function(job) {
             const status = agentStatusLabels[job.status] || job.status;
-            const detail = job.status === "completed" ? "Предложений: " + Number(job.offers_found || 0) : (job.error || "Ожидает обработки");
-            return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong>' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+            let detail = job.status === "completed" ? "Предложений: " + Number(job.offers_found || 0) : (job.error || (job.status === "leased" ? "Идёт поиск источников" : "Ожидает обработки"));
+            const eventTime = job.updated_at ? new Date(Number(job.updated_at) * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
+            if (eventTime) detail = eventTime + " · " + detail;
+            return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
           }).join("");
         }
       } catch (error) {

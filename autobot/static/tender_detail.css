@@ -130,11 +130,37 @@ button.metric { color: inherit; cursor: pointer; font: inherit; }.metric:hover, 
 .agent-market-head span { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .agent-market-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .agent-market-actions .btn { min-height: 38px; padding: 0 13px; }
+.agent-live { margin-top: 18px; padding: 16px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 14px; background: #f4f8fd; border: 1px solid #d7e4f2; border-radius: 12px; }
+.agent-live-progress { min-width: 0; padding: 4px 3px; }
+.agent-live-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
+.agent-live-title > div { min-width: 0; display: grid; gap: 4px; }
+.agent-live-title small { color: #6a7d98; font-size: 9px; font-weight: 900; letter-spacing: .07em; text-transform: uppercase; }
+.agent-live-title strong { overflow: hidden; color: #1c3455; font-size: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-live-title b { color: #1474e8; font-size: 26px; font-variant-numeric: tabular-nums; line-height: 1; }
+.agent-progress-track { height: 12px; margin-top: 14px; overflow: hidden; background: #dfe8f3; border: 1px solid #d2deec; border-radius: 999px; }
+.agent-progress-track i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #1474e8, #38b986); border-radius: inherit; transition: width .5s ease; }
+.agent-live.is-running .agent-progress-track i { background-image: linear-gradient(105deg, #1474e8 0%, #3a8ceb 38%, #39b982 68%, #1474e8 100%); background-size: 220% 100%; animation: agent-progress-flow 2.2s linear infinite; }
+.agent-live.is-done .agent-progress-track i { background: #20a66a; }
+.agent-progress-meta { margin-top: 9px; color: #60738e; font-size: 11px; font-variant-numeric: tabular-nums; }
+.agent-current { min-width: 0; padding: 14px 15px; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 11px; background: #fff; border: 1px solid #dce6f1; border-radius: 10px; box-shadow: 0 4px 14px rgba(23, 57, 95, .045); }
+.agent-current-pulse { width: 10px; height: 10px; background: #9aabc0; border-radius: 50%; box-shadow: 0 0 0 4px rgba(154, 171, 192, .15); }
+.agent-live.is-running .agent-current-pulse { background: #1680ed; box-shadow: 0 0 0 5px rgba(22, 128, 237, .14); animation: agent-pulse 1.8s ease-out infinite; }
+.agent-live.is-done .agent-current-pulse { background: #20a66a; box-shadow: 0 0 0 5px rgba(32, 166, 106, .12); }
+.agent-current > div { min-width: 0; display: grid; gap: 4px; }
+.agent-current small { color: #1474e8; font-size: 9px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
+.agent-current strong { overflow: hidden; color: #233b5b; font-size: 13px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.agent-current span { color: #6c7d94; font-size: 10px; line-height: 1.4; }
+.agent-current time { align-self: start; color: #8b9bb0; font-size: 10px; font-variant-numeric: tabular-nums; }
+@keyframes agent-progress-flow { to { background-position: -220% 0; } }
+@keyframes agent-pulse { 70%, 100% { box-shadow: 0 0 0 10px rgba(22, 128, 237, 0); } }
 .agent-market-summary { margin-top: 16px; display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); overflow: hidden; border: 1px solid #e0e7f0; border-radius: 10px; }
 .agent-market-summary > span { min-height: 64px; padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #f8fafc; border-right: 1px solid #e0e7f0; }
 .agent-market-summary > span:last-child { border-right: 0; }.agent-market-summary small { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }.agent-market-summary b { color: #223958; font-size: 21px; }
 .agent-market-note { margin: 12px 0 0; color: #58708f; font-size: 11px; }.agent-market-note.is-warning { color: #8a5812; }
-.agent-market-jobs { margin-top: 13px; display: grid; gap: 6px; }
+.agent-journal { margin-top: 14px; padding-top: 13px; border-top: 1px solid #e2e9f2; }
+.agent-journal-head { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.agent-journal-head strong { color: #344b69; font-size: 11px; }.agent-journal-head span { color: #8a99ad; font-size: 10px; }
+.agent-market-jobs { display: grid; gap: 6px; }
 .agent-job { min-height: 45px; padding: 8px 10px; display: grid; grid-template-columns: 100px minmax(0,1fr) auto; align-items: center; gap: 12px; background: #f8fafc; border: 1px solid #e2e8f1; border-radius: 8px; }
 .agent-job span { color: #52647e; font-size: 9px; font-weight: 900; text-transform: uppercase; }.agent-job strong { overflow: hidden; color: #2b3e5b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.agent-job small { color: var(--muted); font-size: 10px; }.agent-job.is-completed span { color: var(--green); }.agent-job.is-failed span { color: var(--red); }.agent-job.is-leased span { color: var(--blue); }
 
@@ -283,7 +309,7 @@ td > b { display: block; margin-bottom: 5px; } td > small { display: block; colo
   .eis-card { grid-template-columns: 1fr; }.eis-main { border-right: 0; border-bottom: 1px solid var(--line); }.eis-side { min-height: 0; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }.dates, .region { margin-top: 0; }
   .action-panel, .downloads, .avito-safe-card, .agent-market-head { align-items: flex-start; flex-direction: column; }.action-buttons, .agent-market-actions { justify-content: flex-start; }.market-health-alert { grid-template-columns: 1fr; }
   .avito-safe-actions { width: 100%; max-width: none; justify-content: space-between; }.avito-safe-actions > span { text-align: left; }
-  .agent-market-summary { width: 100%; grid-template-columns: repeat(5, minmax(80px, 1fr)); }
+  .agent-live { grid-template-columns: 1fr; }.agent-market-summary { width: 100%; grid-template-columns: repeat(5, minmax(80px, 1fr)); }
   .estimate-check-grid { grid-template-columns: 1fr; }
   .metrics { grid-template-columns: repeat(3, 1fr); }.rules-grid { grid-template-columns: 1fr 1fr; }
   .source-files-toolbar { grid-template-columns: 1fr 210px; }.source-files-toolbar > span { grid-column: 1 / -1; }.source-file-row { grid-template-columns: 52px minmax(0, 1fr); }.source-file-actions { grid-column: 2; }
@@ -303,5 +329,5 @@ td > b { display: block; margin-bottom: 5px; } td > small { display: block; colo
   .archive-estimate-list > div { grid-template-columns: 38px minmax(0, 1fr); }.archive-estimate-list .archive-entry-actions { grid-column: 1 / -1; }.archive-estimate-list .archive-entry-actions a { flex: 1; }.archive-section-heading { flex-direction: column; }.archive-entry { grid-template-columns: 52px minmax(0, 1fr) auto; }.archive-entry-actions { grid-column: 1 / -1; }.archive-entry-actions a { flex: 1; }.archive-nested { margin-left: 8px; }.archive-nested > header { grid-template-columns: 1fr; gap: 3px; }
   .rules-grid { grid-template-columns: 1fr; }.source-preview-panel { width: 100vw; }
   .avito-safe-card { padding: 18px; }.avito-safe-actions { align-items: stretch; flex-direction: column; }.avito-safe-actions .btn { width: 100%; min-width: 0; }
-  .agent-market-card { padding: 18px; }.agent-market-actions { width: 100%; }.agent-market-actions .btn { flex: 1; }.agent-market-summary { grid-template-columns: 1fr 1fr; }.agent-market-summary > span { border-bottom: 1px solid #e0e7f0; }.agent-job { grid-template-columns: 88px minmax(0,1fr); }.agent-job small { grid-column: 1 / -1; }
+  .agent-market-card { padding: 18px; }.agent-market-actions { width: 100%; }.agent-market-actions .btn { flex: 1; }.agent-live { padding: 13px; }.agent-live-title { align-items: flex-start; }.agent-live-title strong { font-size: 17px; white-space: normal; }.agent-current { grid-template-columns: 12px minmax(0, 1fr); }.agent-current time { grid-column: 2; }.agent-market-summary { grid-template-columns: 1fr 1fr; }.agent-market-summary > span { border-bottom: 1px solid #e0e7f0; }.agent-journal-head { align-items: flex-start; flex-direction: column; gap: 3px; }.agent-job { grid-template-columns: 88px minmax(0,1fr); }.agent-job small { grid-column: 1 / -1; }
 }

@@ -303,6 +303,83 @@ def job_summary(tender_id: str, *, path: Path | str | None = None) -> dict[str, 
     return counts
 
 
+def job_progress(tender_id: str, *, path: Path | str | None = None) -> dict[str, Any]:
+    """Return progress for the latest attempt of every unique position.
+
+    A tender can contain retries and old canceled jobs. Counting raw database
+    rows makes the UI jump backwards and inflates the total, so the progress
+    view intentionally keeps only the newest job for each position key.
+    """
+    latest_by_position: dict[str, dict[str, Any]] = {}
+    for job in list_jobs(tender_id, path=path, limit=1000):
+        key = str(job.get("position_key") or "").strip()
+        if key and key not in latest_by_position:
+            latest_by_position[key] = job
+
+    jobs = list(latest_by_position.values())
+    counts = {status: 0 for status in (*ACTIVE_STATUSES, *FINAL_STATUSES)}
+    offers_found = 0
+    for job in jobs:
+        status = str(job.get("status") or "")
+        counts[status] = counts.get(status, 0) + 1
+        result = job.get("result") or {}
+        offers_found += len(result.get("offers") or [])
+
+    total = len(jobs)
+    processed = sum(counts.get(status, 0) for status in FINAL_STATUSES)
+    percent = int(round((processed / total) * 100)) if total else 0
+    active = sorted(
+        (job for job in jobs if str(job.get("status") or "") in ACTIVE_STATUSES),
+        key=lambda item: (
+            0 if item.get("status") == "leased" else 1,
+            int(item.get("priority") or 100),
+            float(item.get("created_at") or 0),
+        ),
+    )
+    current = active[0] if active else None
+    recent = sorted(
+        (job for job in jobs if str(job.get("status") or "") in FINAL_STATUSES),
+        key=lambda item: float(item.get("updated_at") or 0),
+        reverse=True,
+    )[:6]
+
+    def public_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not job:
+            return None
+        result = job.get("result") or {}
+        return {
+            "id": job.get("id"),
+            "position_key": job.get("position_key"),
+            "position_name": job.get("position_name"),
+            "status": job.get("status"),
+            "attempts": int(job.get("attempts") or 0),
+            "worker_id": job.get("worker_id") or "",
+            "error": job.get("error") or "",
+            "offers_found": len(result.get("offers") or []),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+            "completed_at": job.get("completed_at"),
+        }
+
+    return {
+        "total": total,
+        "processed": processed,
+        "remaining": max(0, total - processed),
+        "percent": max(0, min(100, percent)),
+        "current_index": min(total, processed + 1) if current else processed,
+        "queued": counts.get("queued", 0),
+        "leased": counts.get("leased", 0),
+        "completed": counts.get("completed", 0),
+        "failed": counts.get("failed", 0),
+        "canceled": counts.get("canceled", 0),
+        "offers_found": offers_found,
+        "running": bool(active),
+        "current": public_job(current),
+        "recent": [public_job(job) for job in recent],
+        "updated_at": max((float(job.get("updated_at") or 0) for job in jobs), default=0),
+    }
+
+
 def get_job(job_id: str, *, path: Path | str | None = None) -> dict[str, Any] | None:
     init_db(path)
     with closing(_connect(path)) as connection:
