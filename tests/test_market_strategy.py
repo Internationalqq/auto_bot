@@ -69,6 +69,29 @@ class MarketStrategyTests(unittest.TestCase):
         self.assertEqual(result.status, "verified")
         self.assertEqual(result.matched_unit, "м")
 
+    def test_dense_rock_crushed_stone_accepts_granite_but_not_gravel(self) -> None:
+        common = {
+            "name": "Щебень из плотных горных пород для строительных работ",
+            "unit": "м3",
+            "url": "https://supplier.example/scheben-20-40/",
+            "price": 2400,
+            "page_checked": True,
+            "source_unit": "м3",
+        }
+        granite = check_offer(
+            **common,
+            title="Щебень гранитный (фр. 20-40)",
+            snippet="Щебень гранитный 20-40 — 2400 руб. за м3",
+        )
+        gravel = check_offer(
+            **common,
+            title="Щебень гравийный (фр. 20-40)",
+            snippet="Щебень гравийный 20-40 — 1500 руб. за м3",
+        )
+        self.assertEqual(granite.status, "verified")
+        self.assertEqual(granite.matched_unit, "м3")
+        self.assertEqual(gravel.status, "candidate")
+
     def test_linear_and_running_metre_are_compatible(self) -> None:
         self.assertTrue(units_compatible("м", "пог. м"))
         self.assertFalse(units_compatible("м2", "пог. м"))

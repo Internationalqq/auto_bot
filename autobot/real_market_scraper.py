@@ -2191,6 +2191,9 @@ def _enrich_offer_from_page(
     *,
     browser_fetcher: AvitoBrowserFetcher | None = None,
 ) -> MarketOffer:
+    inspection_name = market_query_name(src_row.get(COL_NAME, ""))
+    if offer.adapter == "hermes-browser-agent" and offer.title:
+        inspection_name = str(src_row.get(COL_NAME, "") or offer.title).strip()
     if not offer.url:
         offer.page_error = "Нет прямой ссылки"
         offer.rejection_code = "invalid_url"
@@ -2246,7 +2249,7 @@ def _enrich_offer_from_page(
     inspection = inspect_source_page(
         page_html,
         offer.url,
-        name=market_query_name(src_row.get(COL_NAME, "")),
+        name=inspection_name,
         target_unit=str(src_row.get("Ед. изм.", "") or ""),
         position_bucket=plan.position.bucket,
     )
@@ -2265,7 +2268,7 @@ def _enrich_offer_from_page(
             browser_inspection = inspect_source_page(
                 browser_html,
                 offer.url,
-                name=market_query_name(src_row.get(COL_NAME, "")),
+                name=inspection_name,
                 target_unit=str(src_row.get("Ед. изм.", "") or ""),
                 position_bucket=plan.position.bucket,
             )
@@ -2354,8 +2357,9 @@ def _verify_offers(
     for offer in offers:
         started_at = time.monotonic()
         is_avito = "avito.ru" in urlparse(offer.url or "").netloc.casefold()
+        is_agent_offer = offer.adapter == "hermes-browser-agent"
         page_row = src_row
-        if offer.adapter == "hermes-browser-agent" and offer.title:
+        if is_agent_offer and offer.title:
             # Agent-discovered pages can contain many prices. Its exact title
             # narrows page extraction, while identity is still checked against
             # the original estimate row below.
@@ -2370,7 +2374,11 @@ def _verify_offers(
         else:
             offer = _enrich_offer_from_page(offer, page_row, plan, browser_fetcher=browser_fetcher)
         check = check_offer(
-            name=market_query_name(src_row.get(COL_NAME, "")),
+            name=(
+                str(src_row.get(COL_NAME, "") or "").strip()
+                if is_agent_offer
+                else market_query_name(src_row.get(COL_NAME, ""))
+            ),
             unit=src_row.get("Ед. изм.", ""),
             basis_code=src_row.get("basis_code", ""),
             section=src_row.get("Раздел", ""),

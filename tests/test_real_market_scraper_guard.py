@@ -524,3 +524,56 @@ def test_agent_result_is_verified_by_autobot_before_market_import(tmp_path: Path
     assert imported["total_candidates"] == 0
     assert imported["indexed"] == 1
     assert output_path.is_file()
+
+
+def test_agent_exact_title_selects_matching_supplier_table_row(tmp_path: Path, monkeypatch) -> None:
+    page = """
+    <h1>Щебень гранитный в Ярославле</h1>
+    <table>
+      <thead><tr><td>Материал</td><td>Цена за м3 (куб)</td><td>Цена за тонну</td></tr></thead>
+      <tbody>
+        <tr><td>Щебень гранитный (фр. 2-5)</td><td>От 2000 руб</td><td>От 1050 руб</td></tr>
+        <tr><td>Щебень гранитный (фр. 20-40)</td><td>От 2400 руб</td><td>От 1500 руб</td></tr>
+      </tbody>
+    </table>
+    """
+    monkeypatch.setattr(market, "_SOURCE_PAGE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        market,
+        "_fetch_source_page",
+        lambda *_args, **_kwargs: (page, "", "http"),
+    )
+    row = pd.Series(
+        {
+            market.COL_NAME: "Щебень из плотных горных пород для строительных работ",
+            "Ед. изм.": "м3",
+            "basis_code": "ФСБЦ-02.2.05.04-2094",
+            "Раздел": "Материалы",
+            market.COL_UNIT_PRICE: 3264.79,
+            market.COL_QTY: 57.859,
+            market.COL_SUM: 188897.48,
+        }
+    )
+    plan = market.build_search_plan(
+        row.get(market.COL_NAME),
+        row.get("Ед. изм."),
+        row.get("basis_code"),
+        row.get("Раздел"),
+        "Ярославская область",
+    )
+    offer = market.MarketOffer(
+        source="Hermes Agent",
+        title="Щебень гранитный (фр. 20-40)",
+        price=2400,
+        url="https://supplier.example/scheben-granitniy/",
+        matched_unit="м3",
+        adapter="hermes-browser-agent",
+    )
+
+    checked = market._verify_offers(row, [offer], plan)
+
+    assert len(checked) == 1
+    assert checked[0].price == 2400
+    assert checked[0].verification == "verified", checked[0].verification_reason.encode("unicode_escape")
+    assert checked[0].matched_unit == "м3"
+    assert checked[0].page_checked is True

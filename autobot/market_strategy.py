@@ -566,7 +566,22 @@ def check_offer(
     found = _tokens(evidence_text)
     common = wanted & found
     overlap = len(common) / max(1, min(len(wanted), 7))
-    if len(common) < min(2, max(1, len(wanted))) or overlap < 0.28:
+    name_folded = _fold(name)
+    evidence_folded = _fold(evidence_text)
+    dense_rock_crushed_stone = (
+        position.bucket == "materials"
+        and "щебен" in name_folded
+        and "плотн" in name_folded
+        and "горн" in name_folded
+        and "пород" in name_folded
+        and "щебен" in evidence_folded
+        and any(rock in evidence_folded for rock in ("гранит", "базальт", "диабаз", "габбро"))
+    )
+    if dense_rock_crushed_stone:
+        overlap = max(overlap, 0.55)
+    if not dense_rock_crushed_stone and (
+        len(common) < min(2, max(1, len(wanted))) or overlap < 0.28
+    ):
         return OfferCheck("candidate", 0.30, "Слабое совпадение с названием позиции", "", observed_at)
 
     unit_norm = normalize_unit(unit)
