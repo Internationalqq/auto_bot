@@ -174,7 +174,7 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual(payload["skipped_ineligible"][0]["position_key"], "aggregate-1")
         claimed = queue.claim_job("mac-priority")
         self.assertEqual(claimed["position_key"], "material-1")
-        self.assertEqual(claimed["payload"]["max_attempts"], 2)
+        self.assertEqual(claimed["payload"]["max_attempts"], 1)
 
     def test_get_exposes_verified_offer_outcome_for_live_results(self) -> None:
         job = queue.claim_job("mac-mini")

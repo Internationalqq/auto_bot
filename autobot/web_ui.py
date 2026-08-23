@@ -10389,7 +10389,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "max_sources": 3,
             "max_turns": 16,
             "max_seconds": 180,
-            "max_attempts": 2,
+            "max_attempts": 1,
             "retry_policy": "network_only",
             "queue_priority": (60 if position_type in {"material", "product"} else 70) + search_rank,
             "result_schema": {
