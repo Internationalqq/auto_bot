@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-2" />
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
@@ -73,19 +73,60 @@
       </div>
       <div class="action-buttons">
         {% if tender.has_estimate %}
-        <a class="btn secondary" href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>
-        <button class="btn secondary" type="button" id="addTenderToCrmBtn">Добавить в объект</button>
         <button class="btn secondary" type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>
         {% endif %}
         <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="{{ '1' if tender.has_market else '0' }}">
           {{ "Полный анализ заново" if tender.has_market else "Полный анализ рынка" }}
         </button>
-        <a class="btn ghost" href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть в ЕИС ↗</a>
+        <details class="action-more">
+          <summary class="btn ghost">Ещё <span aria-hidden="true">⌄</span></summary>
+          <div class="action-more-menu">
+            {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>{% endif %}
+            {% if tender.has_estimate %}<button type="button" id="addTenderToCrmBtn">Добавить в объект CRM</button>{% endif %}
+            <a href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть в ЕИС ↗</a>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section class="tender-command-center" aria-label="Инструменты анализа тендера">
+      <header>
+        <div><small>Центр управления</small><strong>Анализ тендера</strong><span>Подробности открываются поверх страницы — таблица остаётся на месте.</span></div>
+        <span class="command-center-state" id="commandCenterState">Обновляю состояние…</span>
+      </header>
+      <div class="command-tool-grid">
+        {% if tender.has_estimate %}
+        <button class="command-tool" type="button" data-feature-open="estimateModal">
+          <span class="command-tool-icon is-green" aria-hidden="true">₽</span>
+          <span class="command-tool-copy"><small>Смета и НМЦК</small><strong>{{ tender.estimate_check_title }}</strong><span>{{ tender.estimate_gap_direction }} {{ tender.estimate_gap_fmt }}</span></span>
+          <b aria-hidden="true">→</b>
+        </button>
+        {% endif %}
+        <button class="command-tool" type="button" data-feature-open="readinessModal">
+          <span class="command-tool-icon" aria-hidden="true">{{ tender.coverage }}%</span>
+          <span class="command-tool-copy"><small>Готовность данных</small><strong>{{ tender.coverage }}% позиций проверено</strong><span id="readinessLauncherStatus">Этапы и журнал выполнения</span></span>
+          <b aria-hidden="true">→</b>
+        </button>
+        <button class="command-tool is-live" type="button" data-feature-open="agentMarketModal">
+          <span class="command-tool-icon is-blue" aria-hidden="true"><i></i></span>
+          <span class="command-tool-copy"><small>Hermes · Mac mini</small><strong id="agentLauncherTitle">Проверяю очередь…</strong><span id="agentLauncherStatus">Загружаю текущую позицию</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
+          <b aria-hidden="true">→</b>
+        </button>
+        <button class="command-tool" type="button" data-feature-open="rulesModal">
+          <span class="command-tool-icon is-violet" aria-hidden="true">✓</span>
+          <span class="command-tool-copy"><small>Методика проверки</small><strong>Как принимается цена</strong><span>Источники, единицы и контроль отклонений</span></span>
+          <b aria-hidden="true">→</b>
+        </button>
+        <button class="command-tool" type="button" data-feature-open="avitoModal">
+          <span class="command-tool-icon is-coral" aria-hidden="true">A</span>
+          <span class="command-tool-copy"><small>Авито · бережный режим</small><strong>Контрольный сбор</strong><span id="avitoLauncherStatus">Проверяю доступ…</span></span>
+          <b aria-hidden="true">→</b>
+        </button>
       </div>
     </section>
 
     {% if tender.has_estimate %}
-    <section class="estimate-check estimate-check-{{ tender.estimate_check_class }}" aria-label="Сверка сметы с начальной ценой">
+    <section class="estimate-check estimate-check-{{ tender.estimate_check_class }}" data-feature-content="estimateModal" aria-label="Сверка сметы с начальной ценой">
       <header>
         <div><small>Контроль полноты смет</small><strong>{{ tender.estimate_check_title }}</strong></div>
         {% if tender.estimate_match_pct is not none %}<span>{{ tender.estimate_match_pct_fmt }}%</span>{% endif %}
@@ -104,7 +145,7 @@
     </section>
     {% endif %}
 
-    <section class="progress-card" aria-label="Готовность тендера">
+    <section class="progress-card" data-feature-content="readinessModal" aria-label="Готовность тендера">
       <div class="progress-head">
         <div><small>Готовность данных</small><strong id="progressTitle">{{ tender.coverage }}% позиций имеют проверенную цену</strong></div>
         <span id="runStatus" aria-live="polite">{% if tender.market_updated %}Рынок обновлён {{ tender.market_updated }}{% else %}Анализ рынка ещё не запускался{% endif %}</span>
@@ -127,7 +168,7 @@
       <button class="metric verified" type="button" data-bucket-filter="verified" aria-pressed="false"><small>С проверенной ценой</small><strong>{{ tender.counts.verified }}</strong></button>
     </section>
 
-    <section class="market-rules">
+    <section class="market-rules" data-feature-content="rulesModal">
       <div class="rules-title"><span aria-hidden="true">✓</span><div><strong>Как AutoBot теперь принимает цену</strong><small>Найденная цифра сама по себе больше не считается рынком.</small></div></div>
       <div class="rules-grid">
         <div><b>Работы и услуги</b><span>Ищем прайс подрядчика или объявление услуги с той же единицей: ₽/м², ₽/м³, ₽/час.</span></div>
@@ -137,7 +178,7 @@
       </div>
     </section>
 
-    <section class="agent-market-card" id="agentMarketCard">
+    <section class="agent-market-card" id="agentMarketCard" data-feature-content="agentMarketModal">
       <div class="agent-market-head">
         <div>
           <small>Hermes на Mac mini</small>
@@ -188,7 +229,7 @@
       </div>
     </section>
 
-    <section class="avito-safe-card is-loading" id="avitoSafeCard">
+    <section class="avito-safe-card is-loading" id="avitoSafeCard" data-feature-content="avitoModal">
       <div class="avito-safe-copy">
         <small>Авито · бережный режим</small>
         <strong id="avitoSafeTitle">Проверяю оставшуюся паузу…</strong>
@@ -319,6 +360,50 @@
     {% endif %}
   </main>
 
+  {% if tender.active_tab == "overview" %}
+  {% if tender.has_estimate %}
+  <aside class="feature-modal" id="estimateModal" hidden aria-labelledby="estimateModalTitle">
+    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
+    <section class="feature-modal-panel" role="dialog" aria-modal="true">
+      <header class="feature-modal-head"><div><small>Финансовый контроль</small><h2 id="estimateModalTitle">Смета и начальная цена</h2><p>Проверка полноты извлечённых локальных смет и расхождения с НМЦК.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <div class="feature-modal-body" data-feature-body></div>
+    </section>
+  </aside>
+  {% endif %}
+
+  <aside class="feature-modal" id="readinessModal" hidden aria-labelledby="readinessModalTitle">
+    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
+    <section class="feature-modal-panel" role="dialog" aria-modal="true">
+      <header class="feature-modal-head"><div><small>Состояние обработки</small><h2 id="readinessModalTitle">Готовность тендера</h2><p>Этапы AutoBot, текущий прогресс и технический журнал.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <div class="feature-modal-body" data-feature-body></div>
+    </section>
+  </aside>
+
+  <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
+    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
+    <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
+      <header class="feature-modal-head"><div><small>Hermes · Mac mini</small><h2 id="agentMarketModalTitle">Фоновый поиск цен</h2><p>Живая очередь, текущая позиция, найденные предложения и ошибки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <div class="feature-modal-body" data-feature-body></div>
+    </section>
+  </aside>
+
+  <aside class="feature-modal" id="rulesModal" hidden aria-labelledby="rulesModalTitle">
+    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
+    <section class="feature-modal-panel" role="dialog" aria-modal="true">
+      <header class="feature-modal-head"><div><small>Методика AutoBot</small><h2 id="rulesModalTitle">Как принимается рыночная цена</h2><p>Короткие правила, по которым предложение становится проверенным источником.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <div class="feature-modal-body" data-feature-body></div>
+    </section>
+  </aside>
+
+  <aside class="feature-modal" id="avitoModal" hidden aria-labelledby="avitoModalTitle">
+    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
+    <section class="feature-modal-panel" role="dialog" aria-modal="true">
+      <header class="feature-modal-head"><div><small>Ограниченный источник</small><h2 id="avitoModalTitle">Безопасная проверка Авито</h2><p>Статус паузы, профиль браузера и ручной контрольный запуск.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <div class="feature-modal-body" data-feature-body></div>
+    </section>
+  </aside>
+  {% endif %}
+
   <aside class="source-preview-drawer" id="sourcePreviewDrawer" hidden aria-labelledby="sourcePreviewTitle">
     <button class="source-preview-backdrop" type="button" data-source-preview-close aria-label="Закрыть просмотр"></button>
     <section class="source-preview-panel" role="dialog" aria-modal="true">
@@ -357,6 +442,54 @@
     let runPendingUntil = 0;
     let marketBusy = false;
     let avitoBlocked = true;
+    let activeFeatureModal = null;
+    let activeFeatureTrigger = null;
+
+    function setFeatureModalOpen(modal, open) {
+      if (!modal) return;
+      if (open) {
+        if (activeFeatureModal && activeFeatureModal !== modal) {
+          activeFeatureModal.classList.remove("is-open");
+          activeFeatureModal.hidden = true;
+        }
+        activeFeatureModal = modal;
+        modal.hidden = false;
+        document.body.classList.add("feature-modal-open");
+        window.requestAnimationFrame(function() {
+          modal.classList.add("is-open");
+          modal.querySelector(".feature-modal-head [data-feature-close]")?.focus({ preventScroll: true });
+        });
+        return;
+      }
+      modal.classList.remove("is-open");
+      window.setTimeout(function() {
+        modal.hidden = true;
+        if (activeFeatureModal === modal) activeFeatureModal = null;
+        if (!activeFeatureModal) document.body.classList.remove("feature-modal-open");
+        activeFeatureTrigger?.focus({ preventScroll: true });
+        activeFeatureTrigger = null;
+      }, 180);
+    }
+
+    document.querySelectorAll("[data-feature-content]").forEach(function(content) {
+      const modal = document.getElementById(content.dataset.featureContent || "");
+      modal?.querySelector("[data-feature-body]")?.appendChild(content);
+    });
+    const positionMetrics = document.querySelector(".metrics");
+    const positionsHead = document.querySelector(".positions-head");
+    if (positionMetrics && positionsHead) positionsHead.insertAdjacentElement("afterend", positionMetrics);
+    document.querySelectorAll("[data-feature-open]").forEach(function(button) {
+      button.addEventListener("click", function() {
+        activeFeatureTrigger = button;
+        setFeatureModalOpen(document.getElementById(button.dataset.featureOpen || ""), true);
+      });
+    });
+    document.querySelectorAll("[data-feature-close]").forEach(function(button) {
+      button.addEventListener("click", function() { setFeatureModalOpen(button.closest(".feature-modal"), false); });
+    });
+    document.addEventListener("keydown", function(event) {
+      if (event.key === "Escape" && activeFeatureModal) setFeatureModalOpen(activeFeatureModal, false);
+    });
 
     function formatRemaining(seconds) {
       const totalMinutes = Math.max(1, Math.ceil(Number(seconds || 0) / 60));
@@ -385,6 +518,8 @@
           if (avitoSafeStatus) avitoSafeStatus.textContent = (state.reason || "Авито ограничил доступ") + ". Осталось примерно " + formatRemaining(state.remaining_seconds) + ".";
           avitoSafeButton.disabled = true;
           avitoSafeButton.textContent = "Пауза до " + (until ? until.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "позже");
+          const launcher = document.getElementById("avitoLauncherStatus");
+          if (launcher) launcher.textContent = "Пауза · осталось " + formatRemaining(state.remaining_seconds);
         } else {
           avitoSafeCard?.classList.add("is-ready");
           if (avitoSafeTitle) avitoSafeTitle.textContent = "Можно сделать контрольный сбор";
@@ -393,6 +528,8 @@
             : "Профиль браузера создастся при первом запуске. Хорошие цены из других источников останутся на месте.";
           avitoSafeButton.disabled = marketBusy;
           avitoSafeButton.textContent = marketBusy ? "Дождитесь текущего анализа" : "Собрать Авито по 2 позициям";
+          const launcher = document.getElementById("avitoLauncherStatus");
+          if (launcher) launcher.textContent = marketBusy ? "Дождитесь текущего анализа" : "Доступен контрольный запуск";
         }
       } catch (error) {
         avitoBlocked = true;
@@ -402,6 +539,8 @@
         if (avitoSafeStatus) avitoSafeStatus.textContent = error.message || String(error);
         avitoSafeButton.disabled = true;
         avitoSafeButton.textContent = "Статус недоступен";
+        const launcher = document.getElementById("avitoLauncherStatus");
+        if (launcher) launcher.textContent = "Статус временно недоступен";
       }
     }
 
@@ -517,9 +656,14 @@
         const position = document.getElementById("agentCurrentPosition");
         const currentStatus = document.getElementById("agentCurrentStatus");
         const updated = document.getElementById("agentUpdatedAt");
+        const launcherTitle = document.getElementById("agentLauncherTitle");
+        const launcherStatus = document.getElementById("agentLauncherStatus");
+        const launcherFill = document.getElementById("agentLauncherFill");
+        const commandState = document.getElementById("commandCenterState");
         if (headline) headline.textContent = total ? ("Обработано " + processed + " из " + total) : "Заданий пока нет";
         if (percentNode) percentNode.textContent = percent + "%";
         if (fill) fill.style.width = percent + "%";
+        if (launcherFill) launcherFill.style.width = percent + "%";
         if (track) track.setAttribute("aria-valuenow", String(percent));
         if (meta) {
           meta.textContent = total
@@ -538,11 +682,17 @@
           if (updated) updated.textContent = current.updated_at
             ? new Date(Number(current.updated_at) * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
             : "";
+          if (launcherTitle) launcherTitle.textContent = "Обработано " + processed + " из " + total;
+          if (launcherStatus) launcherStatus.textContent = "Сейчас: " + (current.position_name || "позиция без названия");
+          if (commandState) commandState.textContent = "Hermes работает · " + currentNo + " из " + total;
         } else {
           if (ordinal) ordinal.textContent = total && processed >= total ? "Очередь завершена" : "Текущая позиция";
           if (position) position.textContent = total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
           if (currentStatus) currentStatus.textContent = total && processed >= total ? "Результаты уже добавлены в таблицу сметы" : "Hermes сейчас ничего не обрабатывает";
           if (updated) updated.textContent = "";
+          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Очередь свободна";
+          if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "Можно отправить выбранные позиции";
+          if (commandState) commandState.textContent = total && processed >= total ? "Фоновый анализ завершён" : "Инструменты готовы";
         }
         if (agentMarketNote) {
           agentMarketNote.textContent = data.enabled
@@ -764,17 +914,20 @@
         marketBusy = !!state.running;
         const current = state.running && state.current_tid === TENDER_ID;
         const percent = current ? Number(state.market_percent || state.percent || 2) : 0;
+        const readinessLauncher = document.getElementById("readinessLauncherStatus");
         if (current) {
           wasRunning = true;
           runPendingUntil = 0;
           if (runProgress) runProgress.hidden = false;
           if (runProgressFill) runProgressFill.style.width = Math.max(2, percent) + "%";
           if (runStatus) runStatus.textContent = state.market_total ? ("Проверено строк: " + state.market_done + " из " + state.market_total) : "AutoBot подготавливает документы";
+          if (readinessLauncher) readinessLauncher.textContent = state.market_total ? ("Проверено строк: " + state.market_done + " из " + state.market_total) : "AutoBot подготавливает документы";
           if (marketButton) { marketButton.disabled = true; marketButton.textContent = "Анализ выполняется"; }
           if (marketSampleButton) { marketSampleButton.disabled = true; marketSampleButton.textContent = "Проверяю позиции"; }
           if (avitoSafeButton) { avitoSafeButton.disabled = true; avitoSafeButton.textContent = "Сбор выполняется"; }
         } else if (wasRunning && Date.now() >= runPendingUntil) {
           if (runStatus) runStatus.textContent = state.error_ids?.length ? "Завершено с ошибкой" : "Готово. Обновляю карточку…";
+          if (readinessLauncher) readinessLauncher.textContent = state.error_ids?.length ? "Последний запуск завершён с ошибкой" : "Последний запуск завершён";
           window.setTimeout(function() { window.location.reload(); }, 1200);
           return;
         } else if (marketButton) {
@@ -782,6 +935,7 @@
           if (marketSampleButton) { marketSampleButton.disabled = marketBusy; marketSampleButton.textContent = marketBusy ? "Дождитесь текущего анализа" : "Проверить 10 позиций"; }
           if (marketBusy && avitoSafeButton) { avitoSafeButton.disabled = true; avitoSafeButton.textContent = "Дождитесь текущего анализа"; }
           if (wasBusy && !marketBusy) refreshAvitoStatus();
+          if (readinessLauncher && !marketBusy) readinessLauncher.textContent = "Этапы и журнал выполнения";
         }
         const events = Array.isArray(state.chat_events) ? state.chat_events.filter(function(event) { return !event.tender_id || event.tender_id === TENDER_ID; }) : [];
         const logs = events.slice(-30).map(function(event) { return (event.ts ? event.ts.replace("T", " ") + " · " : "") + (event.text || ""); });
