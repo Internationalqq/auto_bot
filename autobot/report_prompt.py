@@ -37,6 +37,10 @@ def load_tender_metadata() -> dict[str, dict]:
             "price_rub": row.get("price_rub"),
             "publish_date": (row.get("publish_date") or "").strip(),
             "stage": (row.get("stage") or "").strip(),
+            "customer_name": (row.get("customer_name") or "").strip(),
+            "updated_date": (row.get("updated_date") or "").strip(),
+            "law": (row.get("law") or "").strip(),
+            "purchase_method": (row.get("purchase_method") or "").strip(),
         }
     return meta
 

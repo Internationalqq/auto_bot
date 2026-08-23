@@ -12,6 +12,7 @@ import math
 import re
 import shutil
 import subprocess
+import uuid
 import warnings
 import zipfile
 from dataclasses import dataclass, asdict
@@ -35,6 +36,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 from autobot.market_analytics import estimate_block_qty_from_unit, unit_has_area_or_volume_marker
+from autobot.source_file_versions import store_downloaded_source_file
 from autobot.telegram_notify import send_message, telegram_config
 from autobot.tender_notifications import safe_notify_new_tender
 
@@ -125,6 +127,10 @@ class Tender:
     stage: str
     price_rub: float | None
     publish_date: str | None
+    customer_name: str = ""
+    updated_date: str | None = None
+    law: str = ""
+    purchase_method: str = ""
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -227,6 +233,7 @@ def _checkpoint_signature(args: argparse.Namespace) -> str:
         "price_min": PRICE_MIN,
         "price_max": PRICE_MAX,
         "needed_stage": NEEDED_STAGE,
+        "catalog_only": bool(getattr(args, "catalog_only", False)),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -342,6 +349,9 @@ def merge_and_save_tenders(out_paths: dict[str, Path], tenders: list[Tender]) ->
                 and (not incoming_stage or incoming_stage == NEEDED_STAGE)
             ):
                 incoming["stage"] = existing_stage
+            for key in ("customer_name", "updated_date", "law", "purchase_method"):
+                if existing.get(key) and not incoming.get(key):
+                    incoming[key] = existing[key]
         merged[tender.tender_id] = incoming
 
     total = len(merged)
@@ -382,6 +392,9 @@ def get_tender_id(text: str) -> str:
     m = re.search(r"\d{19}", text)
     if m:
         return m.group(0)
+    m = re.search(r"(?<!\d)\d{11}(?!\d)", text)
+    if m:
+        return m.group(0)
     m = re.search(r"\d{8,}", text)
     return m.group(0) if m else ""
 
@@ -398,8 +411,11 @@ def _extract_reg_number_from_url(url: str) -> str:
         q = parse_qs(p.query)
     except Exception:
         return ""
-    reg = (q.get("regNumber", [""])[0] or "").strip()
-    return reg if reg.isdigit() else ""
+    for key in ("regNumber", "purchaseNoticeNumber"):
+        reg = (q.get(key, [""])[0] or "").strip()
+        if reg.isdigit():
+            return reg
+    return ""
 
 
 def _candidate_notice_urls(tender: Tender) -> list[str]:
@@ -418,6 +434,14 @@ def _candidate_notice_urls(tender: Tender) -> list[str]:
 
     reg = _extract_reg_number_from_url(base) or (tender.tender_id.strip() if tender.tender_id.isdigit() else "")
     if reg:
+        out.append(
+            "https://zakupki.gov.ru/223/purchase/public/purchase/info/"
+            f"common-info.html?regNumber={reg}"
+        )
+        out.append(
+            "https://zakupki.gov.ru/epz/order/notice/notice223/"
+            f"documents.html?purchaseNoticeNumber={reg}"
+        )
         for route in NOTICE_ROUTE_TYPES:
             root = f"https://zakupki.gov.ru/epz/order/notice/{route}/view"
             out.append(f"{root}/common-info.html?regNumber={reg}")
@@ -459,6 +483,103 @@ def _goto_with_retries(page, url: str, *, timeout_ms: int = 60_000, retries: int
 def parse_publish_date(text: str) -> str | None:
     m = re.search(r"(\d{2}\.\d{2}\.\d{4})", text or "")
     return m.group(1) if m else None
+
+
+CARD_FIELD_LABELS = (
+    "Объект закупки",
+    "Наименование объекта закупки",
+    "Заказчик",
+    "Наименование заказчика",
+    "Организация, осуществляющая размещение",
+    "ИНН",
+    "КПП",
+    "Место нахождения",
+    "Начальная цена",
+    "Начальная (максимальная) цена контракта",
+    "Максимальное значение цены контракта",
+    "Размещено",
+    "Дата размещения",
+    "Обновлено",
+    "Дата обновления",
+    "Документы",
+    "Договор",
+    "План закупки",
+    "Жалоба",
+)
+
+
+def _card_text_lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines() if line.strip()]
+
+
+def _card_field_value(lines: list[str], label: str, *, multiline: bool = False) -> str:
+    label_low = label.casefold()
+    stop_labels = tuple(x.casefold() for x in CARD_FIELD_LABELS)
+
+    def _matches(value: str, expected: str) -> bool:
+        return value == expected or value.startswith(expected + ":") or value.startswith(expected + " ")
+
+    for idx, line in enumerate(lines):
+        low = line.casefold().strip().rstrip(":")
+        if not _matches(low, label_low):
+            continue
+        inline = line[len(label):].strip(" :")
+        values = [inline] if inline else []
+        for candidate in lines[idx + 1:]:
+            candidate_low = candidate.casefold().strip().rstrip(":")
+            if any(_matches(candidate_low, stop) for stop in stop_labels):
+                break
+            values.append(candidate)
+            if not multiline:
+                break
+        return " ".join(x for x in values if x).strip()
+    return ""
+
+
+def parse_tender_card_metadata(text: str, *, tender_id: str = "", url: str = "") -> dict[str, str]:
+    """Извлекает поля из текстовой карточки/страницы ЕИС без привязки к CSS-классам портала."""
+    raw = str(text or "")
+    lines = _card_text_lines(raw)
+    object_name = (
+        _card_field_value(lines, "Объект закупки", multiline=True)
+        or _card_field_value(lines, "Наименование объекта закупки", multiline=True)
+    )
+    customer_name = (
+        _card_field_value(lines, "Заказчик", multiline=True)
+        or _card_field_value(lines, "Наименование заказчика", multiline=True)
+        or _card_field_value(lines, "Организация, осуществляющая размещение", multiline=True)
+    )
+    publish_text = _card_field_value(lines, "Размещено") or _card_field_value(lines, "Дата размещения")
+    updated_text = _card_field_value(lines, "Обновлено") or _card_field_value(lines, "Дата обновления")
+
+    law_match = re.search(r"(?i)(?<!\d)(44|223)\s*[-‐‑–—]?\s*ФЗ", raw)
+    law = f"{law_match.group(1)}-ФЗ" if law_match else ""
+    if not law and ("notice223" in url.casefold() or "/223/" in url.casefold() or len(tender_id) == 11):
+        law = "223-ФЗ"
+    elif not law and len(tender_id) == 19:
+        law = "44-ФЗ"
+
+    purchase_method = ""
+    if law_match:
+        for line in lines:
+            if not re.search(r"(?i)(?<!\d)(44|223)\s*[-‐‑–—]?\s*ФЗ", line):
+                continue
+            purchase_method = re.sub(
+                r"(?i)(?<!\d)(44|223)\s*[-‐‑–—]?\s*ФЗ",
+                "",
+                line,
+                count=1,
+            ).strip(" ·—–-")
+            break
+
+    return {
+        "object_name": object_name,
+        "customer_name": customer_name,
+        "publish_date": parse_publish_date(publish_text) or "",
+        "updated_date": parse_publish_date(updated_text) or "",
+        "law": law,
+        "purchase_method": purchase_method,
+    }
 
 
 def is_recent(date_str: str | None, days_back: int) -> bool:
@@ -543,15 +664,23 @@ def search_tenders(region: str, keyword: str, max_pages: int = 3) -> list[Tender
                 if not tender_id or not href:
                     continue
 
+                full_url = normalize_href(href)
+                card_meta = parse_tender_card_metadata(text, tender_id=tender_id, url=full_url)
+                object_name = str(card_meta.get("object_name") or "").strip()
+
                 results.append(
                     Tender(
                         tender_id=tender_id,
-                        title=title or f"Тендер {tender_id}",
-                        url=normalize_href(href),
+                        title=object_name or title or f"Тендер {tender_id}",
+                        url=full_url,
                         region=region,
                         stage=stage,
                         price_rub=price,
-                        publish_date=publish_date,
+                        publish_date=card_meta.get("publish_date") or publish_date,
+                        customer_name=card_meta.get("customer_name") or "",
+                        updated_date=card_meta.get("updated_date") or None,
+                        law=card_meta.get("law") or "",
+                        purchase_method=card_meta.get("purchase_method") or "",
                     )
                 )
         browser.close()
@@ -572,8 +701,18 @@ def parse_stage_from_card_text(text: str) -> str:
     stage_match = re.search(r"(?i)этап\s*[:\s]\s*([^\n\r]+)", text or "")
     if stage_match:
         stage = stage_match.group(1).strip()
-    elif NEEDED_STAGE.lower() in (text or "").lower():
-        stage = NEEDED_STAGE
+    else:
+        known_stages = (
+            "Подача заявок",
+            "Прием заявок",
+            "Работа комиссии",
+            "Определение поставщика завершено",
+            "Закупка завершена",
+            "Закупка отменена",
+            "Отменена",
+        )
+        low_text = (text or "").casefold()
+        stage = next((x for x in known_stages if x.casefold() in low_text), "")
     stage = stage.strip(" .:;,-").strip()
     low = stage.lower()
     # В карточках встречаются общие подписи типа "Этап закупки"/"закупки",
@@ -950,6 +1089,15 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
     tender_dir.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
     download_log: list[dict] = []
+    previous_download_log: list[dict] = []
+    previous_log_path = tender_dir / "download_log.json"
+    if previous_log_path.is_file():
+        try:
+            payload = json.loads(previous_log_path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                previous_download_log = [row for row in payload if isinstance(row, dict)]
+        except Exception:
+            previous_download_log = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -972,6 +1120,35 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
             if not ok:
                 continue
             try:
+                body_text = page.inner_text("body", timeout=15_000)
+                page_meta = parse_tender_card_metadata(
+                    body_text,
+                    tender_id=tender.tender_id,
+                    url=candidate_url,
+                )
+                object_name = str(page_meta.get("object_name") or "").strip()
+                current_title = str(tender.title or "").strip()
+                if object_name and (
+                    not current_title
+                    or current_title in {f"Тендер {tender.tender_id}", f"№ {tender.tender_id}", "Документы", "Извещение"}
+                ):
+                    tender.title = object_name
+                if page_meta.get("customer_name"):
+                    tender.customer_name = page_meta["customer_name"]
+                if page_meta.get("publish_date"):
+                    tender.publish_date = page_meta["publish_date"]
+                if page_meta.get("updated_date"):
+                    tender.updated_date = page_meta["updated_date"]
+                if page_meta.get("law"):
+                    tender.law = page_meta["law"]
+                if page_meta.get("purchase_method"):
+                    tender.purchase_method = page_meta["purchase_method"]
+                page_stage = parse_stage_from_card_text(body_text)
+                if page_stage:
+                    tender.stage = page_stage
+                page_price = parse_price(body_text)
+                if page_price is not None:
+                    tender.price_rub = page_price
                 links.extend(collect_doc_links(page))
                 for item in page.context.cookies():
                     name = item.get("name")
@@ -1007,7 +1184,7 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
 
     for idx, (_, url) in enumerate(uniq_links, start=1):
         ext = ".zip" if ".zip" in url.lower() else ".rar" if ".rar" in url.lower() else ".bin"
-        file_path = tender_dir / f"doc_{idx}{ext}"
+        file_path = tender_dir / f".autobot-incoming-{uuid.uuid4().hex}{ext}"
         downloaded = download_file(url, file_path, cookies=cookie_jar)
         if downloaded:
             saved_path, original_name = downloaded
@@ -1015,17 +1192,37 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
                 original_name,
                 fallback=saved_path.name,
             )
-            final_path = _choose_unique_path(tender_dir, preferred_name)
-            if final_path != saved_path:
+            try:
+                stored = store_downloaded_source_file(
+                    saved_path,
+                    tender_id=tender.tender_id,
+                    preferred_name=preferred_name,
+                    source_url=url,
+                    data_dir=downloads_dir.parent,
+                    previous_log=(*previous_download_log, *download_log),
+                )
+                saved_path = Path(stored["path"])
+            except Exception as error:
                 try:
-                    if final_path.exists():
-                        final_path.unlink()
-                    saved_path.rename(final_path)
-                    saved_path = final_path
+                    if saved_path.exists() and saved_path.name.startswith(".autobot-incoming-"):
+                        saved_path.unlink()
                 except OSError:
-                    # Если переименование не удалось, оставляем техническое имя doc_N.
                     pass
-            saved.append(saved_path)
+                print(f"[download] Не удалось сохранить {preferred_name}: {type(error).__name__}: {error}")
+                download_log.append(
+                    {
+                        "tender_id": tender.tender_id,
+                        "url": url,
+                        "status": "failed",
+                        "saved_path": "",
+                        "original_name": original_name,
+                        "size_bytes": 0,
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
+                continue
+            if saved_path not in saved:
+                saved.append(saved_path)
             download_log.append(
                 {
                     "tender_id": tender.tender_id,
@@ -1035,6 +1232,10 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
                     "original_name": original_name,
                     "saved_name": saved_path.name,
                     "size_bytes": saved_path.stat().st_size if saved_path.exists() else 0,
+                    "sha256": stored["sha256"],
+                    "storage_action": stored["action"],
+                    "old_versions_moved": stored["old_versions_moved"],
+                    "trash_path": stored["trash_path"],
                 }
             )
         else:
@@ -1057,11 +1258,20 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
     return saved
 
 
+def _archive_output_dir(archive: Path, extracted_base: Path) -> Path:
+    """Keep nested archives inside their tender tree instead of mixing doc_N folders."""
+    try:
+        relative_parent = archive.parent.resolve().relative_to(extracted_base.resolve())
+    except (OSError, ValueError):
+        relative_parent = Path(archive.parent.name)
+    return extracted_base / relative_parent / archive.stem
+
+
 def extract_archives(archives: list[Path], extracted_base: Path) -> list[Path]:
     extracted_files: list[Path] = []
     seven_zip = get_7z_path()
     for archive in archives:
-        out_dir = extracted_base / archive.parent.name / archive.stem
+        out_dir = _archive_output_dir(archive, extracted_base)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         if archive.suffix.lower() == ".zip":
@@ -1140,17 +1350,31 @@ def extract_archives_nested(archives: list[Path], extracted_base: Path, max_roun
 
 
 def unique_paths_preserve_order(paths: list[Path]) -> list[Path]:
-    """Один физический файл — один раз (иначе позиции в отчёте/HTML дублируются)."""
+    """Один файл — один раз, даже если архив распакован в несколько каталогов."""
     seen: set[str] = set()
+    seen_content: set[tuple[int, str]] = set()
     out: list[Path] = []
     for p in paths:
         try:
             key = str(p.resolve().absolute())
         except OSError:
             key = str(p)
-        if key not in seen:
-            seen.add(key)
-            out.append(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            size = p.stat().st_size
+            digest = hashlib.sha256()
+            with p.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            content_key = (size, digest.hexdigest())
+        except OSError:
+            content_key = (-1, key)
+        if content_key in seen_content:
+            continue
+        seen_content.add(content_key)
+        out.append(p)
     return out
 
 
@@ -1174,6 +1398,120 @@ def is_excel_file(path: Path) -> bool:
 
 def is_pdf_file(path: Path) -> bool:
     return path.suffix.lower() == ".pdf"
+
+
+def select_estimate_pdf_files(paths: list[Path]) -> list[Path]:
+    """Берёт ЛСР из выборки для торгов; полный комплект ПСД служит резервом."""
+    existing = [p for p in paths if p.exists() and is_pdf_file(p)]
+    named = [
+        p for p in existing
+        if any(marker in p.name.casefold() for marker in ("лср", "локальн", "смет"))
+    ]
+    trade_selection = [p for p in named if "выборк" in p.as_posix().casefold()]
+    candidates = trade_selection or named or existing
+    candidates = sorted(candidates, key=lambda p: _natural_path_sort_key(p))
+    return unique_paths_preserve_order(candidates)
+
+
+def _natural_path_sort_key(path: Path) -> tuple:
+    """Сортирует «1, 6, 8, 9, 11», а не «1, 11, 6, 8, 9»."""
+    parts = re.split(r"(\d+)", path.name.casefold())
+    return tuple((1, int(part)) if part.isdigit() else (0, part) for part in parts)
+
+
+def extract_pdf_estimate_total(path: Path) -> float | None:
+    """Читает официальный итог «ВСЕГО по смете» с одной из последних страниц ЛСР."""
+    try:
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return None
+
+    total_pattern = re.compile(
+        r"(?:всего|итого)\s+по\s+смете\s+([0-9][0-9\s]*[,.][0-9]{2})",
+        re.IGNORECASE,
+    )
+    try:
+        document = fitz.open(path)
+    except Exception:
+        return None
+    try:
+        for page_index in range(len(document) - 1, max(-1, len(document) - 4), -1):
+            page = document[page_index]
+            texts = [page.get_text("text") or ""]
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(200 / 72, 200 / 72), alpha=False)
+                image = Image.open(io.BytesIO(pix.tobytes("png")))
+                texts.append(pytesseract.image_to_string(image, lang="rus+eng", config="--psm 6"))
+            except Exception:
+                pass
+            for text in texts:
+                matches = total_pattern.findall(text)
+                for raw_value in reversed(matches):
+                    value = to_float(raw_value)
+                    if value is not None and value > 0:
+                        return value
+    finally:
+        document.close()
+    return None
+
+
+def extract_estimate_pdf_rows(
+    pdf_files: list[Path],
+    tender: Tender,
+) -> tuple[list[dict], dict[str, float]]:
+    rows: list[dict] = []
+    official_totals: dict[str, float] = {}
+    for pdf_path in pdf_files:
+        rows.extend(extract_rows_from_pdf(pdf_path, tender))
+        official_total = extract_pdf_estimate_total(pdf_path)
+        if official_total is not None:
+            official_totals[pdf_path.name] = official_total
+    return rows, official_totals
+
+
+def write_estimate_parse_manifest(
+    tender_id: str,
+    pdf_files: list[Path],
+    rows: list[dict],
+    out_paths: dict[str, Path],
+    official_totals: dict[str, float] | None = None,
+) -> Path:
+    """Сохраняет контроль: сколько ЛСР выбрано и какие не дали ни одной позиции."""
+    reports_dir = out_paths["reports"]
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = reports_dir / f"ESTIMATE_PARSE_{tender_id}.json"
+    parsed_names = {
+        Path(str(row.get("source_file", ""))).name
+        for row in rows
+        if str(row.get("source_file", "")).strip()
+    }
+    selected_names = [path.name for path in pdf_files]
+    empty_names = [name for name in selected_names if name not in parsed_names]
+    totals = {
+        str(name): float(value)
+        for name, value in (official_totals or {}).items()
+        if to_float(value) is not None and float(value) > 0
+    }
+    payload = {
+        "tender_id": tender_id,
+        "selected_pdf_count": len(selected_names),
+        "parsed_pdf_count": len(selected_names) - len(empty_names),
+        "empty_pdf_files": empty_names,
+        "selected_pdf_files": selected_names,
+        "official_total_files_count": len(totals),
+        "official_total_missing_files": [name for name in selected_names if name not in totals],
+        "official_totals_rub": totals,
+        "official_total_rub": round(sum(totals.values()), 2),
+    }
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(manifest_path)
+    return manifest_path
 
 
 def is_estimate_excel(path: Path) -> bool:
@@ -1384,6 +1722,37 @@ def pick_lsr_position_total(df: pd.DataFrame, row_idx: int, next_row_idx: int, t
     return block_best
 
 
+def pick_lsr_position_unit_price(
+    df: pd.DataFrame,
+    row_idx: int,
+    next_row_idx: int,
+    unit_price_col: int = 13,
+) -> float | None:
+    """Read the current unit price from the explicit LSR column (normally N).
+
+    In the standard Grand Estimate LSR layout material rows keep this value on
+    the position row, while work rows keep it on the following ``Всего по
+    позиции`` row.  Reading that column is more reliable than guessing a pair
+    of numbers whose product happens to equal the position total.
+    """
+    if unit_price_col < 0 or unit_price_col >= df.shape[1]:
+        return None
+
+    header_value = to_float(df.iat[row_idx, unit_price_col])
+    if header_value is not None and header_value > 0:
+        return header_value
+
+    text_cols_end = min(16, df.shape[1])
+    for rr in range(row_idx + 1, next_row_idx):
+        name_blob = " ".join(_cell_text(df.iat[rr, c]) for c in range(2, text_cols_end)).lower()
+        if not any(hint in name_blob for hint in LSR_POSITION_TOTAL_HINTS):
+            continue
+        value = to_float(df.iat[rr, unit_price_col])
+        if value is not None and value > 0:
+            return value
+    return None
+
+
 def _lsr_header_numeric_cells(header_vals: list, c_lo: int = 8, c_hi: int = 24) -> list[tuple[int, float]]:
     """Числа в строке шапки позиции (кол-во, тарифы, цена за ед. и т.д.)."""
     out: list[tuple[int, float]] = []
@@ -1486,14 +1855,24 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
     price_per_unit_candidates = [c for c in (9, 10, 11, 12, 13, 14) if c < df.shape[1]]
 
     position_rows: list[tuple[int, int, str, str, str, float | None, str]] = []
+    def section_title_from_values(values: list) -> str:
+        texts = [_cell_text(x) for x in values if _cell_text(x)]
+        first_section = next((text for text in texts if "раздел" in text.lower()), "")
+        return (first_section or " ".join(texts)).strip()[:220]
+
     current_section = ""
+    for before in range(max(0, header_row - 30), header_row):
+        before_values = df.iloc[before].tolist()
+        before_text = " ".join(_cell_text(x) for x in before_values if _cell_text(x)).strip()
+        if "раздел" in before_text.lower() and 4 <= len(before_text) <= 220:
+            current_section = section_title_from_values(before_values)
     # header_row — уже строка первой позиции (шапка с № в A), не пропускаем её.
     for r in range(header_row, len(df)):
         row_values = df.iloc[r].tolist()
         row_text = " ".join(_cell_text(x) for x in row_values if _cell_text(x)).strip()
         row_low = row_text.lower()
         if "раздел" in row_low and 4 <= len(row_text) <= 220:
-            current_section = row_text[:220]
+            current_section = section_title_from_values(row_values)
         if len(row_values) < 9:
             continue
 
@@ -1547,12 +1926,22 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
 
         header_row_vals = df.iloc[row_idx].tolist()
         qty_from_unit = estimate_block_qty_from_unit(unit_text)
-        pair = _lsr_best_qty_unit_pair(header_row_vals, last_total, tol=0.055)
+
+        # The standard LSR columns are authoritative: I is quantity, N is the
+        # current unit price and P is the position total.  For work rows N is
+        # usually populated on the following "Всего по позиции" row.
+        explicit_unit_price = pick_lsr_position_unit_price(df, row_idx, next_row_idx)
+        unit_price = None
+        if explicit_unit_price is not None and qty is not None and qty > 0:
+            expected_total = qty * explicit_unit_price
+            if abs(expected_total - last_total) <= max(0.1, abs(last_total) * 0.06):
+                unit_price = explicit_unit_price
+
+        pair = None if unit_price is not None else _lsr_best_qty_unit_pair(header_row_vals, last_total, tol=0.055)
 
         # Сначала пара «кол-во × цена» из ячеек строки позиции — она даёт реальный объём и тариф.
         # Раньше для «100 м2» срабатывал fallback qty_from_unit: кол-во=100 и цена=сумма/100 (~руб/м²),
         # из-за чего _lsr_best_qty_unit_pair даже не вызывался и в ОТЧЁТ уходили 100 и 415 вместо 3,5 и 11 865.
-        unit_price = None
         if pair is not None:
             pq, pup = pair
             if not _lsr_spurious_tiny_times_huge(pq, pup, last_total):
@@ -1606,13 +1995,18 @@ def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, sh
     items: list[dict] = []
     header_row, work_col, price_col = find_header_row(df)
     if header_row is not None:
+        def section_title_from_values(values: list) -> str:
+            texts = [_cell_text(x) for x in values if _cell_text(x)]
+            first_section = next((text for text in texts if "раздел" in text.lower()), "")
+            return (first_section or " ".join(texts)).strip()[:220]
+
         current_section = ""
         for r in range(header_row + 1, len(df)):
             row_vals = df.iloc[r].tolist()
             row_text = " ".join(_cell_text(x) for x in row_vals if _cell_text(x)).strip()
             row_low = row_text.lower()
             if "раздел" in row_low and 4 <= len(row_text) <= 220:
-                current_section = row_text[:220]
+                current_section = section_title_from_values(row_vals)
                 continue
             work_val = df.iat[r, work_col] if work_col < df.shape[1] else None
             price_val = df.iat[r, price_col] if price_col < df.shape[1] else None
@@ -1647,13 +2041,18 @@ def extract_work_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, sh
 
 def extract_work_rows_fallback(df: pd.DataFrame, tender: Tender, source_file: Path, *, sheet_name: str = "") -> list[dict]:
     items: list[dict] = []
+    def section_title_from_values(values: list) -> str:
+        texts = [_cell_text(x) for x in values if _cell_text(x)]
+        first_section = next((text for text in texts if "раздел" in text.lower()), "")
+        return (first_section or " ".join(texts)).strip()[:220]
+
     current_section = ""
     for r in range(len(df)):
         row = df.iloc[r].tolist()
         row_text_full = " ".join(_cell_text(x) for x in row if _cell_text(x)).strip()
         row_low_full = row_text_full.lower()
         if "раздел" in row_low_full and 4 <= len(row_text_full) <= 220:
-            current_section = row_text_full[:220]
+            current_section = section_title_from_values(row)
         text_candidates: list[str] = []
         numeric_candidates: list[tuple[int, float]] = []
 
@@ -1758,11 +2157,89 @@ def _iter_pdf_lines(path: Path) -> Iterable[str]:
     return out
 
 
+def _normalize_pdf_unit_qty(unit: object, qty: object, name: object = "", basis_code: object = "") -> tuple[str, float | None]:
+    """Приводит укрупнённые единицы ЛСР (100 м2, 100 м) к рыночным единицам."""
+    raw = _cell_text(unit).casefold().replace("²", "2").replace("³", "3").replace("m", "м")
+    raw = re.sub(r"\s+", " ", raw).strip(" .")
+    number = to_float(qty)
+    multiplier = 1.0
+    match = re.match(r"^(1000|100|10)\s*", raw)
+    if match:
+        multiplier = float(match.group(1))
+        raw = raw[match.end():].strip()
+    aliases = {
+        "м2": ("м2", "кв.м", "кв. м"),
+        "м3": ("м3", "куб.м", "куб. м"),
+        "м": ("м", "пог.м", "пог. м"),
+        "шт": ("шт", "компл", "комплект"),
+        "кг": ("кг",),
+        "т": ("т", "тонна"),
+    }
+    normalized = next((canonical for canonical, values in aliases.items() if raw in values), raw)
+    # OCR часто читает латинскую M без индекса. Для сыпучих материалов это почти всегда м3.
+    folded_name = _cell_text(name).casefold()
+    folded_basis = _cell_text(basis_code).casefold()
+    if normalized == "м" and any(word in folded_name for word in ("щебень", "песок", "смесь", "грунт", "бетон")):
+        if any(code in folded_basis for code in ("фсбц", "фссц", "тсц", "ссц")):
+            normalized = "м3"
+    if number is not None:
+        number *= multiplier
+    return normalized, number
+
+
+def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
+    """Преобразует координатное OCR ЛСР в общий формат отчёта AutoBot."""
+    from autobot.pdf_estimate_adapter import pdf_to_position_records
+
+    rows: list[dict] = []
+    for record in pdf_to_position_records(path):
+        work_name = _cell_text(record.get("name"))
+        if len(work_name) < 8 or len(work_name) > 500:
+            continue
+        basis_code = _cell_text(record.get("code"))
+        unit, qty = _normalize_pdf_unit_qty(record.get("unit"), record.get("qty"), work_name, basis_code)
+        unit_price = to_float(record.get("unit_price"))
+        total = to_float(record.get("total"))
+        if total is None and unit_price is not None and qty is not None:
+            total = unit_price * qty
+        if total is None or total <= 0 or total > 5_000_000_000:
+            continue
+        page = int(to_float(record.get("page")) or 0)
+        rows.append(
+            {
+                "tender_id": tender.tender_id,
+                "region": tender.region,
+                "tender_title": tender.title,
+                "tender_url": tender.url,
+                "source_file": str(path),
+                "extract_source": "PDF OCR LSR",
+                "item_no": _cell_text(record.get("position")),
+                "basis_code": basis_code,
+                "sheet_name": f"PDF, стр. {page}" if page else "PDF",
+                "excel_row": None,
+                "section": _cell_text(record.get("section")) or "Распознано из ЛСР PDF",
+                "work_name": work_name,
+                "unit": unit,
+                "qty": qty,
+                "qty_with_unit": f"{qty:g} {unit}" if qty is not None and unit else "",
+                "unit_price_rub": unit_price,
+                "price_from_estimate_rub": total,
+            }
+        )
+    return rows
+
+
 def extract_rows_from_pdf(path: Path, tender: Tender) -> list[dict]:
     """
-    Универсальный fallback по PDF: ищем строки вида «наименование ... сумма».
-    Работает не для всех PDF (сканы/OCR), но даёт шанс вытащить позиции там, где Excel нет.
+    Сначала распознаём настоящую таблицу ЛСР, включая сканы. Строчный PDF-парсер — резерв.
     """
+    try:
+        adapter_rows = _rows_from_pdf_adapter(path, tender)
+        if adapter_rows:
+            return adapter_rows
+    except Exception as error:
+        print(f"[pdf] OCR ЛСР не сработал для {path.name}: {type(error).__name__}: {error}")
+
     rows: list[dict] = []
     for line in _iter_pdf_lines(path):
         m = PDF_LINE_PRICE_RE.match(line)
@@ -1870,6 +2347,13 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
     for col in source_columns:
         if col not in df.columns:
             df[col] = None
+    # Если удалось прочитать детальные строки ЛСР, не смешиваем их с четырьмя
+    # укрупнёнными итогами ССР без шифра, единицы и количества.
+    basis_present = df["basis_code"].fillna("").astype(str).str.strip().ne("")
+    unit_present = df["unit"].fillna("").astype(str).str.strip().ne("")
+    if (basis_present & unit_present).any():
+        aggregate_fallback = (~basis_present) & (~unit_present)
+        df = df[~aggregate_fallback].copy()
     df["unit"] = df["unit"].fillna("")
     df["qty_with_unit"] = df["qty_with_unit"].fillna("")
     clean_df = df[source_columns].rename(
@@ -1903,12 +2387,25 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
         subset=["Файл ЛСР", "Название работы/услуги", "Сумма, руб"],
         keep="first",
     )
-    # Одна и та же позиция из разных файлов / повторный разбор — в отчёте одна строка (название + сумма).
-    clean_df = clean_df.drop_duplicates(
-        subset=["Название работы/услуги", "Сумма, руб"],
-        keep="first",
+    # Одинаковые позиции в разных ЛСР принадлежат разным сметам и не должны
+    # схлопываться. Повторы внутри одного файла уже удалены двумя проверками выше.
+    # Сохраняем естественный порядок разделов ЛСР и страниц. Обычная строковая
+    # сортировка ставит файл 11 перед 6, а страницу 10 перед 2.
+    clean_df["_source_order"] = range(len(clean_df))
+    clean_df["_file_order"] = clean_df["Файл ЛСР"].map(
+        lambda value: int(match.group(1))
+        if (match := re.match(r"\s*(\d+)", Path(str(value or "")).name))
+        else 1_000_000
     )
-    clean_df = clean_df.sort_values(by=["Файл ЛСР", "Лист", "№ п/п", "Строка Excel"], ascending=[True, True, True, True])
+    clean_df["_page_order"] = clean_df["Лист"].map(
+        lambda value: int(match.group(1))
+        if (match := re.search(r"стр\.\s*(\d+)", str(value or ""), re.IGNORECASE))
+        else 1_000_000
+    )
+    clean_df = clean_df.sort_values(
+        by=["_file_order", "Файл ЛСР", "_page_order", "_source_order"],
+        kind="stable",
+    ).drop(columns=["_source_order", "_file_order", "_page_order"])
     return clean_df
 
 
@@ -2170,6 +2667,11 @@ def parse_args():
     parser.add_argument("--max-pages", type=int, default=2, help="Сколько страниц поиска смотреть на комбинацию регион/ключ")
     parser.add_argument("--max-tenders", type=int, default=15, help="Лимит тендеров на обработку")
     parser.add_argument("--days-back", type=int, default=30, help="Брать тендеры не старше N дней")
+    parser.add_argument(
+        "--catalog-only",
+        action="store_true",
+        help="Только найти и сохранить карточки тендеров, не скачивать документы и не собирать сметы",
+    )
     parser.add_argument("--from-downloaded-tender-id", type=str, default="", help="Собрать отчет только из уже скачанных файлов тендера")
     parser.add_argument("--from-tender-id", type=str, default="", help="Собрать отчет по конкретному tender_id (вместе с --from-tender-url)")
     parser.add_argument("--from-tender-url", type=str, default="", help="URL карточки тендера для точечного скачивания документов")
@@ -2202,6 +2704,7 @@ def main():
     )
     args = parse_args()
     out_paths = ensure_dirs()
+    tg_cfg = telegram_config()
     rar_enabled = configure_rar_backend()
     if not rar_enabled:
         print("Внимание: не найден backend для RAR (unrar/7z). RAR-архивы будут пропущены.")
@@ -2221,9 +2724,14 @@ def main():
             stage=(m.get("stage") or ""),
             price_rub=m.get("price_rub"),
             publish_date=(m.get("publish_date") or None),
+            customer_name=(m.get("customer_name") or ""),
+            updated_date=(m.get("updated_date") or None),
+            law=(m.get("law") or ""),
+            purchase_method=(m.get("purchase_method") or ""),
         )
         print(f"[single] {tid}: скачивание документов по ссылке")
         downloaded_files = open_tender_and_download_archives(tender, out_paths["downloads"])
+        merge_and_save_tenders(out_paths, [tender])
         if not downloaded_files:
             print("Документы не скачались по заданной ссылке.")
             raise SystemExit(2)
@@ -2236,7 +2744,7 @@ def main():
         excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
         direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
         extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
-        pdf_files = unique_paths_preserve_order(extracted_pdf + direct_pdf)
+        pdf_files = select_estimate_pdf_files(extracted_pdf + direct_pdf)
         estimate_excel_files = [p for p in excel_files if is_estimate_excel(p)]
         if not estimate_excel_files:
             estimate_excel_files = excel_files
@@ -2249,8 +2757,9 @@ def main():
         for excel_path in estimate_excel_files:
             rows = extract_rows_from_excel(excel_path, tender)
             tender_rows.extend(rows)
-        for pdf_path in pdf_files:
-            tender_rows.extend(extract_rows_from_pdf(pdf_path, tender))
+        pdf_rows, pdf_totals = extract_estimate_pdf_rows(pdf_files, tender)
+        tender_rows.extend(pdf_rows)
+        write_estimate_parse_manifest(tid, pdf_files, tender_rows, out_paths, pdf_totals)
         if not tender_rows:
             rar_cnt = sum(1 for p in tender_dl.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
             extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
@@ -2306,7 +2815,7 @@ def main():
         if existing_extracted_root.exists():
             extracted_excel.extend([p for p in existing_extracted_root.rglob("*") if p.is_file() and is_excel_file(p)])
             extracted_pdf.extend([p for p in existing_extracted_root.rglob("*") if p.is_file() and is_pdf_file(p)])
-        pdf_files = unique_paths_preserve_order(extracted_pdf + direct_pdf)
+        pdf_files = select_estimate_pdf_files(extracted_pdf + direct_pdf)
         estimate_excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
         if not estimate_excel_files and not pdf_files:
             print(f"Для тендера {tid} в downloads/extracted не найдено Excel/PDF-файлов.")
@@ -2315,8 +2824,9 @@ def main():
         tender_rows: list[dict] = []
         for excel_path in estimate_excel_files:
             tender_rows.extend(extract_rows_from_excel(excel_path, tender))
-        for pdf_path in pdf_files:
-            tender_rows.extend(extract_rows_from_pdf(pdf_path, tender))
+        pdf_rows, pdf_totals = extract_estimate_pdf_rows(pdf_files, tender)
+        tender_rows.extend(pdf_rows)
+        write_estimate_parse_manifest(tid, pdf_files, tender_rows, out_paths, pdf_totals)
         if not tender_rows:
             rar_cnt = sum(1 for p in base.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
             extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
@@ -2416,7 +2926,14 @@ def main():
     print(f"Добавлено в систему: {added_count}")
     print(f"Всего тендеров в системе: {total_in_system}")
 
-    tg_cfg = telegram_config()
+    if args.catalog_only:
+        print(
+            f"Каталог обновлён: найдено по текущим фильтрам {len(filtered)}, "
+            f"новых карточек {added_count}. Документы и рынок не запускались."
+        )
+        _clear_search_checkpoint(out_paths)
+        return
+
     if new_ids and not tg_cfg:
         print("Telegram: есть новые тендеры, но не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — уведомления пропущены.")
 
@@ -2542,7 +3059,7 @@ def main():
         direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
         extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
         excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
-        pdf_files = unique_paths_preserve_order(extracted_pdf + direct_pdf)
+        pdf_files = select_estimate_pdf_files(extracted_pdf + direct_pdf)
 
         # В отчет по сметам берем только файлы, похожие на сметные.
         estimate_excel_files = [p for p in excel_files if is_estimate_excel(p)]
@@ -2555,8 +3072,9 @@ def main():
         for excel_path in estimate_excel_files:
             rows = extract_rows_from_excel(excel_path, tender)
             tender_rows.extend(rows)
-        for pdf_path in pdf_files:
-            tender_rows.extend(extract_rows_from_pdf(pdf_path, tender))
+        pdf_rows, pdf_totals = extract_estimate_pdf_rows(pdf_files, tender)
+        tender_rows.extend(pdf_rows)
+        write_estimate_parse_manifest(tender.tender_id, pdf_files, tender_rows, out_paths, pdf_totals)
         if not tender_rows:
             rar_cnt = sum(1 for p in tender_dl.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
             extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []

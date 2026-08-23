@@ -41,6 +41,7 @@ from autobot.market_analytics import (
     recalc_estimate_qty_price_from_unit,
     unit_has_area_or_volume_marker,
 )
+from autobot.market_strategy import classify_position
 from autobot.merge_estimate_market import OUT_PREFIX, refresh_svodka_if_market_newer
 from autobot.report_prompt import DATA_DIR, REPORTS_DIR, load_tender_metadata
 from autobot.text_contacts import collect_phones, collect_urls
@@ -96,14 +97,15 @@ def _contacts_from_text(text: str) -> str:
 
 # «100 м²» в ед. изм. — рыночные ответы чаще за 1 м²; для сравнения с позицией сметы масштабируем.
 _UNIT_LEADING_MV = re.compile(
-    r"^\s*([\d\s\u00a0\u202f,]+)\s*(м\s*[2²]|м\s*[3³]|п\.?\s*м\.?)\s*$",
+    r"^\s*([\d\s\u00a0\u202f,]+)\s*(м\s*[2²]|м\s*[3³]|п\.?\s*м\.?|шт\.?|м)\s*$",
     re.IGNORECASE,
 )
+_NAME_TRAILING_UNIT_BLOCK = re.compile(r"(?:^|\s)(10|100|1000)\s*$")
 
 
 def _quantity_multiplier_from_unit(unit_raw: str) -> tuple[float, str]:
     """
-    Возвращает (N, подпись_единицы) из строки вида «100 м2» / «10 м3».
+    Возвращает (N, подпись_единицы) из строки вида «100 м2» / «10 м3» / «1000 м».
     Если формата нет — (1.0, '').
     """
     u = (unit_raw or "").strip().replace("\xa0", " ").replace("\u202f", " ")
@@ -130,6 +132,59 @@ def _quantity_multiplier_from_unit(unit_raw: str) -> tuple[float, str]:
     else:
         label = raw_tag
     return v, label
+
+
+def _base_unit_label(unit_raw: str) -> str:
+    unit = re.sub(r"\s+", "", str(unit_raw or "").casefold().replace("²", "2").replace("³", "3"))
+    if unit in {"м2", "кв.м", "м^2"}:
+        return "м²"
+    if unit in {"м3", "куб.м", "м^3"}:
+        return "м³"
+    if unit in {"п.м.", "п.м", "пог.м", "пог.м."}:
+        return "п.м."
+    if unit in {"шт", "шт."}:
+        return "шт"
+    if unit == "м":
+        return "м"
+    return ""
+
+
+def _quantity_multiplier_from_row(row: pd.Series) -> tuple[float, str]:
+    """Восстановить норматив 10/100/1000, если OCR перенёс его в конец названия."""
+    unit_raw = "" if pd.isna(row.get(COL_UNIT, "")) else str(row.get(COL_UNIT, "")).strip()
+    direct_scale, direct_label = _quantity_multiplier_from_unit(unit_raw)
+    if direct_scale > 1.0:
+        return direct_scale, direct_label
+    label = _base_unit_label(unit_raw)
+    if not label:
+        return 1.0, ""
+    name = "" if pd.isna(row.get(COL_NAME, "")) else str(row.get(COL_NAME, "")).strip()
+    match = _NAME_TRAILING_UNIT_BLOCK.search(name)
+    if not match:
+        return 1.0, ""
+    scale = float(match.group(1))
+    before = name[: match.start(1)].strip().casefold()
+    # «перемещение до 10 м» — характеристика операции, а не единица «10 м».
+    if scale == 10 and (label != "шт" or re.search(r"(?:до|последующ\w*)\s*$", before)):
+        return 1.0, ""
+    return scale, label
+
+
+def _display_unit_from_row(row: pd.Series) -> str:
+    unit_raw = "" if pd.isna(row.get(COL_UNIT, "")) else str(row.get(COL_UNIT, "")).strip()
+    scale, label = _quantity_multiplier_from_row(row)
+    direct_scale, _ = _quantity_multiplier_from_unit(unit_raw)
+    if scale > 1.0 and direct_scale <= 1.0:
+        return f"{scale:g} {label or unit_raw}".strip()
+    return unit_raw
+
+
+def _display_name_from_row(row: pd.Series) -> str:
+    name = "" if pd.isna(row.get(COL_NAME, "")) else str(row.get(COL_NAME, "")).strip()
+    scale, _ = _quantity_multiplier_from_row(row)
+    if scale <= 1.0:
+        return name
+    return _NAME_TRAILING_UNIT_BLOCK.sub("", name).strip()
 
 
 def _safe_float(x) -> float | None:
@@ -371,11 +426,20 @@ def _rows_from_bundle_or_fallback(
     median_unit_raw: object = None,
 ) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
+    structured_bundle_seen = False
     try:
         data = json.loads(bundle_json) if bundle_json and str(bundle_json).strip() else []
         if isinstance(data, list):
+            structured_bundle_seen = bool(data)
             for it in data:
                 if not isinstance(it, dict):
+                    continue
+                verification = str(it.get("verification", "") or "").strip().lower()
+                # New reports keep both verified offers and rejected/candidate
+                # evidence in the bundle.  Only verified prices may be rendered
+                # in the calculation/source table; legacy rows without the field
+                # remain visible for backwards compatibility.
+                if verification and verification != "verified":
                     continue
                 p_raw = str(it.get("price", "") or "").strip()
                 u_raw = str(it.get("url", "") or "").strip()
@@ -421,6 +485,12 @@ def _rows_from_bundle_or_fallback(
                 elif price_pool:
                     r["price"] = price_pool[-1]
         return rows[:12]
+
+    # A parsed modern bundle that contains candidates only must not fall through
+    # to the legacy semicolon columns: those columns can contain the same
+    # unverified prices and would make them look confirmed in the HTML report.
+    if structured_bundle_seen:
+        return []
 
     # fallback: подхватываем отдельные списки и выравниваем по индексу
     prices = _parse_semicolon_numbers(fallback_prices_text or "")
@@ -587,97 +657,18 @@ def _estimate_numeric_for_compare(row: pd.Series) -> float | None:
 
 
 def _position_type_for_tender(name: str, unit: str = "") -> tuple[str, str]:
-    text = f"{name} {unit}".casefold().replace("ё", "е")
-    material_keys = (
-        "бетон",
-        "раствор",
-        "смесь",
-        "цемент",
-        "песок",
-        "щебень",
-        "грунт",
-        "краска",
-        "эмаль",
-        "плитк",
-        "кирпич",
-        "труба",
-        "кабель",
-        "провод",
-        "арматур",
-        "битум",
-        "мастик",
-        "лист",
-        "профил",
-        "доска",
-        "брус",
-        "изоляц",
-        "линолеум",
-        "ламинат",
-        "керамзит",
-    )
-    product_keys = (
-        "насос",
-        "шкаф",
-        "щит",
-        "светильник",
-        "радиатор",
-        "кран",
-        "задвижк",
-        "клапан",
-        "вентил",
-        "люк",
-        "двер",
-        "окно",
-        "блок",
-        "прибор",
-        "оборудован",
-        "издели",
-        "унитаз",
-        "раковин",
-        "смесител",
-        "тройник",
-        "угольник",
-        "муфт",
-        "фланец",
-    )
-    service_keys = ("аренда", "перевозка", "доставка", "вывоз", "погруз", "разгруз", "обслуживание", "испытание", "пусконалад")
-    work_keys = (
-        "устройство",
-        "установка",
-        "монтаж",
-        "демонтаж",
-        "разборка",
-        "снятие",
-        "прокладка",
-        "окраска",
-        "ремонт",
-        "очистка",
-        "расчистка",
-        "штукатур",
-        "облицов",
-        "сверление",
-        "засыпка",
-        "разработка",
-        "укладка",
-        "изоляция",
-        "испытание",
-    )
-    if any(k in text for k in service_keys):
-        return "service", "Услуга"
-    if any(k in text for k in work_keys):
-        return "work", "Работа"
-    if any(k in text for k in material_keys):
-        return "material", "Материал"
-    if any(k in text for k in product_keys):
-        return "product", "Товар"
-    return "other", "Позиция"
+    position = classify_position(name, unit)
+    return position.slug, position.label
 
 
 def _tender_bucket(name: str, unit: str = "") -> tuple[str, str]:
-    type_slug, type_label = _position_type_for_tender(name, unit)
-    if type_slug == "material":
-        return "material", type_label
-    return "work", type_label
+    position = classify_position(name, unit)
+    # Старый статический отчёт имеет две вкладки. Товары теперь правильно идут
+    # вместе с материалами; неоднозначные строки остаются в работах только ради
+    # совместимости. Новая карточка показывает их отдельной группой.
+    if position.bucket == "materials":
+        return "material", position.label
+    return "work", position.label
 
 
 def _row_market_median_unit(row: pd.Series, rub_col: str) -> float | None:
@@ -694,7 +685,7 @@ def _row_market_median_unit(row: pd.Series, rub_col: str) -> float | None:
 def _row_compare_market_value(row: pd.Series, market_unit: float | None) -> float | None:
     if market_unit is None or market_unit <= 0:
         return None
-    q_scale, _ = _quantity_multiplier_from_unit(str(row.get(COL_UNIT, "") or ""))
+    q_scale, _ = _quantity_multiplier_from_row(row)
     if q_scale and q_scale > 1.0:
         return float(market_unit * q_scale)
     return float(market_unit)
@@ -704,9 +695,9 @@ def _row_market_total(row: pd.Series, market_unit: float | None) -> float | None
     if market_unit is None or market_unit <= 0:
         return None
     qty = _safe_float(row.get(COL_QTY))
+    q_scale, _ = _quantity_multiplier_from_row(row)
     if qty is not None and qty > 0:
-        return float(market_unit * qty)
-    q_scale, _ = _quantity_multiplier_from_unit(str(row.get(COL_UNIT, "") or ""))
+        return float(market_unit * qty * max(1.0, q_scale))
     if q_scale and q_scale > 1.0:
         return float(market_unit * q_scale)
     return float(market_unit)
@@ -791,10 +782,10 @@ def _render_html(
     for _, row in df.iterrows():
         row_cls = " class='row-ready'" if bool(row.get("__has_partial_market", False)) else ""
         item_no = _cell(row.get(COL_ITEM, "")) if COL_ITEM in df.columns else "—"
-        name = _cell(row.get(COL_NAME, ""))
+        name = _cell(_display_name_from_row(row))
         sum_smeta = _smeta_unit_display(row)
         raw_rub = row.get(rub_col, "") if rub_col in df.columns else ""
-        q_scale, u_lbl = _quantity_multiplier_from_unit(str(row.get(COL_UNIT, "") or ""))
+        q_scale, u_lbl = _quantity_multiplier_from_row(row)
         rub_med = _market_median_human(
             raw_prices_text="" if pd.isna(raw_rub) else str(raw_rub),
             median_from_col=row.get("Медиана цена за ед. (рынок)", ""),
@@ -1482,6 +1473,9 @@ def _render_html_typed(
             ready_count += 1
 
         unit_raw = "" if pd.isna(row.get(COL_UNIT, "")) else str(row.get(COL_UNIT, "")).strip()
+        display_name = _display_name_from_row(row)
+        display_unit = _display_unit_from_row(row)
+        q_scale, unit_label = _quantity_multiplier_from_row(row)
         bucket_key, type_label = _tender_bucket(name_raw, unit_raw)
         bucket = buckets[bucket_key]
         bucket["count"] = int(bucket["count"]) + 1
@@ -1540,7 +1534,12 @@ def _render_html_typed(
         row_ready_cls = " row-ready" if bool(row.get("__has_market", False)) else ""
         market_total_hint = ""
         if qty is not None and market_unit is not None and market_total is not None:
-            market_total_hint = f"<div class='mini-note'>{_format_number(qty)} × {_format_money(market_unit)} = {_format_money(market_total)}</div>"
+            scale_hint = f" × {_format_number(q_scale)}" if q_scale > 1.0 else ""
+            unit_hint = f" {html_mod.escape(unit_label)}" if q_scale > 1.0 and unit_label else ""
+            market_total_hint = (
+                f"<div class='mini-note'>{_format_number(qty)}{scale_hint}{unit_hint} × "
+                f"{_format_money(market_unit)} = {_format_money(market_total)}</div>"
+            )
         elif market_total is not None:
             market_total_hint = f"<div class='mini-note'>Оценка: {_format_money(market_total)}</div>"
 
@@ -1550,14 +1549,14 @@ def _render_html_typed(
                     f"<tr class='data-row{row_ready_cls}'>",
                     f"<td class='col-no'>{html_mod.escape(str(item_no))}</td>",
                     "<td class='col-name'>",
-                    f"<div class='name-main'>{html_mod.escape(name_raw)}</div>",
+                    f"<div class='name-main'>{html_mod.escape(display_name)}</div>",
                     f"<span class='type-pill'>{html_mod.escape(type_label)}</span>",
                     "</td>",
-                    f"<td>{_cell(unit_raw)}</td>",
+                    f"<td>{_cell(display_unit)}</td>",
                     f"<td>{_format_number(qty)}</td>",
                     f"<td>{_format_money(estimate_unit)}</td>",
                     f"<td>{_format_money(estimate_total)}</td>",
-                    f"<td>{_format_money(market_unit)}</td>",
+                    f"<td>{_format_money(compare_market)}</td>",
                     f"<td>{_format_money(market_total)}{market_total_hint}</td>",
                     f"<td class='sources-cell'>{sources_html}</td>",
                     f"<td><span class='status-pill {verdict_class}'>{html_mod.escape(verdict_text)}</span></td>",

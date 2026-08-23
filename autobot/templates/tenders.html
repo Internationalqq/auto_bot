@@ -8,10 +8,10 @@
   <title>Тендеры</title>
 </head>
 <body>
-  <header class="topbar">
+  <header class="topbar autobot-section-bar">
     <a class="brand" href="/tenders">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span>Auto Bot</span>
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы">
       <a class="is-active" href="/tenders">Тендеры</a>
@@ -23,26 +23,67 @@
   <main class="page">
     <section class="workspace-head">
       <div>
-        <div class="eyebrow">Закупки</div>
-        <h1>Тендеры</h1>
+        <div class="eyebrow"><span aria-hidden="true"></span> Пульт закупок</div>
+        <h1>Тендеры <em>{{ overview.total }}</em></h1>
+        <p class="workspace-sub">AutoBot показывает следующий шаг по каждой закупке и сам собирает недостающие данные.</p>
       </div>
       <div class="head-actions">
-        <button class="btn primary" type="button" data-global-action="continue-missing" {% if overview.needs_work < 1 %}disabled{% endif %}>Продолжить в работе: {{ overview.needs_work }}</button>
-        <button class="btn secondary" type="button" data-global-action="start-search">Найти закупки</button>
+        <button class="btn secondary" type="button" data-global-action="choose-market" {% if overview.total < 1 %}disabled{% endif %}>
+          <span class="btn-icon btn-icon-chart" aria-hidden="true"></span>
+          Проанализировать рынок
+        </button>
+        <button class="btn primary" type="button" data-global-action="start-search">
+          <span class="btn-icon btn-icon-search" aria-hidden="true"></span>
+          Найти новые закупки
+        </button>
+      </div>
+    </section>
+
+    <section class="tender-scan-card" aria-labelledby="tenderScanTitle">
+      <div class="tender-scan-copy">
+        <span class="tender-scan-mark" aria-hidden="true"><i></i></span>
+        <div>
+          <div class="eyebrow">Точечная проверка</div>
+          <h2 id="tenderScanTitle">Сканировать конкретный тендер</h2>
+          <p>Вставьте ссылку из ЕИС или номер закупки — AutoBot скачает документы, найдёт смету и подготовит результат.</p>
+        </div>
+      </div>
+      <form class="tender-scan-form" id="tenderScanForm" novalidate>
+        <label class="tender-scan-input">
+          <span class="search-icon" aria-hidden="true"></span>
+          <input
+            type="text"
+            id="tenderScanInput"
+            name="tender_link"
+            placeholder="Ссылка ЕИС или номер закупки"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="tenderScanHint tenderScanStatus"
+          />
+        </label>
+        <button class="btn primary tender-scan-button" type="submit" data-scan-tender>
+          <span class="btn-icon btn-icon-scan" aria-hidden="true"></span>
+          Запустить сканирование
+        </button>
+      </form>
+      <div class="tender-scan-foot">
+        <span id="tenderScanHint">Подойдёт ссылка ЕИС или номер: <b>11 цифр для 223-ФЗ</b>, <b>19 цифр для 44-ФЗ</b>.</span>
+        <span class="tender-scan-status" id="tenderScanStatus" aria-live="polite"></span>
       </div>
     </section>
 
     <section class="live-panel is-idle" id="livePanel" aria-live="polite">
       <div class="live-main">
-        <span class="live-dot" aria-hidden="true"></span>
+        <span class="live-icon" aria-hidden="true"><i></i></span>
         <div>
+          <span class="live-kicker" id="liveKicker">Состояние системы</span>
           <strong id="liveTitle">Сейчас ничего не выполняется</strong>
-          <div class="live-sub" id="liveSub">Можно запустить поиск или продолжить недостающие тендеры.</div>
+          <div class="live-sub" id="liveSub">Найдите новые закупки или выберите карточки для анализа рынка.</div>
         </div>
       </div>
       <div class="live-right">
         <span class="live-percent" id="livePercent"></span>
-        <button class="ghost-btn" type="button" id="toggleLogBtn">Журнал</button>
+        <button class="ghost-btn" type="button" id="toggleLogBtn" aria-expanded="false">Журнал</button>
       </div>
       <div class="progress-track">
         <div class="progress-fill" id="liveFill"></div>
@@ -52,99 +93,179 @@
     </section>
 
     <section class="summary-grid" aria-label="Сводка">
-      <div class="metric">
-        <span>Всего</span>
-        <strong>{{ overview.total }}</strong>
-      </div>
-      <div class="metric">
-        <span>В работе</span>
-        <strong>{{ overview.needs_work }}</strong>
-      </div>
-      <div class="metric">
-        <span>Нужны цены</span>
-        <strong>{{ overview.needs_prices }}</strong>
-      </div>
-      <div class="metric metric-ready">
-        <span>Готово</span>
-        <strong>{{ overview.ready }}</strong>
-      </div>
-    </section>
-
-    <section class="filters" aria-label="Фильтр по следующему шагу">
-      {% for f in filters %}
-      <a class="filter-chip{% if selected_action == f.key %} is-active{% endif %}" href="/tenders{% if f.key != 'all' %}?action={{ f.key }}{% endif %}">
-        <span>{{ f.label }}</span>
-        <strong>{{ f.count }}</strong>
+      <a class="metric{% if selected_action == 'all' %} is-selected{% endif %}" href="/tenders">
+        <span class="metric-icon metric-icon-all" aria-hidden="true"></span>
+        <span class="metric-copy"><small>Все закупки</small><strong>{{ overview.total }}</strong></span>
       </a>
-      {% endfor %}
+      <a class="metric metric-work{% if selected_action == 'needs_work' %} is-selected{% endif %}" href="/tenders?action=needs_work">
+        <span class="metric-icon metric-icon-work" aria-hidden="true"></span>
+        <span class="metric-copy"><small>Требуют действий</small><strong>{{ overview.needs_work }}</strong></span>
+      </a>
+      <a class="metric metric-prices{% if selected_action == 'find_market_prices' %} is-selected{% endif %}" href="/tenders?action=find_market_prices">
+        <span class="metric-icon metric-icon-prices" aria-hidden="true"></span>
+        <span class="metric-copy"><small>Нужны цены</small><strong>{{ overview.needs_prices }}</strong></span>
+      </a>
+      <a class="metric metric-ready{% if selected_action == 'review' %} is-selected{% endif %}" href="/tenders?action=review">
+        <span class="metric-icon metric-icon-ready" aria-hidden="true"></span>
+        <span class="metric-copy"><small>Готовы к решению</small><strong>{{ overview.ready }}</strong></span>
+      </a>
     </section>
 
-    <section class="tender-list" aria-label="Список тендеров">
+    <section class="tender-tools" aria-label="Поиск и фильтры">
+      <label class="tender-search">
+        <span class="search-icon" aria-hidden="true"></span>
+        <input type="search" id="tenderSearch" placeholder="Объект, заказчик, номер или регион" autocomplete="off" />
+        <kbd>Ctrl K</kbd>
+      </label>
+      <label class="exact-search-toggle"><input type="checkbox" id="exactTenderSearch" /> Искать точно, как в запросе</label>
+    </section>
+
+    <div class="eis-results-head">
+      <div>
+        <h2>Результаты</h2>
+        <span><strong id="visibleTenderCount">{{ items|length }}</strong> закупок</span>
+      </div>
+      <label class="tender-sort">Сортировать по:
+        <select id="tenderSort">
+          <option value="workflow">Следующему действию</option>
+          <option value="updated-desc">Дате обновления</option>
+          <option value="published-desc">Дате размещения</option>
+          <option value="price-desc">Цене: сначала дорогие</option>
+          <option value="price-asc">Цене: сначала недорогие</option>
+        </select>
+      </label>
+    </div>
+
+    <section class="market-selection-bar" id="marketSelectionBar" hidden aria-label="Выбор тендеров для анализа рынка">
+      <div>
+        <strong>Выберите тендеры для анализа рынка</strong>
+        <span>Отметьте нужные карточки. Неотмеченные тендеры останутся только в каталоге.</span>
+      </div>
+      <label class="select-visible"><input type="checkbox" id="selectAllVisibleTenders" /> Выбрать все на экране</label>
+      <button class="btn secondary" type="button" id="cancelMarketSelection">Отмена</button>
+      <button class="btn primary" type="button" id="runSelectedMarket" data-run-selected-market disabled>
+        Запустить анализ <b id="selectedTenderCount">0</b>
+      </button>
+    </section>
+
+    <div class="tender-results-layout">
+      <div class="tender-results-main">
+        <div class="list-summary">
+          <span>Карточка ЕИС и следующий шаг AutoBot в одном месте</span>
+        </div>
+
+        <section class="tender-list" id="tenderList" aria-label="Список тендеров">
       {% if items %}
         {% for t in items %}
         <article
           class="tender-card {{ t.status_class }}"
+          data-tender-id="{{ t.tender_id }}"
           data-href="{{ t.result_url }}"
+          data-search="{{ (t.title ~ ' ' ~ t.tender_id ~ ' ' ~ (t.region or '') ~ ' ' ~ (t.customer_name or '') ~ ' ' ~ (t.law_method_label or ''))|lower }}"
+          data-law="{{ t.law or '__empty__' }}"
+          data-stage="{{ t.eis_stage or '__empty__' }}"
+          data-method="{{ t.purchase_method or '__empty__' }}"
+          data-region="{{ t.region or '__empty__' }}"
+          data-price="{{ t.price_value }}"
+          data-published="{{ t.publish_date or '' }}"
+          data-updated="{{ t.updated_date or t.publish_date or '' }}"
+          data-sort-weight="{{ t.sort_weight }}"
+          data-original-index="{{ loop.index0 }}"
           role="link"
           tabindex="0"
           aria-label="Открыть карточку тендера {{ t.tender_id }}"
         >
-          <div class="tender-main">
-            <div class="status-line">
-              <span class="status-dot" aria-hidden="true"></span>
-              <span>{{ t.status_label }}</span>
+          <div class="eis-card-grid">
+            <div class="eis-card-main">
+              <div class="eis-law">{{ t.law_method_label or "Закупка ЕИС" }}</div>
+              <div class="eis-headline">
+                <label class="tender-select-control" aria-label="Выбрать тендер {{ t.tender_id }} для анализа рынка">
+                  <input type="checkbox" value="{{ t.tender_id }}" data-tender-select />
+                  <span aria-hidden="true"></span>
+                </label>
+                <a class="eis-number" href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer">№ {{ t.tender_id }}</a>
+                <strong class="eis-stage">{{ t.eis_stage or "Статус ЕИС не указан" }}</strong>
+                <span class="autobot-state"><i aria-hidden="true"></i>{{ t.status_label }}</span>
+              </div>
+
+              <div class="eis-field eis-object">
+                <span>Объект закупки</span>
+                {% if t.object_name %}
+                <a class="card-title-link" href="{{ t.result_url }}"><h2>{{ t.object_name }}</h2></a>
+                {% else %}
+                <p class="eis-empty">Данные появятся после следующего сканирования ЕИС</p>
+                {% endif %}
+              </div>
+
+              <div class="eis-field eis-customer">
+                <span>Заказчик</span>
+                {% if t.customer_name %}
+                <strong>{{ t.customer_name }}</strong>
+                {% else %}
+                <p class="eis-empty">Заказчик пока не получен из ЕИС</p>
+                {% endif %}
+              </div>
             </div>
-            <a class="card-title-link" href="{{ t.result_url }}">
-              <h2>{{ t.title or ("Закупка № " ~ t.tender_id) }}</h2>
-            </a>
-            <div class="meta-row">
-              <span>{{ t.tender_id }}</span>
-              <span>{{ t.region or "Без региона" }}</span>
-              <span>{{ t.price_fmt }}</span>
-              <span>{{ t.publish_date or "дата не указана" }}</span>
-            </div>
+
+            <aside class="eis-card-side">
+              <div class="eis-price">
+                <span>Начальная цена</span>
+                <strong>{{ t.price_fmt }}</strong>
+              </div>
+              <div class="eis-dates">
+                <span><small>Размещено</small><strong>{{ t.publish_date or "—" }}</strong></span>
+                <span><small>Обновлено</small><strong>{{ t.updated_date or "—" }}</strong></span>
+              </div>
+              <div class="eis-region"><small>Регион</small><strong>{{ t.region or "Без региона" }}</strong></div>
+            </aside>
           </div>
 
-          <div class="step-strip" aria-label="Готовность">
-            <span class="{% if t.has_downloads %}is-done{% endif %}">Документы</span>
-            <span class="{% if t.has_estimate %}is-done{% endif %}">Смета</span>
-            <span class="{% if t.has_market_sources %}is-done{% endif %}">Цены</span>
-            <span class="{% if t.has_comparison or t.has_report_site %}is-done{% endif %}">Сравнение</span>
-          </div>
+          <div class="autobot-workflow">
+            <div class="workflow-progress">
+              <div class="workflow-caption">Готовность AutoBot</div>
+              <div class="step-strip" aria-label="Готовность">
+                <span class="{% if t.has_downloads %}is-done{% endif %}"><i aria-hidden="true"></i>Документы</span>
+                <span class="{% if t.has_estimate %}is-done{% endif %}"><i aria-hidden="true"></i>Смета</span>
+                <span class="{% if t.has_market_sources %}is-done{% endif %}"><i aria-hidden="true"></i>Цены</span>
+                <span class="{% if t.has_comparison or t.has_report_site %}is-done{% endif %}"><i aria-hidden="true"></i>Сравнение</span>
+              </div>
+            </div>
 
-          <div class="next-box">
-            <span>{{ t.status_detail }}</span>
-            <div class="row-actions">
-              {% if t.next_action == "review" %}
-              <a class="btn primary" href="{{ t.result_url }}">{{ t.main_button_label }}</a>
-              {% else %}
-              <button
-                class="btn primary"
-                type="button"
-                data-tender-action="continue"
-                data-tender-id="{{ t.tender_id }}"
-                data-run-title="{{ t.main_run_title }}"
-                data-run-detail="{{ t.main_run_detail }}"
-              >{{ t.main_button_label }}</button>
-              {% endif %}
-              <details class="more-menu">
-                <summary>Еще</summary>
-                <div class="more-actions">
-                  <a href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть ЕИС</a>
-                  {% if t.has_estimate %}
-                  <a href="/tenders/{{ t.tender_id }}/estimate.xlsx">Excel сметы</a>
-                  <button type="button" data-tender-action="rebuild" data-tender-id="{{ t.tender_id }}">Перечитать смету</button>
-                  <button type="button" data-tender-action="rerun-market" data-tender-id="{{ t.tender_id }}">Цены заново</button>
-                  <button type="button" data-tender-action="crm" data-tender-id="{{ t.tender_id }}">В CRM</button>
-                  {% endif %}
-                  {% if t.has_market_sources %}
-                  <a href="/tenders/{{ t.tender_id }}/market-sources.xlsx">Источники цен</a>
-                  {% endif %}
-                  {% if t.has_comparison %}
-                  <a href="/tenders/{{ t.tender_id }}/svodka.xlsx">Excel сравнения</a>
-                  {% endif %}
-                </div>
-              </details>
+            <div class="next-box">
+              <span><small>Следующий шаг</small><strong>{{ t.status_detail }}</strong></span>
+              <div class="row-actions">
+                {% if t.next_action == "review" %}
+                <a class="btn primary" href="{{ t.result_url }}">{{ t.main_button_label }}</a>
+                {% else %}
+                <button
+                  class="btn primary"
+                  type="button"
+                  data-tender-action="continue"
+                  data-tender-id="{{ t.tender_id }}"
+                  data-run-title="{{ t.main_run_title }}"
+                  data-run-detail="{{ t.main_run_detail }}"
+                >{{ t.main_button_label }}</button>
+                {% endif %}
+                <details class="more-menu">
+                  <summary aria-label="Дополнительные действия">•••</summary>
+                  <div class="more-actions">
+                    <a href="{{ t.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть ЕИС</a>
+                    {% if t.has_estimate %}
+                    <a href="/tenders/{{ t.tender_id }}/estimate.xlsx">Excel сметы</a>
+                    <button type="button" data-tender-action="rebuild" data-tender-id="{{ t.tender_id }}">Перечитать смету</button>
+                    <button type="button" data-tender-action="rerun-market" data-tender-id="{{ t.tender_id }}">Цены заново</button>
+                    <button type="button" data-tender-action="crm" data-tender-id="{{ t.tender_id }}">В CRM</button>
+                    {% endif %}
+                    {% if t.has_market_sources %}
+                    <a href="/tenders/{{ t.tender_id }}/market-sources.xlsx">Источники цен</a>
+                    {% endif %}
+                    {% if t.has_comparison %}
+                    <a href="/tenders/{{ t.tender_id }}/svodka.xlsx">Excel сравнения</a>
+                    {% endif %}
+                    <button class="danger-action" type="button" data-tender-delete data-tender-id="{{ t.tender_id }}" data-tender-title="{{ t.object_name or t.title or ('Тендер № ' ~ t.tender_id) }}">Удалить тендер</button>
+                  </div>
+                </details>
+              </div>
             </div>
           </div>
         </article>
@@ -155,7 +276,94 @@
           <a class="btn secondary" href="/tenders">Показать все</a>
         </div>
       {% endif %}
-    </section>
+      <div class="empty-state search-empty" id="searchEmpty" hidden>
+        <span class="empty-icon" aria-hidden="true"></span>
+        <h2>Ничего не найдено</h2>
+        <p>Попробуйте изменить запрос или очистить поиск.</p>
+        <button class="btn secondary" type="button" id="clearTenderSearch">Очистить поиск</button>
+      </div>
+        </section>
+      </div>
+
+      <aside class="tender-filter-panel" aria-label="Параметры поиска">
+        <button class="filter-panel-toggle" type="button" id="toggleTenderFilters" aria-expanded="true" aria-controls="tenderFilterBody">
+          <span>Параметры поиска</span><i aria-hidden="true"></i>
+        </button>
+        <div class="tender-filter-body" id="tenderFilterBody">
+          <section class="filter-block">
+            <h3>Готовность AutoBot</h3>
+            <div class="filters workflow-filter-links" aria-label="Фильтр по следующему шагу">
+              {% for f in filters %}
+              <a class="filter-chip{% if selected_action == f.key %} is-active{% endif %}" href="/tenders{% if f.key != 'all' %}?action={{ f.key }}{% endif %}">
+                <span>{{ f.label }}</span><strong>{{ f.count }}</strong>
+              </a>
+              {% endfor %}
+            </div>
+          </section>
+
+          <section class="filter-block">
+            <h3>Закон</h3>
+            <div class="filter-options">
+              {% for f in law_filters %}
+              <label><input type="checkbox" value="{{ f.value }}" data-filter-law checked /><span>{{ f.label }}</span><b>{{ f.count }}</b></label>
+              {% endfor %}
+            </div>
+          </section>
+
+          <section class="filter-block">
+            <h3>Этап закупки</h3>
+            <div class="filter-options">
+              {% for f in stage_filters %}
+              <label><input type="checkbox" value="{{ f.value }}" data-filter-stage checked /><span>{{ f.label }}</span><b>{{ f.count }}</b></label>
+              {% endfor %}
+            </div>
+          </section>
+
+          <section class="filter-block">
+            <h3>Способ определения</h3>
+            <select class="filter-select" id="tenderMethodFilter">
+              <option value="">Все способы</option>
+              {% for f in method_filters %}
+              <option value="{{ f.value }}">{{ f.label }} ({{ f.count }})</option>
+              {% endfor %}
+            </select>
+          </section>
+
+          <section class="filter-block">
+            <h3>Начальная цена, ₽</h3>
+            <div class="filter-range">
+              <label><span>Минимальная</span><input type="number" id="tenderPriceMin" min="0" step="1000" placeholder="0" /></label>
+              <i>—</i>
+              <label><span>Максимальная</span><input type="number" id="tenderPriceMax" min="0" step="1000" placeholder="без ограничения" /></label>
+            </div>
+          </section>
+
+          <section class="filter-block">
+            <h3>Дата размещения</h3>
+            <div class="filter-range filter-date-range">
+              <label><span>С</span><input type="date" id="tenderDateFrom" /></label>
+              <i>—</i>
+              <label><span>По</span><input type="date" id="tenderDateTo" /></label>
+            </div>
+          </section>
+
+          <section class="filter-block">
+            <h3>Регион</h3>
+            <select class="filter-select" id="tenderRegionFilter">
+              <option value="">Все регионы</option>
+              {% for f in region_filters %}
+              <option value="{{ f.value }}">{{ f.label }} ({{ f.count }})</option>
+              {% endfor %}
+            </select>
+          </section>
+
+          <div class="filter-actions">
+            <button class="btn primary" type="button" id="applyTenderFilters">Применить</button>
+            <button class="btn secondary" type="button" id="resetTenderFilters">Очистить форму</button>
+          </div>
+        </div>
+      </aside>
+    </div>
 
     <section class="storage-panel">
       <div>
@@ -167,14 +375,131 @@
     </section>
   </main>
 
+  <dialog class="delete-tender-dialog" id="deleteTenderDialog" aria-labelledby="deleteTenderTitle">
+    <div class="delete-dialog-card">
+      <button class="delete-dialog-close" type="button" data-delete-dialog-close aria-label="Закрыть">×</button>
+      <span class="delete-dialog-icon" aria-hidden="true"></span>
+      <div class="delete-dialog-copy">
+        <small>Повторный запуск</small>
+        <h2 id="deleteTenderTitle">Удалить тендер?</h2>
+        <p id="deleteTenderDescription">Карточка и результаты будут убраны из AutoBot.</p>
+      </div>
+      <div class="delete-dialog-list">
+        <span>Скачанные документы и распаковки</span>
+        <span>Смета, источники цен и сравнение</span>
+        <span>Запись в каталоге и контрольной точке поиска</span>
+      </div>
+      <p class="delete-dialog-note">Файлы переместятся в локальную корзину. После удаления этот же номер можно снова вставить в поле поиска и прогнать с нуля.</p>
+      <p class="delete-dialog-status" id="deleteTenderStatus" aria-live="polite"></p>
+      <div class="delete-dialog-actions">
+        <button class="btn secondary" type="button" data-delete-dialog-close>Отмена</button>
+        <button class="btn danger" type="button" id="confirmTenderDelete">Удалить и разрешить повторный запуск</button>
+      </div>
+    </div>
+  </dialog>
+
   <script>
     const livePanel = document.getElementById("livePanel");
+    const liveKicker = document.getElementById("liveKicker");
     const liveTitle = document.getElementById("liveTitle");
     const liveSub = document.getElementById("liveSub");
     const livePercent = document.getElementById("livePercent");
     const liveFill = document.getElementById("liveFill");
     const liveFacts = document.getElementById("liveFacts");
     const liveLog = document.getElementById("liveLog");
+    const tenderScanForm = document.getElementById("tenderScanForm");
+    const tenderScanInput = document.getElementById("tenderScanInput");
+    const tenderScanStatus = document.getElementById("tenderScanStatus");
+    const marketSelectionBar = document.getElementById("marketSelectionBar");
+    const selectedTenderCount = document.getElementById("selectedTenderCount");
+    const runSelectedMarket = document.querySelector("[data-run-selected-market]");
+    const selectAllVisibleTenders = document.getElementById("selectAllVisibleTenders");
+    const deleteTenderDialog = document.getElementById("deleteTenderDialog");
+    const deleteTenderDescription = document.getElementById("deleteTenderDescription");
+    const deleteTenderStatus = document.getElementById("deleteTenderStatus");
+    const confirmTenderDeleteButton = document.getElementById("confirmTenderDelete");
+    let actionLocked = false;
+    let wasRunning = false;
+    let reloadScheduled = false;
+    let pendingTenderDelete = null;
+
+    document.querySelectorAll(".more-menu").forEach(function(menu) {
+      menu.addEventListener("toggle", function() {
+        const card = menu.closest(".tender-card");
+        card?.classList.toggle("is-menu-open", menu.open);
+        if (!menu.open) return;
+        document.querySelectorAll(".more-menu[open]").forEach(function(other) {
+          if (other !== menu) other.removeAttribute("open");
+        });
+      });
+    });
+
+    document.addEventListener("click", function(event) {
+      if (event.target.closest(".more-menu")) return;
+      document.querySelectorAll(".more-menu[open]").forEach(function(menu) { menu.removeAttribute("open"); });
+    });
+
+    function setActionsLocked(locked) {
+      actionLocked = Boolean(locked);
+      document.querySelectorAll("[data-global-action], [data-tender-action], [data-tender-delete], [data-scan-tender], [data-run-selected-market]").forEach(function(button) {
+        if (locked) {
+          if (!button.hasAttribute("data-was-disabled")) button.setAttribute("data-was-disabled", button.disabled ? "1" : "0");
+          button.disabled = true;
+          button.setAttribute("aria-busy", "true");
+        } else if (button.hasAttribute("data-was-disabled")) {
+          button.disabled = button.getAttribute("data-was-disabled") === "1";
+          button.removeAttribute("data-was-disabled");
+        }
+        if (!locked) button.removeAttribute("aria-busy");
+      });
+      if (tenderScanInput) tenderScanInput.disabled = Boolean(locked);
+      document.querySelectorAll("[data-tender-select], #selectAllVisibleTenders").forEach(function(input) {
+        input.disabled = Boolean(locked);
+      });
+      updateMarketSelection();
+    }
+
+    function marketSelectionActive() {
+      return document.body.classList.contains("is-market-selection");
+    }
+
+    function allTenderSelections() {
+      return Array.from(document.querySelectorAll("[data-tender-select]"));
+    }
+
+    function visibleTenderSelections() {
+      return allTenderSelections().filter(function(input) {
+        const card = input.closest(".tender-card");
+        return card && !card.hidden;
+      });
+    }
+
+    function updateMarketSelection() {
+      const inputs = allTenderSelections();
+      const selected = inputs.filter(function(input) { return input.checked; });
+      inputs.forEach(function(input) {
+        input.closest(".tender-card")?.classList.toggle("is-selected-for-market", input.checked);
+      });
+      if (selectedTenderCount) selectedTenderCount.textContent = String(selected.length);
+      if (runSelectedMarket) runSelectedMarket.disabled = actionLocked || selected.length === 0;
+
+      if (selectAllVisibleTenders) {
+        const visible = visibleTenderSelections();
+        const selectedVisible = visible.filter(function(input) { return input.checked; }).length;
+        selectAllVisibleTenders.checked = visible.length > 0 && selectedVisible === visible.length;
+        selectAllVisibleTenders.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+      }
+    }
+
+    function setMarketSelectionMode(active, clearSelection) {
+      const enabled = Boolean(active);
+      document.body.classList.toggle("is-market-selection", enabled);
+      if (marketSelectionBar) marketSelectionBar.hidden = !enabled;
+      if (clearSelection !== false) {
+        allTenderSelections().forEach(function(input) { input.checked = false; });
+      }
+      updateMarketSelection();
+    }
 
     function setLiveState(cls) {
       livePanel.classList.remove("is-idle", "is-running", "is-done", "is-error");
@@ -183,6 +508,7 @@
 
     function showLive(title, detail) {
       setLiveState("is-running");
+      if (liveKicker) liveKicker.textContent = "AutoBot работает";
       liveTitle.textContent = title || "Запускаем задачу";
       liveSub.textContent = detail || "Система ставит работу в очередь.";
       livePercent.textContent = "0%";
@@ -217,16 +543,150 @@
       return data;
     }
 
+    function closeTenderDeleteDialog() {
+      if (confirmTenderDeleteButton?.disabled) return;
+      pendingTenderDelete = null;
+      if (deleteTenderDialog?.open) deleteTenderDialog.close();
+    }
+
+    function openTenderDeleteDialog(button) {
+      const tenderId = String(button?.getAttribute("data-tender-id") || "").trim();
+      const tenderTitle = String(button?.getAttribute("data-tender-title") || "Тендер").trim();
+      if (!tenderId || actionLocked) return;
+      pendingTenderDelete = { tenderId: tenderId, tenderTitle: tenderTitle };
+      if (deleteTenderDescription) {
+        deleteTenderDescription.textContent = "№ " + tenderId + " · " + tenderTitle;
+      }
+      if (deleteTenderStatus) {
+        deleteTenderStatus.textContent = "";
+        deleteTenderStatus.className = "delete-dialog-status";
+      }
+      document.querySelectorAll(".more-menu[open]").forEach(function(menu) { menu.removeAttribute("open"); });
+      if (typeof deleteTenderDialog?.showModal === "function") {
+        deleteTenderDialog.showModal();
+      } else if (window.confirm("Удалить тендер № " + tenderId + " и все результаты?")) {
+        confirmTenderDeletion();
+      }
+    }
+
+    async function confirmTenderDeletion() {
+      if (!pendingTenderDelete || actionLocked) return;
+      const tenderId = pendingTenderDelete.tenderId;
+      if (confirmTenderDeleteButton) {
+        confirmTenderDeleteButton.disabled = true;
+        confirmTenderDeleteButton.textContent = "Удаляю…";
+      }
+      if (deleteTenderStatus) deleteTenderStatus.textContent = "Перемещаю данные тендера в локальную корзину…";
+      try {
+        const data = await postJson("/api/tenders/" + encodeURIComponent(tenderId) + "/delete", { confirm_tender_id: tenderId });
+        if (deleteTenderStatus) {
+          deleteTenderStatus.classList.add("is-success");
+          deleteTenderStatus.textContent = "Удалено. Перемещено файлов: " + Number(data.files_moved || 0) + ". Обновляю список…";
+        }
+        document.querySelector('.tender-card[data-tender-id="' + tenderId + '"]')?.remove();
+        window.setTimeout(function() { window.location.reload(); }, 650);
+      } catch (error) {
+        if (deleteTenderStatus) {
+          deleteTenderStatus.classList.add("is-error");
+          deleteTenderStatus.textContent = error.message || String(error);
+        }
+        if (confirmTenderDeleteButton) {
+          confirmTenderDeleteButton.disabled = false;
+          confirmTenderDeleteButton.textContent = "Удалить и разрешить повторный запуск";
+        }
+      }
+    }
+
+    document.addEventListener("click", function(event) {
+      const button = event.target.closest("[data-tender-delete]");
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openTenderDeleteDialog(button);
+    });
+    document.querySelectorAll("[data-delete-dialog-close]").forEach(function(button) { button.addEventListener("click", closeTenderDeleteDialog); });
+    confirmTenderDeleteButton?.addEventListener("click", confirmTenderDeletion);
+    deleteTenderDialog?.addEventListener("click", function(event) { if (event.target === deleteTenderDialog) closeTenderDeleteDialog(); });
+
+    function extractTenderNumber(value) {
+      const raw = String(value || "").trim();
+      if (/^(?:\d{11}|\d{19})$/.test(raw)) return raw;
+      try {
+        const parsed = new URL(raw);
+        const fromQuery = String(parsed.searchParams.get("regNumber") || parsed.searchParams.get("purchaseNoticeNumber") || "").trim();
+        if (/^(?:\d{11}|\d{19})$/.test(fromQuery)) return fromQuery;
+      } catch (_error) {
+        // Поле также принимает номер без ссылки и текст, скопированный из ЕИС.
+      }
+      const match = raw.match(/(?:^|\D)(\d{19}|\d{11})(?:\D|$)/);
+      return match ? match[1] : "";
+    }
+
+    function setTenderScanStatus(text, state) {
+      if (!tenderScanStatus) return;
+      tenderScanStatus.textContent = text || "";
+      tenderScanStatus.classList.remove("is-recognized", "is-running", "is-success", "is-error");
+      if (state) tenderScanStatus.classList.add("is-" + state);
+    }
+
+    tenderScanInput?.addEventListener("input", function() {
+      const raw = String(this.value || "").trim();
+      const tenderId = extractTenderNumber(raw);
+      if (!raw) {
+        setTenderScanStatus("", "");
+      } else if (tenderId) {
+        setTenderScanStatus("Распознан тендер № " + tenderId, "recognized");
+      } else {
+        setTenderScanStatus("Вставьте ссылку целиком или номер закупки", "");
+      }
+    });
+
+    tenderScanForm?.addEventListener("submit", async function(e) {
+      e.preventDefault();
+      if (actionLocked) {
+        setTenderScanStatus("Дождитесь завершения текущей задачи", "error");
+        return;
+      }
+
+      const raw = String(tenderScanInput?.value || "").trim();
+      const tenderId = extractTenderNumber(raw);
+      if (!tenderId) {
+        setTenderScanStatus("Не удалось найти номер. Для 223-ФЗ нужно 11 цифр, для 44-ФЗ — 19.", "error");
+        tenderScanInput?.focus();
+        return;
+      }
+
+      setActionsLocked(true);
+      setTenderScanStatus("Запускаю полное сканирование тендера № " + tenderId + "…", "running");
+      showLive("Сканируем тендер № " + tenderId, "Скачиваем документы и ищем смету. Это может занять несколько минут.");
+      try {
+        const data = await postJson("/api/generate-merge-site-by-link", { tender_link: raw });
+        const startedId = data.tender_id || tenderId;
+        setTenderScanStatus("Тендер № " + startedId + " принят в работу", "success");
+        window.setTimeout(refreshLiveStatus, 500);
+      } catch (error) {
+        setActionsLocked(false);
+        setLiveState("is-error");
+        if (liveKicker) liveKicker.textContent = "Не удалось запустить";
+        liveTitle.textContent = "Сканирование не запустилось";
+        liveSub.textContent = error.message || String(error);
+        setTenderScanStatus(error.message || String(error), "error");
+      }
+    });
+
     async function refreshLiveStatus() {
       try {
         const [parseResp, mergeResp] = await Promise.all([
           fetch("/api/parse-status", { cache: "no-store" }),
           fetch("/api/merge-site-status", { cache: "no-store" })
         ]);
+        if (!parseResp.ok || !mergeResp.ok) throw new Error("Сервис прогресса временно недоступен");
         const parse = await parseResp.json();
         const merge = await mergeResp.json();
 
         if (merge.running) {
+          wasRunning = true;
+          setActionsLocked(true);
           const pct = Number(merge.percent || 0);
           const marketDone = Number(merge.market_done || 0);
           const marketTotal = Number(merge.market_total || 0);
@@ -235,6 +695,7 @@
           const recent = lastText(eventTexts) || lastText(merge.log_tail || []);
 
           setLiveState("is-running");
+          if (liveKicker) liveKicker.textContent = "AutoBot работает";
           liveTitle.textContent = "Сейчас идет сравнение цен";
           liveSub.textContent = recent || current;
           livePercent.textContent = pct + "%";
@@ -253,14 +714,17 @@
         }
 
         if (parse.running) {
+          wasRunning = true;
+          setActionsLocked(true);
           const recent = lastText(parse.log_tail || []);
           setLiveState("is-running");
+          if (liveKicker) liveKicker.textContent = "AutoBot работает";
           liveTitle.textContent = parse.task || "Сейчас идет поиск закупок";
-          liveSub.textContent = recent || "Система работает с ЕИС и документами.";
+          liveSub.textContent = recent || "Система ищет подходящие закупки в ЕИС и добавляет их в каталог.";
           livePercent.textContent = "";
           liveFill.style.width = "45%";
           renderFacts([
-            "Поиск и документы",
+            "Поиск в ЕИС",
             parse.started_at ? ("Старт: " + parse.started_at) : "",
             "Строк лога: " + Number(parse.log_lines_count || 0)
           ]);
@@ -269,9 +733,11 @@
         }
 
         const hadActivity = !livePanel.classList.contains("is-idle") || merge.last_summary || parse.exit_code !== null;
+        const failed = (parse.exit_code !== null && Number(parse.exit_code) !== 0) || (merge.error_ids || []).length > 0;
+        setActionsLocked(false);
         if (hadActivity) {
-          const failed = (parse.exit_code !== null && Number(parse.exit_code) !== 0) || (merge.error_ids || []).length > 0;
           setLiveState(failed ? "is-error" : "is-done");
+          if (liveKicker) liveKicker.textContent = failed ? "Нужно внимание" : "Система готова";
           liveTitle.textContent = failed ? "Последняя задача завершилась с ошибками" : "Сейчас ничего не выполняется";
           liveSub.textContent = merge.last_summary || (parse.exit_code !== null ? ("Код завершения поиска: " + parse.exit_code) : "Можно запускать следующий шаг.");
           livePercent.textContent = failed ? "" : "готово";
@@ -282,15 +748,56 @@
           ]);
           liveLog.textContent = ((merge.log_tail || parse.log_tail || [])).slice(-14).join("\\n");
         }
+        if (wasRunning && !reloadScheduled) {
+          wasRunning = false;
+          reloadScheduled = true;
+          if (!failed) liveSub.textContent = "Готово. Обновляю карточки и следующие шаги…";
+          window.setTimeout(function() { window.location.reload(); }, failed ? 2800 : 1200);
+        }
       } catch (e) {
+        setActionsLocked(false);
         setLiveState("is-error");
+        if (liveKicker) liveKicker.textContent = "Связь прервана";
         liveTitle.textContent = "Не удалось обновить прогресс";
         liveSub.textContent = e.message || String(e);
       }
     }
 
+    function navigateCrmProject(url) {
+      if (!url) return;
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "pmbi:navigate", href: url }, "*");
+          return;
+        }
+      } catch (error) {}
+      window.location.href = url;
+    }
+
+    async function chooseCrmProject() {
+      const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+      const data = await response.json().catch(function() { return {}; });
+      if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+      const projects = Array.isArray(data.projects) ? data.projects : [];
+      if (!projects.length) return { cancelled: false, projectId: null };
+      const lines = projects.slice(0, 30).map(function(project) {
+        return "#" + project.id + " — " + (project.title || "Без названия") + (project.contract_no ? " (" + project.contract_no + ")" : "");
+      });
+      const answer = window.prompt(
+        "Введите номер объекта, куда добавить сметы тендера.\nОставьте поле пустым, чтобы создать новый объект.\n\n" + lines.join("\n"),
+        ""
+      );
+      if (answer === null) return { cancelled: true, projectId: null };
+      const value = answer.trim().replace(/^#/, "");
+      if (!value) return { cancelled: false, projectId: null };
+      if (!/^\d+$/.test(value) || !projects.some(function(project) { return String(project.id) === value; })) {
+        throw new Error("Объект с таким номером не найден в доступном списке.");
+      }
+      return { cancelled: false, projectId: Number(value) };
+    }
+
     async function runTenderAction(kind, tenderId, runTitle, runDetail) {
-      if (!tenderId) return;
+      if (!tenderId || actionLocked) return;
       const map = {
         "continue": ["/api/generate-merge-site-one", runTitle || "Продолжаем тендер", { tender_id: tenderId }],
         "rerun-market": ["/api/generate-merge-site-one-rerun-market", "Ищем цены заново", { tender_id: tenderId }],
@@ -299,16 +806,24 @@
       };
       const spec = map[kind];
       if (!spec) return;
-      showLive(spec[1], runDetail || ("Тендер " + tenderId));
       try {
+        if (kind === "crm") {
+          const choice = await chooseCrmProject();
+          if (choice.cancelled) return;
+          spec[2].project_id = choice.projectId;
+        }
+        setActionsLocked(true);
+        showLive(spec[1], runDetail || ("Тендер " + tenderId));
         const data = await postJson(spec[0], spec[2]);
         if (kind === "crm" && data.project_url) {
-          window.location.href = data.project_url;
+          navigateCrmProject(data.project_url);
           return;
         }
         refreshLiveStatus();
       } catch (e) {
+        setActionsLocked(false);
         setLiveState("is-error");
+        if (liveKicker) liveKicker.textContent = "Не удалось запустить";
         liveTitle.textContent = "Задача не запустилась";
         liveSub.textContent = e.message || String(e);
       }
@@ -326,9 +841,17 @@
     });
 
     document.addEventListener("click", function(e) {
-      if (e.target.closest("a, button, summary, details, input, select, textarea")) return;
+      if (e.target.closest("a, button, summary, details, input, select, textarea, .tender-select-control")) return;
       const card = e.target.closest(".tender-card[data-href]");
       if (!card) return;
+      if (marketSelectionActive()) {
+        const input = card.querySelector("[data-tender-select]");
+        if (input && !input.disabled) {
+          input.checked = !input.checked;
+          updateMarketSelection();
+        }
+        return;
+      }
       window.location.href = card.getAttribute("data-href");
     });
 
@@ -337,27 +860,70 @@
       const card = e.target.closest(".tender-card[data-href]");
       if (!card || e.target !== card) return;
       e.preventDefault();
+      if (marketSelectionActive()) {
+        const input = card.querySelector("[data-tender-select]");
+        if (input && !input.disabled) {
+          input.checked = !input.checked;
+          updateMarketSelection();
+        }
+        return;
+      }
       window.location.href = card.getAttribute("data-href");
     });
 
     document.querySelector("[data-global-action='start-search']")?.addEventListener("click", async function() {
-      showLive("Ищем закупки", "Скачиваем документы и извлекаем сметы.");
+      if (actionLocked) return;
+      setActionsLocked(true);
+      showLive("Ищем до 100 закупок", "Добавляем подходящие карточки в каталог без анализа рынка.");
       try {
-        await postJson("/api/start-parse", { max_pages: 2, max_tenders: 15, days_back: 60 });
+        await postJson("/api/start-parse", { max_pages: 10, max_tenders: 100, days_back: 60, catalog_only: true });
         refreshLiveStatus();
       } catch (e) {
+        setActionsLocked(false);
         setLiveState("is-error");
+        if (liveKicker) liveKicker.textContent = "Не удалось запустить";
         liveSub.textContent = e.message || String(e);
       }
     });
 
-    document.querySelector("[data-global-action='continue-missing']")?.addEventListener("click", async function() {
-      showLive("Продолжаем недостающие", "Ищем цены и собираем сравнения.");
+    document.querySelector("[data-global-action='choose-market']")?.addEventListener("click", function() {
+      if (actionLocked) return;
+      setMarketSelectionMode(true, true);
+      marketSelectionBar?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+
+    selectAllVisibleTenders?.addEventListener("change", function() {
+      visibleTenderSelections().forEach(function(input) { input.checked = selectAllVisibleTenders.checked; });
+      updateMarketSelection();
+    });
+
+    document.addEventListener("change", function(e) {
+      if (!e.target.matches("[data-tender-select]")) return;
+      updateMarketSelection();
+    });
+
+    document.getElementById("cancelMarketSelection")?.addEventListener("click", function() {
+      setMarketSelectionMode(false, true);
+    });
+
+    runSelectedMarket?.addEventListener("click", async function() {
+      if (actionLocked) return;
+      const tenderIds = allTenderSelections().filter(function(input) { return input.checked; }).map(function(input) { return input.value; });
+      if (!tenderIds.length) return;
+      setActionsLocked(true);
+      showLive(
+        "Анализируем рынок для выбранных тендеров",
+        "В очереди: " + tenderIds.length + ". Обрабатываем только отмеченные карточки."
+      );
       try {
-        await postJson("/api/generate-merge-site-missing", {});
-        refreshLiveStatus();
+        await postJson("/api/generate-merge-site-selected", { tender_ids: tenderIds });
+        setMarketSelectionMode(false, true);
+        window.setTimeout(refreshLiveStatus, 500);
       } catch (e) {
+        setActionsLocked(false);
         setLiveState("is-error");
+        if (liveKicker) liveKicker.textContent = "Не удалось запустить";
+        liveTitle.textContent = "Анализ выбранных тендеров не запустился";
         liveSub.textContent = e.message || String(e);
       }
     });
@@ -365,6 +931,151 @@
     document.getElementById("toggleLogBtn")?.addEventListener("click", function() {
       liveLog.hidden = !liveLog.hidden;
       this.textContent = liveLog.hidden ? "Журнал" : "Скрыть журнал";
+      this.setAttribute("aria-expanded", liveLog.hidden ? "false" : "true");
+    });
+
+    const tenderSearch = document.getElementById("tenderSearch");
+    const exactTenderSearch = document.getElementById("exactTenderSearch");
+    const searchEmpty = document.getElementById("searchEmpty");
+    const visibleTenderCount = document.getElementById("visibleTenderCount");
+    const tenderList = document.getElementById("tenderList");
+    const tenderSort = document.getElementById("tenderSort");
+    const tenderMethodFilter = document.getElementById("tenderMethodFilter");
+    const tenderRegionFilter = document.getElementById("tenderRegionFilter");
+    const tenderPriceMin = document.getElementById("tenderPriceMin");
+    const tenderPriceMax = document.getElementById("tenderPriceMax");
+    const tenderDateFrom = document.getElementById("tenderDateFrom");
+    const tenderDateTo = document.getElementById("tenderDateTo");
+
+    function checkedFilterValues(selector) {
+      return new Set(Array.from(document.querySelectorAll(selector + ":checked")).map(function(input) {
+        return String(input.value || "");
+      }));
+    }
+
+    function tenderDateNumber(raw) {
+      const value = String(raw || "").trim();
+      if (!value) return 0;
+      const ru = value.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+      if (ru) return Date.UTC(Number(ru[3]), Number(ru[2]) - 1, Number(ru[1]));
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function sortTenderCards() {
+      if (!tenderList) return;
+      const mode = String(tenderSort?.value || "workflow");
+      const cards = Array.from(tenderList.querySelectorAll(".tender-card[data-search]"));
+      const numberAttr = function(card, name) { return Number(card.getAttribute(name) || 0); };
+      cards.sort(function(a, b) {
+        if (mode === "updated-desc") return tenderDateNumber(b.dataset.updated) - tenderDateNumber(a.dataset.updated);
+        if (mode === "published-desc") return tenderDateNumber(b.dataset.published) - tenderDateNumber(a.dataset.published);
+        if (mode === "price-desc") return numberAttr(b, "data-price") - numberAttr(a, "data-price");
+        if (mode === "price-asc") return numberAttr(a, "data-price") - numberAttr(b, "data-price");
+        return numberAttr(a, "data-sort-weight") - numberAttr(b, "data-sort-weight")
+          || numberAttr(a, "data-original-index") - numberAttr(b, "data-original-index");
+      });
+      cards.forEach(function(card) { tenderList.insertBefore(card, searchEmpty || null); });
+    }
+
+    function applyTenderSearch() {
+      const query = String(tenderSearch?.value || "").trim().toLocaleLowerCase("ru");
+      const queryParts = query.split(/\s+/).filter(Boolean);
+      const exact = Boolean(exactTenderSearch?.checked);
+      const laws = checkedFilterValues("[data-filter-law]");
+      const stages = checkedFilterValues("[data-filter-stage]");
+      const method = String(tenderMethodFilter?.value || "");
+      const region = String(tenderRegionFilter?.value || "");
+      const minPrice = Number(tenderPriceMin?.value || 0);
+      const maxPrice = Number(tenderPriceMax?.value || 0);
+      const fromDate = tenderDateNumber(tenderDateFrom?.value || "");
+      const toDate = tenderDateNumber(tenderDateTo?.value || "");
+      const cards = Array.from(document.querySelectorAll(".tender-card[data-search]"));
+      let visible = 0;
+      cards.forEach(function(card) {
+        const haystack = String(card.getAttribute("data-search") || "");
+        const queryMatches = !query || (exact ? haystack.includes(query) : queryParts.every(function(part) { return haystack.includes(part); }));
+        const price = Number(card.dataset.price || 0);
+        const published = tenderDateNumber(card.dataset.published || "");
+        const matches = queryMatches
+          && laws.has(String(card.dataset.law || "__empty__"))
+          && stages.has(String(card.dataset.stage || "__empty__"))
+          && (!method || String(card.dataset.method || "__empty__") === method)
+          && (!region || String(card.dataset.region || "__empty__") === region)
+          && (!minPrice || price >= minPrice)
+          && (!maxPrice || price <= maxPrice)
+          && (!fromDate || (published > 0 && published >= fromDate))
+          && (!toDate || (published > 0 && published <= toDate));
+        card.hidden = !matches;
+        if (matches) visible += 1;
+      });
+      if (visibleTenderCount) visibleTenderCount.textContent = String(visible);
+      if (searchEmpty) searchEmpty.hidden = visible > 0 || !cards.length;
+      updateMarketSelection();
+    }
+
+    tenderSearch?.addEventListener("input", applyTenderSearch);
+    exactTenderSearch?.addEventListener("change", applyTenderSearch);
+    tenderSort?.addEventListener("change", function() {
+      sortTenderCards();
+      applyTenderSearch();
+    });
+    document.querySelectorAll("[data-filter-law], [data-filter-stage]").forEach(function(input) {
+      input.addEventListener("change", applyTenderSearch);
+    });
+    [tenderMethodFilter, tenderRegionFilter, tenderPriceMin, tenderPriceMax, tenderDateFrom, tenderDateTo].forEach(function(input) {
+      input?.addEventListener("change", applyTenderSearch);
+    });
+    document.getElementById("applyTenderFilters")?.addEventListener("click", applyTenderSearch);
+    document.getElementById("resetTenderFilters")?.addEventListener("click", function() {
+      if ("{{ selected_action }}" !== "all") {
+        window.location.href = "/tenders";
+        return;
+      }
+      if (tenderSearch) tenderSearch.value = "";
+      if (exactTenderSearch) exactTenderSearch.checked = false;
+      document.querySelectorAll("[data-filter-law], [data-filter-stage]").forEach(function(input) { input.checked = true; });
+      [tenderMethodFilter, tenderRegionFilter, tenderPriceMin, tenderPriceMax, tenderDateFrom, tenderDateTo].forEach(function(input) {
+        if (input) input.value = "";
+      });
+      if (tenderSort) tenderSort.value = "workflow";
+      sortTenderCards();
+      applyTenderSearch();
+    });
+
+    const toggleTenderFilters = document.getElementById("toggleTenderFilters");
+    const tenderFilterBody = document.getElementById("tenderFilterBody");
+    function setTenderFiltersExpanded(expanded) {
+      if (!toggleTenderFilters || !tenderFilterBody) return;
+      tenderFilterBody.hidden = !expanded;
+      toggleTenderFilters.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+    toggleTenderFilters?.addEventListener("click", function() {
+      setTenderFiltersExpanded(this.getAttribute("aria-expanded") !== "true");
+    });
+    if (window.matchMedia("(max-width: 1060px)").matches) setTenderFiltersExpanded(false);
+
+    document.getElementById("clearTenderSearch")?.addEventListener("click", function() {
+      if (!tenderSearch) return;
+      tenderSearch.value = "";
+      applyTenderSearch();
+      tenderSearch.focus();
+    });
+
+    document.addEventListener("keydown", function(e) {
+      if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "k") {
+        e.preventDefault();
+        tenderSearch?.focus();
+      }
+      if (e.key === "Escape" && document.activeElement === tenderSearch && tenderSearch?.value) {
+        tenderSearch.value = "";
+        applyTenderSearch();
+      }
+    });
+
+    document.addEventListener("click", function(e) {
+      if (e.target.closest(".more-menu")) return;
+      document.querySelectorAll(".more-menu[open]").forEach(function(menu) { menu.open = false; });
     });
 
     document.getElementById("loadStorageBtn")?.addEventListener("click", async function() {

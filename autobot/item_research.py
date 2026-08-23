@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from autobot.paths import REPO_ROOT
-from autobot.real_market_scraper import AvitoBrowserFetcher, MarketOffer, _compact_query, search_market
+from autobot.real_market_scraper import AvitoBrowserFetcher, MarketOffer, research_position_market
 
 try:
     from dotenv import load_dotenv
@@ -29,7 +29,7 @@ except ImportError:
     pass
 
 
-DEFAULT_SOURCES = ["avito", "web"]
+DEFAULT_SOURCES = ["web", "avito"]
 VALID_SOURCES = {"avito", "web"}
 REMOTE_CITY_TOKENS = (
     "москва",
@@ -74,6 +74,11 @@ class ItemResearchResult:
     sources: list[str]
     offers: list[MarketOffer]
     errors: str = ""
+    unit: str = ""
+    position_type: str = ""
+    position_label: str = ""
+    strategy: str = ""
+    warning: str = ""
 
 
 def parse_sources(raw: str | None) -> list[str]:
@@ -255,6 +260,9 @@ def _extract_terms(offers: list[MarketOffer]) -> list[str]:
 def research_item(
     query: str,
     *,
+    unit: str = "",
+    basis_code: str = "",
+    section: str = "",
     region: str = "",
     sources: list[str] | None = None,
     max_results: int = 5,
@@ -277,6 +285,7 @@ def research_item(
     all_offers: list[MarketOffer] = []
     error_parts: list[str] = []
     seen_keys: set[str] = set()
+    last_plan = None
 
     def merge_offers(items: list[MarketOffer]) -> None:
         for offer in items or []:
@@ -286,38 +295,29 @@ def research_item(
             seen_keys.add(key)
             all_offers.append(offer)
 
-    with AvitoBrowserFetcher(enabled=use_browser and "avito" in src, headless=browser_headless) as browser:
-        compact_q = _compact_query(q)
+    # The same limited browser session is also the JS fallback for ordinary
+    # supplier sites.  It must therefore stay available in a web-only run.
+    with AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless) as browser:
         for idx, search_region in enumerate(search_regions or [""]):
-            offers, errors = search_market(
+            offers, plan, errors = research_position_market(
                 q,
+                unit=unit,
+                basis_code=basis_code,
+                section=section,
                 region=search_region,
                 sources=active_sources,
                 max_results=max_results,
                 browser_fetcher=browser,
             )
+            last_plan = plan
             merge_offers(offers)
             if errors:
                 error_parts.append(errors)
 
             err_low = str(errors or "").casefold()
-            avito_blocked = "ограничил доступ" in err_low or "ip/vpn" in err_low or "captcha" in err_low
+            avito_blocked = "ограничил доступ" in err_low or "ip/vpn" in err_low or "captcha" in err_low or "429" in err_low
             if avito_blocked and "avito" in active_sources:
                 active_sources = [s for s in active_sources if s != "avito"]
-
-            need_web_retry = "web" in active_sources and (not offers or (compact_q and compact_q != q))
-            if need_web_retry:
-                retry_query = compact_q if compact_q and compact_q != q else q
-                retry_offers, retry_errors = search_market(
-                    retry_query,
-                    region=search_region,
-                    sources=["web"],
-                    max_results=max_results,
-                    browser_fetcher=browser,
-                )
-                merge_offers(retry_offers)
-                if retry_errors:
-                    error_parts.append(retry_errors)
 
             ranked_now = _rank_geo_offers(all_offers, allow_tokens=allow_tokens, prefer_tokens=prefer_tokens, limit=max_results)
             if len(ranked_now) >= max_results:
@@ -328,7 +328,18 @@ def research_item(
     final_sources = active_sources or ["web"]
     final_errors = "; ".join(_uniq_keep_order((e for e in error_parts if str(e or "").strip()), limit=6))
     final_offers = _rank_geo_offers(all_offers, allow_tokens=allow_tokens, prefer_tokens=prefer_tokens, limit=max_results)
-    return ItemResearchResult(query=q, region=region_label, sources=final_sources, offers=final_offers[:max_results], errors=final_errors)
+    return ItemResearchResult(
+        query=q,
+        region=region_label,
+        sources=final_sources,
+        offers=final_offers[:max_results],
+        errors=final_errors,
+        unit=unit,
+        position_type=last_plan.position.slug if last_plan else "",
+        position_label=last_plan.position.label if last_plan else "",
+        strategy=last_plan.strategy_label if last_plan else "",
+        warning=last_plan.warning if last_plan else "",
+    )
 
 
 def _money(v: float) -> str:
@@ -343,7 +354,7 @@ def _bullet_html(items: list[str], empty: str) -> str:
 
 def format_research_html(result: ItemResearchResult) -> str:
     offers = result.offers
-    prices = [float(o.price) for o in offers if o.price and o.price > 0]
+    prices = [float(o.price) for o in offers if o.verification == "verified" and o.price and o.price > 0]
     chars = _extract_characteristics(offers)
     purpose = _extract_purpose(offers)
     advantages = _extract_advantages(offers)
@@ -430,8 +441,8 @@ def main() -> None:
     ap.add_argument("--region", default=os.environ.get("MARKET_SUMMARY_REGION", ""), help="Регион поиска")
     ap.add_argument(
         "--sources",
-        default=os.environ.get("MARKET_SUMMARY_SOURCES") or os.environ.get("MARKET_SOURCES") or "avito,web",
-        help="Источники через запятую: avito,web",
+        default=os.environ.get("MARKET_SUMMARY_SOURCES") or os.environ.get("MARKET_SOURCES") or "web,avito",
+        help="Источники через запятую: web,avito",
     )
     ap.add_argument("--max-results", type=int, default=int(os.environ.get("MARKET_SUMMARY_MAX_RESULTS", "5") or "5"))
     ap.add_argument("--send-telegram", action="store_true", help="Отправить результат в TELEGRAM_CHAT_ID")

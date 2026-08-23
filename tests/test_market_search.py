@@ -1,5 +1,5 @@
 from autobot.item_research import ItemResearchResult
-from autobot.real_market_scraper import MarketOffer, _parse_avito_html
+from autobot.real_market_scraper import MarketOffer, _parse_avito_html, _parse_bing_rss
 
 
 def test_parse_avito_html_reads_json_payload():
@@ -25,6 +25,24 @@ def test_parse_avito_html_reads_json_payload():
     assert offers[0].title == "Бетон М300 с доставкой"
     assert offers[0].price == 12500
     assert offers[0].url == "https://www.avito.ru/chelyabinsk/remont_i_stroitelstvo/beton_m300_1234567890"
+
+
+def test_parse_bing_rss_reads_direct_source_cards():
+    page_xml = """<?xml version="1.0" encoding="utf-8"?>
+    <rss version="2.0"><channel>
+      <item>
+        <title>Укладка тротуарной плитки — 1 500 руб. за м2</title>
+        <link>https://contractor.example/prices/plitka</link>
+        <description>Прайс на укладку тротуарной плитки: 1 500 ₽ за м².</description>
+      </item>
+    </channel></rss>
+    """
+
+    offers = _parse_bing_rss(page_xml, max_results=3)
+
+    assert len(offers) == 1
+    assert offers[0].url == "https://contractor.example/prices/plitka"
+    assert offers[0].price == 1500
 
 
 def test_api_research_items_uses_configured_sources(monkeypatch):

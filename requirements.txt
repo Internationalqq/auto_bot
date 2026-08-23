@@ -7,5 +7,9 @@ requests
 xlrd
 rarfile
 flask
+pdfplumber
+PyMuPDF
+opencv-python-headless
+pytesseract
 ddgs
 python-dotenv

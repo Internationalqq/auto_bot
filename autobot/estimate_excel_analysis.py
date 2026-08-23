@@ -255,6 +255,10 @@ def _read_via_project_parser(path: Path) -> list[EstimateRow]:
 
 
 def _raw_sheets(path: Path) -> dict[str, pd.DataFrame]:
+    if path.suffix.lower() == ".pdf":
+        from autobot.pdf_estimate_adapter import pdf_to_dataframe
+
+        return {"PDF": pdf_to_dataframe(path)}
     try:
         return pd.read_excel(path, sheet_name=None, header=None)
     except Exception:
@@ -263,6 +267,10 @@ def _raw_sheets(path: Path) -> dict[str, pd.DataFrame]:
 
 def _read_generic_tables(path: Path) -> list[EstimateRow]:
     sheets = _raw_sheets(path)
+    return _read_generic_sheets(sheets)
+
+
+def _read_generic_sheets(sheets: dict[str, pd.DataFrame]) -> list[EstimateRow]:
     rows: list[EstimateRow] = []
     for sheet_name, df in sheets.items():
         if df.empty:
@@ -314,6 +322,127 @@ def _read_generic_tables(path: Path) -> list[EstimateRow]:
                 )
             )
     return _dedupe_rows(rows)
+
+
+def _looks_like_pdf_position_code(value: object) -> bool:
+    """Recognize the GESN/FSBTS-like code in an OCRed local estimate row."""
+    text = _clean_text(value).replace(" ", "")
+    return len(text) >= 7 and text.count("-") >= 2 and any(char.isdigit() for char in text)
+
+
+def _looks_like_pdf_unit(value: object) -> bool:
+    text = _clean_text(value).casefold().replace(" ", "").replace("²", "2").replace("³", "3")
+    return text in {
+        "м", "м2", "м3", "т", "кг", "шт", "компл", "чел.-ч", "чел-ч", "маш.-ч", "маш-ч",
+        "100м", "100м2", "100м3", "100шт",
+    }
+
+
+def _read_pdf_position_rows(sheets: dict[str, pd.DataFrame]) -> list[EstimateRow]:
+    """Fallback for scanned local estimates whose multi-level header OCRs poorly.
+
+    In LSR PDFs a primary row starts with a small item number, then a code
+    (ГЭСН/ФСБЦ/ТЭСН), a description, unit and quantity.  Resource rows do not
+    have that leading position number, so they are naturally excluded.
+    """
+    rows: list[EstimateRow] = []
+    for sheet_name, dataframe in sheets.items():
+        for row_index in range(len(dataframe)):
+            cells = [_clean_text(value) for value in dataframe.iloc[row_index].tolist()]
+            nonempty = [(index, value) for index, value in enumerate(cells) if value]
+            if len(nonempty) < 4:
+                continue
+            first_index, position_raw = nonempty[0]
+            if first_index > 0 or not re.fullmatch(r"\d{1,3}", position_raw):
+                continue
+            code_index = next((index for index, value in nonempty[1:4] if _looks_like_pdf_position_code(value)), None)
+            if code_index is None:
+                continue
+            unit_index = next((index for index, value in nonempty if index > code_index and _looks_like_pdf_unit(value)), None)
+            if unit_index is None or unit_index <= code_index + 1:
+                continue
+            name = _clean_text(" ".join(cells[code_index + 1:unit_index]))
+            if len(name) < 4 or any(marker in name.casefold() for marker in ("итого", "всего по позиции", "накладные")):
+                continue
+            qty = next(
+                (
+                    _num(value)
+                    for value in cells[unit_index + 1:]
+                    if _num(value) is not None and float(_num(value) or 0) > 0
+                ),
+                None,
+            )
+            if qty is None:
+                continue
+            rows.append(
+                EstimateRow(
+                    idx=len(rows) + 1,
+                    name=name,
+                    unit=cells[unit_index],
+                    qty=qty,
+                    item_no=position_raw,
+                    basis_code=cells[code_index],
+                    sheet=str(sheet_name),
+                    excel_row=row_index + 1,
+                    section="Распознано из PDF",
+                    source="pdf-ocr",
+                )
+            )
+    return _dedupe_rows(rows)
+
+
+def _read_pdf_sparse_position_rows(path: Path) -> list[EstimateRow]:
+    """Extract LSR rows by OCR coordinates when the table grid is fragmented."""
+    from autobot.pdf_estimate_adapter import pdf_to_position_records
+
+    rows: list[EstimateRow] = []
+    for record in pdf_to_position_records(path):
+        name = _clean_text(record.get("name"))
+        qty = _num(record.get("qty"))
+        if len(name) < 4 or qty is None or qty <= 0:
+            continue
+        unit, qty = _normalize_lsr_unit_and_qty(_clean_text(record.get("unit")), qty)
+        rows.append(
+            EstimateRow(
+                idx=len(rows) + 1,
+                name=name,
+                unit=unit,
+                qty=qty,
+                unit_price=_num(record.get("unit_price")),
+                total=_num(record.get("total")),
+                item_no=_clean_text(record.get("position")) or _clean_text(record.get("code")),
+                basis_code=_clean_text(record.get("code")),
+                sheet=f"PDF, стр. {int(record.get('page') or 0)}",
+                section="Распознано из PDF",
+                source="pdf-ocr-sparse",
+            )
+        )
+    return _dedupe_rows(rows)
+
+
+def _normalize_lsr_unit_and_qty(unit: str, qty: float) -> tuple[str, float]:
+    """Convert LSR's enlarged units to the units shown to the user.
+
+    LSRs commonly store work in ``100 м2``/``100 м`` and reinforcement in
+    tonnes.  Keeping that notation after OCR makes ordinary quantities look
+    one hundred or one thousand times smaller than they really are.
+    """
+    normalized = _clean_text(unit).casefold().replace("²", "2").replace("³", "3")
+    normalized = normalized.replace("m", "м")
+    multipliers = {
+        "100 м2": ("м2", 100.0),
+        "100м2": ("м2", 100.0),
+        "100 м3": ("м3", 100.0),
+        "100м3": ("м3", 100.0),
+        "100 м": ("м", 100.0),
+        "100м": ("м", 100.0),
+        "100 шт": ("шт", 100.0),
+        "100шт": ("шт", 100.0),
+        "т": ("кг", 1000.0),
+    }
+    return multipliers.get(normalized, (unit, qty)) if normalized not in multipliers else (
+        multipliers[normalized][0], qty * multipliers[normalized][1]
+    )
 
 
 def _guess_header_idx(df: pd.DataFrame) -> int | None:
@@ -368,6 +497,25 @@ def _progress(cb: ProgressCallback | None, percent: int, stage: str, detail: str
 
 
 def load_estimate_session(path: Path, *, progress_cb: ProgressCallback | None = None) -> EstimateSession:
+    if path.suffix.lower() == ".pdf":
+        _progress(progress_cb, 8, "Распознаю PDF", f"Файл: {Path(path).name}")
+        _progress(progress_cb, 38, "Распознаю таблицу", "Выравниваю скан, определяю сетку и ячейки")
+        rows = _read_pdf_sparse_position_rows(path)
+        if not rows:
+            sheets = _raw_sheets(path)
+            rows = _read_generic_sheets(sheets)
+            if not rows:
+                rows = _read_pdf_position_rows(sheets)
+        if rows:
+            _progress(progress_cb, 78, "Таблица PDF распознана", f"Найдено строк: {len(rows)}")
+        if not rows:
+            _progress(progress_cb, 100, "Ошибка разбора", "В PDF не найдены строки сметы")
+            raise ValueError("Не удалось найти строки сметы в PDF. Проверьте качество скана и заголовки таблицы.")
+        _progress(progress_cb, 88, "Формирую каталог позиций", "Собираю список работ, услуг, товаров и материалов")
+        catalogue = build_catalogue(rows)
+        _progress(progress_cb, 96, "Подготовка завершена", f"Строк: {len(rows)} · позиций: {len(catalogue)}")
+        return EstimateSession(file_path=Path(path), rows=rows, catalogue=catalogue)
+
     _progress(progress_cb, 8, "Открываю Excel", f"Файл: {Path(path).name}")
     rows = _read_standard_report(path)
     if rows:

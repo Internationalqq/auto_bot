@@ -40,3 +40,11 @@ data/user_estimates/
 data/tenders.json
 data/last_new_tender_ids.txt
 data/logs/
+
+# Local market runtime state (kept on disk/volume, never committed)
+data/trash/
+data/market_cache/
+data/market_index/
+data/agent_market_jobs.sqlite3
+data/agent_market_jobs.sqlite3-*
+data/agent_market_worker.token

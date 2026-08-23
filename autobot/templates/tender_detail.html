@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}" />
+  <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/tenders">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы">
+      <a class="is-active" href="/tenders">Тендеры</a>
+      <a href="/estimates">Сметы</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <nav class="breadcrumbs" aria-label="Навигация">
+      <a href="/tenders">Тендеры</a><span>›</span><b>№ {{ tender.tender_id }}</b>
+    </nav>
+
+    <section class="eis-card" aria-labelledby="tenderTitle">
+      <div class="eis-main">
+        <div class="law">{{ tender.law_method_label or tender.law or "Закупка ЕИС" }}</div>
+        <div class="number-line">
+          <a href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">№ {{ tender.tender_id }}</a>
+          <span>{{ tender.stage or "Статус ЕИС не указан" }}</span>
+        </div>
+        <div class="eis-field">
+          <small>Объект закупки</small>
+          <h1 id="tenderTitle">{{ tender.title }}</h1>
+        </div>
+        <div class="eis-field customer">
+          <small>Заказчик</small>
+          {% if tender.customer_name %}<strong>{{ tender.customer_name }}</strong>{% else %}<em>Заказчик пока не получен из ЕИС</em>{% endif %}
+        </div>
+      </div>
+      <aside class="eis-side">
+        <div class="price"><small>Начальная цена</small><strong>{{ tender.price_fmt }}</strong></div>
+        <div class="dates">
+          <span><small>Размещено</small><b>{{ tender.publish_date or "—" }}</b></span>
+          <span><small>Обновлено</small><b>{{ tender.updated_date or "—" }}</b></span>
+        </div>
+        <div class="region"><small>Регион</small><b>{{ tender.region or "Не указан" }}</b></div>
+      </aside>
+    </section>
+
+    {% if tender.market_health and tender.market_health.degraded %}
+    <section class="market-health-alert" role="alert">
+      <div><small>Мониторинг источников</small><strong>Парсер стал находить заметно меньше данных</strong></div>
+      <p>Текущий результат: {{ tender.market_health.offer_rate_pct }}% строк с источниками, обычный уровень: {{ tender.market_health.baseline_rate_pct }}%. Возможны изменения вёрстки или ограничение доступа.</p>
+    </section>
+    {% endif %}
+
+    <nav class="tender-tabs" aria-label="Разделы тендера">
+      <a class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}">Обзор и анализ</a>
+      <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Исходные файлы <span>{{ tender.documents.count }}</span></a>
+    </nav>
+
+    {% if tender.active_tab == "overview" %}
+
+    <section class="action-panel">
+      <div>
+        <small>Следующий шаг AutoBot</small>
+        <strong>{{ tender.status_label or "Проверить данные" }}</strong>
+        <span>{{ tender.status_detail or "Откройте позиции и проверьте готовность данных." }}</span>
+      </div>
+      <div class="action-buttons">
+        {% if tender.has_estimate %}
+        <a class="btn secondary" href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>
+        <button class="btn secondary" type="button" id="addTenderToCrmBtn">Добавить в объект</button>
+        <button class="btn secondary" type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>
+        {% endif %}
+        <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="{{ '1' if tender.has_market else '0' }}">
+          {{ "Полный анализ заново" if tender.has_market else "Полный анализ рынка" }}
+        </button>
+        <a class="btn ghost" href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть в ЕИС ↗</a>
+      </div>
+    </section>
+
+    {% if tender.has_estimate %}
+    <section class="estimate-check estimate-check-{{ tender.estimate_check_class }}" aria-label="Сверка сметы с начальной ценой">
+      <header>
+        <div><small>Контроль полноты смет</small><strong>{{ tender.estimate_check_title }}</strong></div>
+        {% if tender.estimate_match_pct is not none %}<span>{{ tender.estimate_match_pct_fmt }}%</span>{% endif %}
+      </header>
+      <div class="estimate-check-grid">
+        <div><small>Начальная цена</small><b>{{ tender.price_fmt }}</b></div>
+        <div><small>Итог ЛСР без НДС</small><b>{{ tender.estimate_official_total_fmt }}</b></div>
+        <div><small>Ориентир с НДС 22%</small><b>{{ tender.estimate_total_with_vat_fmt }}</b></div>
+        <div><small>Разница</small><b>{{ tender.estimate_gap_direction }} {{ tender.estimate_gap_fmt }}</b></div>
+      </div>
+      <div class="estimate-check-track" aria-hidden="true"><i style="width: {{ tender.estimate_match_bar }}%"></i></div>
+      <footer>
+        <span>ЛСР: <b>{{ tender.estimate_files_parsed }} из {{ tender.estimate_files_selected }}</b> · итоги: <b>{{ tender.estimate_official_files_count }}</b> · позиций: <b>{{ tender.total_positions }}</b></span>
+        <p>Основные позиции: <b>{{ tender.estimate_total_fmt }}</b>. {{ tender.estimate_check_detail }}</p>
+      </footer>
+    </section>
+    {% endif %}
+
+    <section class="progress-card" aria-label="Готовность тендера">
+      <div class="progress-head">
+        <div><small>Готовность данных</small><strong id="progressTitle">{{ tender.coverage }}% позиций имеют проверенную цену</strong></div>
+        <span id="runStatus" aria-live="polite">{% if tender.market_updated %}Рынок обновлён {{ tender.market_updated }}{% else %}Анализ рынка ещё не запускался{% endif %}</span>
+      </div>
+      <div class="step-grid">
+        {% for step in tender.steps %}
+        <div class="step {{ 'done' if step.done else '' }}"><i aria-hidden="true"></i><span>{{ step.label }}</span><b>{{ "Готово" if step.done else "Ожидает" }}</b></div>
+        {% endfor %}
+      </div>
+      <div class="run-progress" id="runProgress" hidden><i id="runProgressFill"></i></div>
+      <details class="run-log" id="runLog"><summary>Журнал выполнения</summary><pre id="runLogText">Событий пока нет.</pre></details>
+    </section>
+
+    <section class="metrics" aria-label="Сводка по позициям">
+      <button class="metric is-active" type="button" data-bucket-filter="all" aria-pressed="true"><small>Все позиции</small><strong>{{ tender.total_positions }}</strong></button>
+      <button class="metric" type="button" data-bucket-filter="works" aria-pressed="false"><small>Работы и услуги</small><strong>{{ tender.counts.works }}</strong></button>
+      <button class="metric" type="button" data-bucket-filter="materials" aria-pressed="false"><small>Материалы и товары</small><strong>{{ tender.counts.materials }}</strong></button>
+      <button class="metric attention" type="button" data-bucket-filter="other" aria-pressed="false"><small>Требуют разбора</small><strong>{{ tender.counts.other }}</strong></button>
+      <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Обработано рынком</small><strong>{{ tender.counts.processed }}</strong></button>
+      <button class="metric verified" type="button" data-bucket-filter="verified" aria-pressed="false"><small>С проверенной ценой</small><strong>{{ tender.counts.verified }}</strong></button>
+    </section>
+
+    <section class="market-rules">
+      <div class="rules-title"><span aria-hidden="true">✓</span><div><strong>Как AutoBot теперь принимает цену</strong><small>Найденная цифра сама по себе больше не считается рынком.</small></div></div>
+      <div class="rules-grid">
+        <div><b>Работы и услуги</b><span>Ищем прайс подрядчика или объявление услуги с той же единицей: ₽/м², ₽/м³, ₽/час.</span></div>
+        <div><b>Материалы и товары</b><span>Ищем карточку поставщика с совпадающими характеристиками и ценой за шт., кг, м² или м³.</span></div>
+        <div><b>Проверка источника</b><span>В медиану идут только прямая ссылка, совпадение названия и подтверждённая единица цены.</span></div>
+        <div><b>Контроль масштаба</b><span>Цена сверяется со сметой в одной единице. Сильное расхождение остаётся кандидатом и не портит расчёт.</span></div>
+      </div>
+    </section>
+
+    <section class="agent-market-card" id="agentMarketCard">
+      <div class="agent-market-head">
+        <div>
+          <small>Hermes на Mac mini</small>
+          <strong>Фоновый поиск цен браузерным агентом</strong>
+          <span>Отметьте позиции в смете. Агент откроет источники на Mac, а AutoBot примет найденные цены как кандидатов для проверки.</span>
+        </div>
+        <div class="agent-market-actions">
+          <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
+          <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
+          <button class="btn primary" type="button" id="queueAgentMarketBtn" disabled>Отправить агенту</button>
+        </div>
+      </div>
+      <div class="agent-market-summary" id="agentMarketSummary" aria-live="polite">
+        <span><small>Выбрано</small><b id="agentSelectedCount">0</b></span>
+        <span><small>В очереди</small><b id="agentQueuedCount">0</b></span>
+        <span><small>В работе</small><b id="agentLeasedCount">0</b></span>
+        <span><small>Получено</small><b id="agentCompletedCount">0</b></span>
+        <span><small>Ошибки</small><b id="agentFailedCount">0</b></span>
+      </div>
+      <p class="agent-market-note" id="agentMarketNote">Проверяю подключение очереди…</p>
+      <div class="agent-market-jobs" id="agentMarketJobs" hidden></div>
+    </section>
+
+    <section class="avito-safe-card is-loading" id="avitoSafeCard">
+      <div class="avito-safe-copy">
+        <small>Авито · бережный режим</small>
+        <strong id="avitoSafeTitle">Проверяю оставшуюся паузу…</strong>
+        <span id="avitoSafeStatus">К сайту при этой проверке AutoBot не обращается.</span>
+      </div>
+      <div class="avito-safe-actions">
+        <span>До 2 новых позиций · 1 страница на позицию · не чаще раза в 90 секунд · объявления не открываются</span>
+        <button class="btn secondary" type="button" id="runAvitoSafeBtn" disabled>Проверяю доступ…</button>
+      </div>
+    </section>
+
+    <section class="positions-card">
+      <header class="positions-head">
+        <div><h2>Позиции сметы</h2><p><b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
+        <label class="position-search"><span aria-hidden="true"></span><input id="positionSearch" type="search" placeholder="Найти работу, материал или шифр" autocomplete="off" /></label>
+      </header>
+
+      {% if tender.positions %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="select-col"><span class="sr-only">Выбор</span></th><th>№</th><th>Позиция</th><th>Ед. / объём</th><th>Смета</th><th>Рынок</th><th>Источники</th><th>Результат</th>
+          </tr></thead>
+          <tbody id="positionRows">
+          {% for p in tender.positions %}
+            {% if p.file_start %}
+            <tr class="estimate-file-row" data-file-row data-file-key="{{ p.file_group }}">
+              <td colspan="8"><div><strong>{{ p.file_title }}</strong><span>Позиций: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
+            </tr>
+            {% endif %}
+            {% if p.section_start %}
+            <tr class="estimate-section-row" data-section-row data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}">
+              <td colspan="8"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
+            </tr>
+            {% endif %}
+            <tr data-position-row data-position-key="{{ p.position_key }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
+              <td class="select-col"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} в поиск агентом" /></td>
+              <td class="row-no">{{ p.item_no }}</td>
+              <td class="position-name">
+                <div><span class="type type-{{ p.type_slug }}">{{ p.type_label }}</span>{% if p.basis_code %}<code>{{ p.basis_code }}</code>{% endif %}</div>
+                <strong>{{ p.name }}</strong>
+                {% if p.section_note %}<small>{{ p.section_note }}</small>{% endif %}
+                <details class="strategy"><summary>Как ищем цену</summary><p>{{ p.strategy }}</p><p>{{ p.source_strategy }}</p>{% if p.warning %}<mark>{{ p.warning }}</mark>{% endif %}<a href="/research?q={{ (p.name ~ ' | ' ~ (p.unit if p.unit != '—' else ''))|urlencode }}&city={{ tender.region|urlencode }}">Проверить отдельно в лаборатории →</a></details>
+              </td>
+              <td><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
+              <td class="money"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
+              <td class="money market-price"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}взвешенная медиана · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}</td>
+              <td class="sources">
+                {% if p.verified_count %}<span class="source-count verified">✓ {{ p.verified_count }} проверено</span>{% endif %}
+                {% if p.candidate_count %}<span class="source-count candidate">? {{ p.candidate_count }} кандид.</span>{% endif %}
+                {% if not p.sources %}<span class="source-empty">Нет источников</span>{% endif %}
+                {% if p.sources %}
+                <details><summary>Показать {{ p.sources|length }}</summary><div class="source-list">
+                  {% for source in p.sources %}
+                  <button type="button" class="source {{ 'is-verified' if source.verified else 'is-candidate' }}" data-source-preview data-source-url="{{ source.url }}" data-source-audit="{{ source.audit_record_path }}" data-source-title="{{ source.title }}" data-source-price="{{ source.price_fmt }}" data-source-comparison-price="{{ source.comparison_price_fmt }}" data-source-price-basis="{{ source.price_basis }}" data-source-ratio="{{ source.estimate_ratio_fmt }}" data-source-reason="{{ source.reason }}" data-source-evidence="{{ source.evidence }}" data-source-location="{{ source.location }}" data-source-published="{{ source.published_at }}">
+                    <span>{{ "Проверен" if source.verified else "Кандидат" }} · {{ source.source }}{% if source.index_hit %} · из индекса{% endif %}</span>
+                    <strong>{{ source.title }}</strong><b>{{ source.price_fmt }}</b><small>{{ source.reason }} · доверие {{ source.source_weight }}%</small>
+                  </button>
+                  {% endfor %}
+                </div></details>
+                {% endif %}
+              </td>
+              <td><span class="verdict {{ p.verdict_class }}">{{ p.verdict }}</span>{% if p.market_status %}<small class="row-status">{{ p.market_status }}</small>{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="no-results" id="noPositionResults" hidden>По этому фильтру позиций нет.</div>
+      {% else %}
+      <div class="empty-state"><strong>Смета ещё не извлечена</strong><p>Запустите обработку тендера — AutoBot скачает документы и попробует найти локальные сметы.</p><button class="btn primary" type="button" id="runEmptyTender">Начать обработку</button></div>
+      {% endif %}
+    </section>
+
+    <section class="downloads">
+      <div><h2>Файлы результата</h2><p>Excel остаётся доступен для проверки и ручной работы.</p></div>
+      <div>
+        {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Смета <small>{{ tender.estimate_updated }}</small></a>{% endif %}
+        {% if tender.has_market %}<a href="/tenders/{{ tender.tender_id }}/market-sources.xlsx">Источники рынка <small>{{ tender.market_updated }}</small></a>{% endif %}
+        {% if tender.has_comparison %}<a href="/tenders/{{ tender.tender_id }}/svodka.xlsx">Сравнение <small>{{ tender.comparison_updated }}</small></a>{% endif %}
+      </div>
+    </section>
+    {% else %}
+    <section class="source-files-panel">
+      <header class="source-files-heading">
+        <div>
+          <span class="section-kicker">Документы из ЕИС</span>
+          <h2>Исходные файлы закупки</h2>
+          <p>Это документы, которые AutoBot уже скачал для тендера. Их можно открыть или сохранить без перехода на ЕИС.</p>
+        </div>
+        {% if tender.documents.updated %}<small>Последнее обновление<br><b>{{ tender.documents.updated }}</b></small>{% endif %}
+      </header>
+
+      <div class="source-file-stats" aria-label="Сводка по исходным файлам">
+        <div><small>Документов</small><strong>{{ tender.documents.count }}</strong>{% if tender.documents.physical_count > tender.documents.count %}<span>{{ tender.documents.physical_count }} с учётом повторных копий</span>{% endif %}</div>
+        <div><small>Можно посмотреть</small><strong>{{ tender.documents.preview_count }}</strong><span>прямо в AutoBot</span></div>
+        <div><small>Занимают</small><strong>{{ tender.documents.total_size_fmt }}</strong><span>в локальном хранилище</span></div>
+      </div>
+
+      {% if tender.documents.files %}
+      <div class="source-files-toolbar">
+        <label class="file-search"><span aria-hidden="true"></span><input id="sourceFileSearch" type="search" placeholder="Найти документ по названию" autocomplete="off" /></label>
+        <label class="file-kind-filter">Формат<select id="sourceFileKind"><option value="all">Все файлы</option><option value="pdf">PDF</option><option value="excel">Excel</option><option value="word">Word</option><option value="archive">Архивы</option><option value="image">Изображения</option><option value="text">Текст и данные</option><option value="other">Другие</option></select></label>
+        <span id="sourceFileCount">Показано: {{ tender.documents.count }}</span>
+      </div>
+
+      <div class="source-file-list" id="sourceFileList">
+        {% for file in tender.documents.files %}
+        <article class="source-file-row" data-source-file data-kind="{{ file.kind }}" data-search="{{ (file.name ~ ' ' ~ file.type_label ~ ' ' ~ file.extension)|lower }}">
+          <span class="file-ext kind-{{ file.kind }}" aria-hidden="true">{{ file.extension }}</span>
+          <div class="source-file-name">
+            <strong>{{ file.name }}</strong>
+            <span>{{ file.type_label }} · {{ file.size_fmt }} · {{ file.updated }}</span>
+            {% if file.copies > 1 %}<small>Повторно скачан {{ file.copies }} раза — показана последняя копия</small>{% endif %}
+          </div>
+          <div class="source-file-actions">
+            {% if file.can_preview %}<a class="btn file-preview" href="/tenders/{{ tender.tender_id }}/source-files/{{ file.token }}/preview">Посмотреть</a>{% else %}<span class="preview-disabled">Только скачивание</span>{% endif %}
+            <a class="btn file-download" href="/tenders/{{ tender.tender_id }}/source-files/{{ file.token }}/download">Скачать</a>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      <div class="no-results" id="noSourceFileResults" hidden>По этому фильтру файлов нет.</div>
+      {% else %}
+      <div class="empty-state source-empty-state"><strong>Документы ещё не скачаны</strong><p>Запустите обработку на вкладке «Обзор и анализ». После загрузки документы появятся здесь автоматически.</p><a class="btn primary" href="/tenders/{{ tender.tender_id }}">Перейти к обработке</a></div>
+      {% endif %}
+    </section>
+    {% endif %}
+  </main>
+
+  <aside class="source-preview-drawer" id="sourcePreviewDrawer" hidden aria-labelledby="sourcePreviewTitle">
+    <button class="source-preview-backdrop" type="button" data-source-preview-close aria-label="Закрыть просмотр"></button>
+    <section class="source-preview-panel" role="dialog" aria-modal="true">
+      <header>
+        <div><small>Что AutoBot увидел на странице</small><h2 id="sourcePreviewTitle">Источник цены</h2></div>
+        <button class="source-preview-close" type="button" data-source-preview-close aria-label="Закрыть">×</button>
+      </header>
+      <div class="source-preview-body">
+        <div class="source-preview-price"><small id="sourcePreviewBasis">Цена источника</small><strong id="sourcePreviewPrice">—</strong><span id="sourcePreviewCompare"></span></div>
+        <div class="source-preview-meta" id="sourcePreviewMeta"></div>
+        <div class="source-preview-check"><small>Результат проверки</small><strong id="sourcePreviewRatio">—</strong><p id="sourcePreviewReason"></p></div>
+        <div class="source-preview-evidence"><small>Фрагмент страницы с доказательством</small><blockquote id="sourcePreviewEvidence">Нет сохранённого фрагмента.</blockquote></div>
+      </div>
+      <footer><a class="btn secondary" id="sourcePreviewAudit" href="#" target="_blank" rel="noopener noreferrer" hidden>Аудиторский снимок</a><a class="btn primary" id="sourcePreviewOpen" href="#" target="_blank" rel="noopener noreferrer">Открыть оригинал ↗</a></footer>
+    </section>
+  </aside>
+
+  <script>
+    const TENDER_ID = {{ tender.tender_id|tojson }};
+    const marketButton = document.getElementById("runMarketBtn");
+    const marketSampleButton = document.getElementById("runMarketSampleBtn");
+    const avitoSafeCard = document.getElementById("avitoSafeCard");
+    const avitoSafeButton = document.getElementById("runAvitoSafeBtn");
+    const avitoSafeTitle = document.getElementById("avitoSafeTitle");
+    const avitoSafeStatus = document.getElementById("avitoSafeStatus");
+    const queueAgentMarketButton = document.getElementById("queueAgentMarketBtn");
+    const agentMarketNote = document.getElementById("agentMarketNote");
+    const agentMarketJobs = document.getElementById("agentMarketJobs");
+    const crmButton = document.getElementById("addTenderToCrmBtn");
+    const runStatus = document.getElementById("runStatus");
+    const runProgress = document.getElementById("runProgress");
+    const runProgressFill = document.getElementById("runProgressFill");
+    const runLogText = document.getElementById("runLogText");
+    let activeBucket = "all";
+    let wasRunning = false;
+    let runPendingUntil = 0;
+    let marketBusy = false;
+    let avitoBlocked = true;
+
+    function formatRemaining(seconds) {
+      const totalMinutes = Math.max(1, Math.ceil(Number(seconds || 0) / 60));
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      if (hours && minutes) return hours + " ч " + minutes + " мин";
+      if (hours) return hours + " ч";
+      return minutes + " мин";
+    }
+
+    async function refreshAvitoStatus() {
+      if (!avitoSafeButton) return;
+      try {
+        const response = await fetch("/api/avito-status?t=" + Date.now(), { cache: "no-store" });
+        const state = await response.json().catch(function() { return {}; });
+        if (!response.ok || !state.ok) throw new Error(state.message || ("HTTP " + response.status));
+        avitoBlocked = !!state.blocked;
+        avitoSafeCard?.classList.remove("is-loading", "is-paused", "is-ready");
+        if (avitoBlocked) {
+          avitoSafeCard?.classList.add("is-paused");
+          const until = state.blocked_until ? new Date(Number(state.blocked_until) * 1000) : null;
+          const untilText = until && !Number.isNaN(until.getTime())
+            ? until.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+            : "позже";
+          if (avitoSafeTitle) avitoSafeTitle.textContent = "Пауза действует до " + untilText;
+          if (avitoSafeStatus) avitoSafeStatus.textContent = (state.reason || "Авито ограничил доступ") + ". Осталось примерно " + formatRemaining(state.remaining_seconds) + ".";
+          avitoSafeButton.disabled = true;
+          avitoSafeButton.textContent = "Пауза до " + (until ? until.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "позже");
+        } else {
+          avitoSafeCard?.classList.add("is-ready");
+          if (avitoSafeTitle) avitoSafeTitle.textContent = "Можно сделать контрольный сбор";
+          if (avitoSafeStatus) avitoSafeStatus.textContent = state.profile_ready
+            ? "Сохранённый профиль браузера готов. Хорошие цены из других источников останутся на месте."
+            : "Профиль браузера создастся при первом запуске. Хорошие цены из других источников останутся на месте.";
+          avitoSafeButton.disabled = marketBusy;
+          avitoSafeButton.textContent = marketBusy ? "Дождитесь текущего анализа" : "Собрать Авито по 2 позициям";
+        }
+      } catch (error) {
+        avitoBlocked = true;
+        avitoSafeCard?.classList.remove("is-ready");
+        avitoSafeCard?.classList.add("is-paused");
+        if (avitoSafeTitle) avitoSafeTitle.textContent = "Не удалось проверить локальную паузу";
+        if (avitoSafeStatus) avitoSafeStatus.textContent = error.message || String(error);
+        avitoSafeButton.disabled = true;
+        avitoSafeButton.textContent = "Статус недоступен";
+      }
+    }
+
+    function filterRows() {
+      const query = (document.getElementById("positionSearch")?.value || "").trim().toLocaleLowerCase("ru");
+      let shown = 0;
+      document.querySelectorAll("[data-position-row]").forEach(function(row) {
+        const bucketOk = activeBucket === "all"
+          || (activeBucket === "processed" && row.dataset.marketProcessed === "1")
+          || (activeBucket === "verified" && row.dataset.marketVerified === "1")
+          || row.dataset.bucket === activeBucket;
+        const queryOk = !query || (row.dataset.search || "").includes(query);
+        row.hidden = !(bucketOk && queryOk);
+        if (!row.hidden) shown += 1;
+      });
+      document.querySelectorAll("[data-section-row]").forEach(function(sectionRow) {
+        const sectionKey = sectionRow.dataset.sectionKey || "";
+        const hasVisibleRows = Array.from(document.querySelectorAll("[data-position-row]")).some(function(row) {
+          return row.dataset.sectionKey === sectionKey && !row.hidden;
+        });
+        sectionRow.hidden = !hasVisibleRows;
+      });
+      document.querySelectorAll("[data-file-row]").forEach(function(fileRow) {
+        const fileKey = fileRow.dataset.fileKey || "";
+        const hasVisibleRows = Array.from(document.querySelectorAll("[data-position-row]")).some(function(row) {
+          return row.dataset.fileKey === fileKey && !row.hidden;
+        });
+        fileRow.hidden = !hasVisibleRows;
+      });
+      const count = document.getElementById("shownCount");
+      if (count) count.textContent = String(shown);
+      const empty = document.getElementById("noPositionResults");
+      if (empty) empty.hidden = shown !== 0;
+    }
+
+    document.querySelectorAll("[data-bucket-filter]").forEach(function(button) {
+      button.addEventListener("click", function() {
+        activeBucket = button.dataset.bucketFilter || "all";
+        document.querySelectorAll("[data-bucket-filter]").forEach(function(item) {
+          const isActive = item === button;
+          item.classList.toggle("is-active", isActive);
+          item.setAttribute("aria-pressed", isActive ? "true" : "false");
+        });
+        filterRows();
+      });
+    });
+    document.getElementById("positionSearch")?.addEventListener("input", filterRows);
+
+    function selectedAgentKeys() {
+      return Array.from(document.querySelectorAll("[data-agent-position]:checked")).map(function(input) { return input.value; });
+    }
+
+    function escapeHtml(value) {
+      const node = document.createElement("div");
+      node.textContent = String(value || "");
+      return node.innerHTML;
+    }
+
+    function refreshAgentSelection() {
+      const count = selectedAgentKeys().length;
+      const countNode = document.getElementById("agentSelectedCount");
+      if (countNode) countNode.textContent = String(count);
+      if (queueAgentMarketButton) {
+        queueAgentMarketButton.disabled = count === 0;
+        queueAgentMarketButton.textContent = count ? "Отправить агенту · " + count : "Отправить агенту";
+      }
+    }
+
+    document.querySelectorAll("[data-agent-position]").forEach(function(input) {
+      input.addEventListener("change", refreshAgentSelection);
+    });
+    document.getElementById("selectVisibleAgentRows")?.addEventListener("click", function() {
+      let selected = 0;
+      document.querySelectorAll("[data-position-row]").forEach(function(row) {
+        const input = row.querySelector("[data-agent-position]");
+        if (!row.hidden && input && selected < 20) {
+          input.checked = true;
+          selected += 1;
+        }
+      });
+      refreshAgentSelection();
+    });
+    document.getElementById("clearAgentRows")?.addEventListener("click", function() {
+      document.querySelectorAll("[data-agent-position]").forEach(function(input) { input.checked = false; });
+      refreshAgentSelection();
+    });
+
+    const agentStatusLabels = { queued: "В очереди", leased: "Ищет на Mac", completed: "Получено", failed: "Ошибка", canceled: "Отменено" };
+
+    async function refreshAgentJobs() {
+      if (!document.getElementById("agentMarketCard")) return;
+      try {
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs?t=" + Date.now(), { cache: "no-store" });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        const summary = data.summary || {};
+        [["agentQueuedCount", "queued"], ["agentLeasedCount", "leased"], ["agentCompletedCount", "completed"], ["agentFailedCount", "failed"]].forEach(function(pair) {
+          const node = document.getElementById(pair[0]);
+          if (node) node.textContent = String(summary[pair[1]] || 0);
+        });
+        if (agentMarketNote) {
+          agentMarketNote.textContent = data.enabled
+            ? "Очередь готова. Mac mini заберёт задания при следующем опросе. Полученные цены появятся здесь как кандидаты."
+            : "Очередь работает, но для подключения Mac нужно задать MARKET_AGENT_TOKEN в AutoBot.";
+          agentMarketNote.classList.toggle("is-warning", !data.enabled);
+        }
+        const jobs = (data.jobs || []).slice(0, 8);
+        if (agentMarketJobs) {
+          agentMarketJobs.hidden = jobs.length === 0;
+          agentMarketJobs.innerHTML = jobs.map(function(job) {
+            const status = agentStatusLabels[job.status] || job.status;
+            const detail = job.status === "completed" ? "Предложений: " + Number(job.offers_found || 0) : (job.error || "Ожидает обработки");
+            return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong>' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+          }).join("");
+        }
+      } catch (error) {
+        if (agentMarketNote) {
+          agentMarketNote.textContent = "Не удалось прочитать очередь: " + (error.message || error);
+          agentMarketNote.classList.add("is-warning");
+        }
+      }
+    }
+
+    queueAgentMarketButton?.addEventListener("click", async function() {
+      const keys = selectedAgentKeys();
+      if (!keys.length) return;
+      queueAgentMarketButton.disabled = true;
+      queueAgentMarketButton.textContent = "Ставлю в очередь…";
+      try {
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ position_keys: keys, limit: 50 }),
+        });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        document.querySelectorAll("[data-agent-position]:checked").forEach(function(input) { input.checked = false; });
+        refreshAgentSelection();
+        if (agentMarketNote) agentMarketNote.textContent = "Добавлено заданий: " + data.created + (data.skipped_active ? ". Уже были в очереди: " + data.skipped_active : "") + ".";
+        await refreshAgentJobs();
+      } catch (error) {
+        if (agentMarketNote) {
+          agentMarketNote.textContent = "Не удалось создать задания: " + (error.message || error);
+          agentMarketNote.classList.add("is-warning");
+        }
+      } finally {
+        refreshAgentSelection();
+      }
+    });
+
+    function filterSourceFiles() {
+      const query = (document.getElementById("sourceFileSearch")?.value || "").trim().toLocaleLowerCase("ru");
+      const kind = document.getElementById("sourceFileKind")?.value || "all";
+      let shown = 0;
+      document.querySelectorAll("[data-source-file]").forEach(function(row) {
+        const kindOk = kind === "all" || row.dataset.kind === kind;
+        const queryOk = !query || (row.dataset.search || "").includes(query);
+        row.hidden = !(kindOk && queryOk);
+        if (!row.hidden) shown += 1;
+      });
+      const count = document.getElementById("sourceFileCount");
+      if (count) count.textContent = "Показано: " + shown;
+      const empty = document.getElementById("noSourceFileResults");
+      if (empty) empty.hidden = shown !== 0;
+    }
+
+    document.getElementById("sourceFileSearch")?.addEventListener("input", filterSourceFiles);
+    document.getElementById("sourceFileKind")?.addEventListener("change", filterSourceFiles);
+
+    async function postRun(resetMarket, sampleRows) {
+      if (marketButton) { marketButton.disabled = true; marketButton.textContent = "Запускаю…"; }
+      if (marketSampleButton) { marketSampleButton.disabled = true; marketSampleButton.textContent = "Запускаю 10…"; }
+      if (runStatus) runStatus.textContent = "Передаю задачу AutoBot…";
+      const endpoint = sampleRows ? "/api/generate-merge-site-one-sample-market" : (resetMarket ? "/api/generate-merge-site-one-rerun-market" : "/api/generate-merge-site-one");
+      try {
+        const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tender_id: TENDER_ID, sample_rows: sampleRows || 0 }) });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        wasRunning = true;
+        runPendingUntil = Date.now() + 10000;
+        if (runProgress) runProgress.hidden = false;
+        if (runStatus) runStatus.textContent = "Анализ запущен";
+        pollStatus();
+      } catch (error) {
+        if (marketButton) { marketButton.disabled = false; marketButton.textContent = "Попробовать ещё раз"; }
+        if (marketSampleButton) { marketSampleButton.disabled = false; marketSampleButton.textContent = "Проверить 10 позиций"; }
+        if (runStatus) runStatus.textContent = "Не удалось запустить: " + (error.message || error);
+      }
+    }
+
+    marketButton?.addEventListener("click", function() { postRun(marketButton.dataset.resetMarket === "1", 0); });
+    marketSampleButton?.addEventListener("click", function() { postRun(false, 10); });
+    document.getElementById("runEmptyTender")?.addEventListener("click", function() { postRun(false, 0); });
+    avitoSafeButton?.addEventListener("click", async function() {
+      avitoSafeButton.disabled = true;
+      avitoSafeButton.textContent = "Запускаю бережный сбор…";
+      if (avitoSafeTitle) avitoSafeTitle.textContent = "Передаю до 2 позиций AutoBot";
+      if (avitoSafeStatus) avitoSafeStatus.textContent = "Будут выбраны только уникальные позиции без подтверждённой цены.";
+      try {
+        const response = await fetch("/api/generate-avito-safe-sample", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ tender_id: TENDER_ID, sample_rows: 2 }),
+        });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        wasRunning = true;
+        runPendingUntil = Date.now() + 10000;
+        marketBusy = true;
+        if (runProgress) runProgress.hidden = false;
+        if (runStatus) runStatus.textContent = "Авито: бережный сбор запущен";
+        if (avitoSafeTitle) avitoSafeTitle.textContent = "Сбор запущен";
+        if (avitoSafeStatus) avitoSafeStatus.textContent = "Если Авито снова покажет ограничение, AutoBot остановится после первой такой страницы.";
+        pollStatus();
+      } catch (error) {
+        if (avitoSafeStatus) avitoSafeStatus.textContent = error.message || String(error);
+        await refreshAvitoStatus();
+      }
+    });
+
+    const sourceDrawer = document.getElementById("sourcePreviewDrawer");
+    function closeSourcePreview() {
+      if (!sourceDrawer) return;
+      sourceDrawer.classList.remove("is-open");
+      window.setTimeout(function() { sourceDrawer.hidden = true; }, 180);
+    }
+    document.querySelectorAll("[data-source-preview]").forEach(function(button) {
+      button.addEventListener("click", function() {
+        if (!sourceDrawer) return;
+        document.getElementById("sourcePreviewTitle").textContent = button.dataset.sourceTitle || "Источник цены";
+        document.getElementById("sourcePreviewPrice").textContent = button.dataset.sourcePrice || "—";
+        document.getElementById("sourcePreviewBasis").textContent = button.dataset.sourcePriceBasis || "Цена источника";
+        document.getElementById("sourcePreviewCompare").textContent = button.dataset.sourceComparisonPrice && button.dataset.sourceComparisonPrice !== button.dataset.sourcePrice ? ("В единице сметы: " + button.dataset.sourceComparisonPrice) : "";
+        document.getElementById("sourcePreviewRatio").textContent = button.dataset.sourceRatio && button.dataset.sourceRatio !== "—" ? (button.dataset.sourceRatio + " к смете") : "Сравнение недоступно";
+        document.getElementById("sourcePreviewReason").textContent = button.dataset.sourceReason || "";
+        document.getElementById("sourcePreviewEvidence").textContent = button.dataset.sourceEvidence || "Нет сохранённого фрагмента страницы.";
+        document.getElementById("sourcePreviewMeta").textContent = [button.dataset.sourceLocation, button.dataset.sourcePublished].filter(Boolean).join(" · ");
+        document.getElementById("sourcePreviewOpen").href = button.dataset.sourceUrl || "#";
+        const auditLink = document.getElementById("sourcePreviewAudit");
+        if (auditLink) {
+          auditLink.hidden = !button.dataset.sourceAudit;
+          auditLink.href = button.dataset.sourceAudit ? ("/market-audit?record=" + encodeURIComponent(button.dataset.sourceAudit)) : "#";
+        }
+        sourceDrawer.hidden = false;
+        window.requestAnimationFrame(function() { sourceDrawer.classList.add("is-open"); });
+      });
+    });
+    document.querySelectorAll("[data-source-preview-close]").forEach(function(button) { button.addEventListener("click", closeSourcePreview); });
+    document.addEventListener("keydown", function(event) { if (event.key === "Escape") closeSourcePreview(); });
+
+    function navigateCrmProject(url) {
+      if (!url) return;
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "pmbi:navigate", href: url }, "*");
+          return;
+        }
+      } catch (error) {}
+      window.location.href = url;
+    }
+
+    async function chooseCrmProject() {
+      const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+      const data = await response.json().catch(function() { return {}; });
+      if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+      const projects = Array.isArray(data.projects) ? data.projects : [];
+      if (!projects.length) return { cancelled: false, projectId: null };
+      const lines = projects.slice(0, 30).map(function(project) {
+        return "#" + project.id + " — " + (project.title || "Без названия") + (project.contract_no ? " (" + project.contract_no + ")" : "");
+      });
+      const answer = window.prompt(
+        "Введите номер объекта, куда добавить все файлы смет тендера.\nОставьте поле пустым, чтобы создать новый объект.\n\n" + lines.join("\n"),
+        ""
+      );
+      if (answer === null) return { cancelled: true, projectId: null };
+      const value = answer.trim().replace(/^#/, "");
+      if (!value) return { cancelled: false, projectId: null };
+      if (!/^\d+$/.test(value) || !projects.some(function(project) { return String(project.id) === value; })) {
+        throw new Error("Объект с таким номером не найден в доступном списке.");
+      }
+      return { cancelled: false, projectId: Number(value) };
+    }
+
+    crmButton?.addEventListener("click", async function() {
+      const originalText = crmButton.textContent;
+      crmButton.disabled = true;
+      crmButton.textContent = "Загружаю объекты…";
+      try {
+        const choice = await chooseCrmProject();
+        if (choice.cancelled) return;
+        crmButton.textContent = choice.projectId ? "Добавляю сметы…" : "Создаю объект…";
+        const response = await fetch("/api/export-to-crm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ tender_id: TENDER_ID, project_id: choice.projectId }),
+        });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        crmButton.textContent = "Готово";
+        navigateCrmProject(data.project_url);
+      } catch (error) {
+        window.alert("Не удалось добавить сметы в объект: " + (error.message || error));
+      } finally {
+        crmButton.disabled = false;
+        crmButton.textContent = originalText;
+      }
+    });
+
+    async function pollStatus() {
+      try {
+        const response = await fetch("/api/merge-site-status?t=" + Date.now(), { cache: "no-store" });
+        if (!response.ok) return;
+        const state = await response.json();
+        const wasBusy = marketBusy;
+        marketBusy = !!state.running;
+        const current = state.running && state.current_tid === TENDER_ID;
+        const percent = current ? Number(state.market_percent || state.percent || 2) : 0;
+        if (current) {
+          wasRunning = true;
+          runPendingUntil = 0;
+          if (runProgress) runProgress.hidden = false;
+          if (runProgressFill) runProgressFill.style.width = Math.max(2, percent) + "%";
+          if (runStatus) runStatus.textContent = state.market_total ? ("Проверено строк: " + state.market_done + " из " + state.market_total) : "AutoBot подготавливает документы";
+          if (marketButton) { marketButton.disabled = true; marketButton.textContent = "Анализ выполняется"; }
+          if (marketSampleButton) { marketSampleButton.disabled = true; marketSampleButton.textContent = "Проверяю позиции"; }
+          if (avitoSafeButton) { avitoSafeButton.disabled = true; avitoSafeButton.textContent = "Сбор выполняется"; }
+        } else if (wasRunning && Date.now() >= runPendingUntil) {
+          if (runStatus) runStatus.textContent = state.error_ids?.length ? "Завершено с ошибкой" : "Готово. Обновляю карточку…";
+          window.setTimeout(function() { window.location.reload(); }, 1200);
+          return;
+        } else if (marketButton) {
+          marketButton.disabled = marketBusy;
+          if (marketSampleButton) { marketSampleButton.disabled = marketBusy; marketSampleButton.textContent = marketBusy ? "Дождитесь текущего анализа" : "Проверить 10 позиций"; }
+          if (marketBusy && avitoSafeButton) { avitoSafeButton.disabled = true; avitoSafeButton.textContent = "Дождитесь текущего анализа"; }
+          if (wasBusy && !marketBusy) refreshAvitoStatus();
+        }
+        const events = Array.isArray(state.chat_events) ? state.chat_events.filter(function(event) { return !event.tender_id || event.tender_id === TENDER_ID; }) : [];
+        const logs = events.slice(-30).map(function(event) { return (event.ts ? event.ts.replace("T", " ") + " · " : "") + (event.text || ""); });
+        if (runLogText && logs.length) runLogText.textContent = logs.join("\n");
+      } catch (error) {
+        if (runStatus && wasRunning) runStatus.textContent = "Не удалось получить прогресс. Повторяю…";
+      }
+    }
+    refreshAvitoStatus();
+    refreshAgentSelection();
+    refreshAgentJobs();
+    pollStatus();
+    window.setInterval(refreshAvitoStatus, 30000);
+    window.setInterval(refreshAgentJobs, 15000);
+    window.setInterval(pollStatus, 2500);
+  </script>
+</body>
+</html>

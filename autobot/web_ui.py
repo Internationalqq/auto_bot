@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from autobot.paths import REPO_ROOT
 import io
+import gzip
+import hmac
 import json
 import math
+import mimetypes
 import os
 import re
 import shutil
@@ -14,7 +17,7 @@ import time
 import traceback
 import threading
 import html as html_mod
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
@@ -42,6 +45,17 @@ from flask import (
 )
 
 from autobot.site_public_url import get_report_site_public_base
+from autobot.source_documents import (
+    build_source_bytes_preview,
+    build_source_file_preview,
+    format_file_size,
+    list_tender_source_files,
+    read_archive_member,
+    repair_filename,
+    resolve_tender_source_file,
+)
+from autobot.tender_detail import build_tender_detail
+from autobot.tender_deletion import delete_tender_data
 from autobot.workflow_overview import build_storage_overview, build_workflow_payload
 
 _AUTOBOT_MAIN_FILE = REPO_ROOT / "autobot" / "main.py"
@@ -114,6 +128,111 @@ estimate_upload_jobs: dict[str, dict] = {}
 estimate_upload_lock = threading.Lock()
 estimate_market_jobs: dict[str, dict] = {}
 estimate_market_lock = threading.Lock()
+tender_delete_lock = threading.Lock()
+agent_market_import_lock = threading.Lock()
+
+
+def _agent_market_token() -> str:
+    from autobot.agent_market_queue import get_or_create_worker_token
+
+    try:
+        return get_or_create_worker_token()
+    except OSError:
+        return ""
+
+
+def _agent_market_authorized() -> bool:
+    expected = _agent_market_token()
+    if not expected:
+        return False
+    authorization = str(request.headers.get("Authorization") or "").strip()
+    supplied = authorization[7:].strip() if authorization.casefold().startswith("bearer ") else ""
+    if not supplied:
+        supplied = str(request.headers.get("X-AutoBot-Agent-Token") or "").strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
+def _require_agent_market_token():
+    if not _agent_market_token():
+        return jsonify({"ok": False, "message": "MARKET_AGENT_TOKEN не настроен в AutoBot"}), 503
+    if not _agent_market_authorized():
+        return jsonify({"ok": False, "message": "Неверный токен агента"}), 401
+    return None
+
+
+def _agent_offer_url(value: object) -> str:
+    raw = html_mod.unescape(str(value or "")).strip()
+    match = re.search(r"https?://[^\s<>\]\[\)\}\"']+", raw, flags=re.IGNORECASE)
+    url = (match.group(0) if match else raw).rstrip(".,;:")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        return ""
+    return url[:2000]
+
+
+def _agent_offer_price(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+    else:
+        raw = str(value or "").replace("\xa0", " ").replace("\u202f", " ")
+        match = re.search(r"\d[\d\s]*(?:[,.]\d{1,2})?", raw)
+        if not match:
+            return None
+        normalized = match.group(0).replace(" ", "").replace(",", ".")
+        try:
+            number = float(normalized)
+        except ValueError:
+            return None
+    return number if math.isfinite(number) and 1 <= number <= 500_000_000 else None
+
+
+def _validate_agent_market_result(result: object, expected_position_key: str) -> dict:
+    if not isinstance(result, dict):
+        raise ValueError("Результат должен быть JSON-объектом")
+    returned_key = str(result.get("position_key") or expected_position_key).strip()
+    if returned_key != expected_position_key:
+        raise ValueError("Агент вернул результат для другой позиции")
+    offers: list[dict] = []
+    seen_urls: set[str] = set()
+    for raw_offer in list(result.get("offers") or [])[:20]:
+        if not isinstance(raw_offer, dict):
+            continue
+        currency = str(raw_offer.get("currency") or "RUB").strip().upper()
+        if currency not in {"RUB", "RUR", "₽", "РУБ", "РУБ."}:
+            continue
+        price = _agent_offer_price(raw_offer.get("price"))
+        url = _agent_offer_url(raw_offer.get("url"))
+        if price is None or not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        try:
+            confidence = float(raw_offer.get("confidence") or 0.45)
+        except (TypeError, ValueError):
+            confidence = 0.45
+        offers.append(
+            {
+                "title": re.sub(r"\s+", " ", str(raw_offer.get("title") or "Источник цены")).strip()[:500],
+                "price": price,
+                "currency": "RUB",
+                "unit": re.sub(r"\s+", " ", str(raw_offer.get("unit") or "")).strip()[:80],
+                "url": url,
+                "evidence": str(raw_offer.get("evidence") or raw_offer.get("snippet") or "").strip()[:1600],
+                "observed_at": str(raw_offer.get("observed_at") or "").strip()[:80],
+                "published_at": str(raw_offer.get("published_at") or "").strip()[:120],
+                "location": re.sub(r"\s+", " ", str(raw_offer.get("location") or "")).strip()[:250],
+                "price_scope": re.sub(r"\s+", " ", str(raw_offer.get("price_scope") or "")).strip()[:120],
+                "confidence": max(0.0, min(1.0, confidence)),
+            }
+        )
+        if len(offers) >= 10:
+            break
+    return {
+        "schema_version": 1,
+        "position_key": expected_position_key,
+        "offers": offers,
+        "notes": str(result.get("notes") or "").strip()[:2000],
+        "observed_at": str(result.get("observed_at") or "").strip()[:80],
+    }
 
 
 def _telegram_cfg() -> tuple[str, str] | None:
@@ -3000,6 +3119,7 @@ def _float_or_none(value) -> float | None:
 
 def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
     from autobot.market_analytics import COL_DUP, COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
+    from autobot.market_strategy import build_search_plan
 
     tid = (tender_id or "").strip()
     if not tid:
@@ -3020,8 +3140,10 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
         max_rows = 2000
     max_rows = max(1, min(max_rows, 10000))
 
+    meta = load_tender_metadata().get(tid, {}) or {}
+    region = str(meta.get("region") or "").strip()
     materials: list[dict] = []
-    for _, row in df.iterrows():
+    for row_index, (_, row) in enumerate(df.iterrows(), start=1):
         if COL_DUP in df.columns and str(row.get(COL_DUP, "")).strip().casefold() in {"да", "yes", "true", "1"}:
             continue
         title = str(row.get(COL_NAME, "") or "").strip()
@@ -3032,8 +3154,24 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
         total = _float_or_none(row.get(COL_SUM))
         if qty is None or qty <= 0:
             qty = 1.0
-        if unit_price is None or unit_price < 0:
+        if unit_price is None or (unit_price <= 0 and total is not None and total > 0):
             unit_price = (total / qty) if total is not None and qty > 0 else 0.0
+        source_file = str(row.get("Файл ЛСР", "") or "").strip()
+        if source_file.casefold() in {"nan", "none"}:
+            source_file = ""
+        file_name = Path(source_file).name if source_file else f"Смета тендера {tid}.xlsx"
+        estimate_title = Path(file_name).stem or f"Смета тендера {tid}"
+        section = _normalize_section_title(str(row.get("Раздел", "") or ""))
+        basis_code = str(
+            row.get("basis_code", "")
+            or row.get("Шифр расценки", "")
+            or row.get("Код", "")
+            or ""
+        ).strip()
+        plan = build_search_plan(title, row.get(COL_UNIT, ""), basis_code, section, region)
+        item_kind = plan.position.slug
+        if item_kind not in {"work", "material", "service", "product", "other"}:
+            item_kind = "other"
         notes = [f"Тендер: {tid}"]
         item_no = str(row.get(COL_ITEM, "") or "").strip()
         if item_no:
@@ -3044,8 +3182,20 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
             {
                 "title": title[:500],
                 "unit": str(row.get(COL_UNIT, "") or "").strip() or "шт",
-                "planned_qty": max(0.01, float(qty)),
+                "planned_qty": max(0.000001, float(qty)),
                 "planned_price": max(0.0, float(unit_price or 0)),
+                "planned_total": max(0.0, float(total or (qty * (unit_price or 0)))),
+                "article": basis_code,
+                "code": basis_code,
+                "basis_code": basis_code,
+                "item_kind": item_kind,
+                "type": item_kind,
+                "type_label": plan.position.label,
+                "section_title": section or None,
+                "section": section or "",
+                "estimate_file_name": file_name,
+                "estimate_title": estimate_title,
+                "source_item_key": f"{item_no or row_index}:{basis_code}:{title[:160]}",
                 "notes": "; ".join(notes),
             }
         )
@@ -3068,8 +3218,11 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         max_rows = 2000
     max_rows = max(1, min(max_rows, 10000))
 
+    meta = _load_estimate_meta(estimate_id) or {}
+    file_name = str(meta.get("original_filename") or f"Смета {estimate_id}.xlsx").strip()
+    estimate_title = str(meta.get("title") or Path(file_name).stem or f"Смета {estimate_id}").strip()
     materials: list[dict] = []
-    for row in rows:
+    for row_index, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
             continue
         title = str(row.get("name") or "").strip()
@@ -3080,21 +3233,21 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         total = _float_or_none(row.get("total"))
         if qty is None or qty <= 0:
             qty = 1.0
-        if unit_price is None or unit_price < 0:
+        if unit_price is None or (unit_price <= 0 and total is not None and total > 0):
             unit_price = (total / qty) if total is not None and qty > 0 else 0.0
-        notes = [f"?????: {estimate_id}"]
+        notes = [f"Смета: {estimate_id}"]
         item_no = str(row.get("item_no") or "").strip()
         if item_no:
-            notes.append(f"???????: {item_no}")
+            notes.append(f"Позиция: {item_no}")
         section = _normalize_section_title(str(row.get("section") or ""))
         if section:
-            notes.append(f"??????: {section}")
+            notes.append(f"Раздел: {section}")
         sheet = str(row.get("sheet") or "").strip()
         if sheet:
-            notes.append(f"????: {sheet}")
+            notes.append(f"Лист: {sheet}")
         excel_row = row.get("excel_row")
         if excel_row not in (None, ""):
-            notes.append(f"?????? Excel: {excel_row}")
+            notes.append(f"Строка Excel: {excel_row}")
         basis_code = str(row.get("basis_code") or row.get("code") or row.get("article") or "").strip()
         if basis_code:
             notes.append(f"Код: {basis_code}")
@@ -3104,16 +3257,17 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         if code_type:
             type_key, type_label = code_type
         if type_label:
-            notes.append(f"???: {type_label}")
+            notes.append(f"Тип: {type_label}")
         if total is not None and total > 0:
-            notes.append(f"????? ?? ?????: {total:.2f} ???.")
+            notes.append(f"Сумма по смете: {total:.2f} руб.")
         item_kind = type_key if type_key in {"work", "material", "service", "product", "other"} else (type_label or "")
         materials.append(
             {
                 "title": title[:500],
-                "unit": str(row.get("unit") or "").strip() or "??",
-                "planned_qty": max(0.01, float(qty)),
+                "unit": str(row.get("unit") or "").strip() or "шт",
+                "planned_qty": max(0.000001, float(qty)),
                 "planned_price": max(0.0, float(unit_price or 0.0)),
+                "planned_total": max(0.0, float(total or (qty * (unit_price or 0.0)))),
                 "article": basis_code,
                 "code": basis_code,
                 "basis_code": basis_code,
@@ -3122,6 +3276,10 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
                 "type_label": type_label,
                 "section_title": section or None,
                 "section": section or "",
+                "estimate_file_name": file_name,
+                "estimate_title": estimate_title,
+                "source_external_id": estimate_id,
+                "source_item_key": f"{excel_row or item_no or row_index}:{basis_code}:{title[:160]}",
                 "notes": "; ".join(notes),
             }
         )
@@ -3240,148 +3398,178 @@ def _build_crm_project_payload(tender_id: str) -> tuple[dict, list[dict]]:
     return project, materials
 
 
-def export_tender_to_crm(tender_id: str) -> dict:
-    creds = _crm_credentials()
-    if not creds:
-        raise RuntimeError("В .env auto_bot нужно задать PMBI_CRM_LOGIN и PMBI_CRM_PASSWORD.")
-
+def export_tender_to_crm(tender_id: str, project_id: int | None = None) -> dict:
     project_payload, materials = _build_crm_project_payload(tender_id)
     base = _crm_base_url()
+    tid = str(tender_id or "").strip()
+    meta = load_tender_metadata().get(tid, {}) or {}
+    source_reference = eis_notice_url(tid, meta.get("url"))
 
     import requests
 
     with requests.Session() as session:
-        login_resp = session.post(
-            f"{base}/api/auth/login",
-            json={"login": creds[0], "password": creds[1]},
-            timeout=15,
+        _crm_login(session, base)
+        projects = _crm_projects(session, base)
+        requested_project_id = _requested_crm_project_id(project_id)
+        target = next((row for row in projects if row["id"] == requested_project_id), None) if requested_project_id else None
+        if requested_project_id and not target:
+            raise RuntimeError("Выбранный объект не найден или недоступен в CRM.")
+        if not target:
+            target = next((row for row in projects if row["contract_no"] == tid), None)
+
+        created_new = target is None
+        if created_new:
+            create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
+            if create_resp.status_code >= 400:
+                raise RuntimeError(f"CRM не создала объект: HTTP {create_resp.status_code} {create_resp.text[:300]}")
+            project = create_resp.json().get("project") or {}
+            target_project_id = int(project.get("id") or 0)
+            if target_project_id <= 0:
+                raise RuntimeError("CRM создала объект, но не вернула project.id.")
+        else:
+            target_project_id = int(target["id"])
+
+        import_result = _import_crm_estimate(
+            session,
+            base,
+            target_project_id,
+            materials,
+            {
+                "sourceType": "tender",
+                "sourceKey": f"tender:{tid}",
+                "externalId": tid,
+                "tenderId": tid,
+                "title": str(project_payload.get("title") or f"Сметы тендера {tid}"),
+                "sourceReference": source_reference,
+            },
+            source_label=f"Сметы тендера {tid}",
+            source_reference=source_reference,
         )
-        if login_resp.status_code >= 400:
-            raise RuntimeError(f"CRM не приняла логин: HTTP {login_resp.status_code}.")
 
-        existing_resp = session.get(f"{base}/api/projects", timeout=30)
-        if existing_resp.status_code < 400:
-            for row in existing_resp.json().get("projects") or []:
-                if str(row.get("contract_no") or row.get("contractNo") or "").strip() == tender_id:
-                    project_id = int(row.get("id") or 0)
-                    if project_id > 0:
-                        return {
-                            "project_id": project_id,
-                            "project_url": _crm_project_url(project_id, "materials"),
-                            "materials_sent": 0,
-                            "summary": {"materials": 0, "tasks": 0, "stages": 0},
-                            "already_exists": True,
-                        }
-
-        create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
-        if create_resp.status_code >= 400:
-            raise RuntimeError(f"CRM не создала объект: HTTP {create_resp.status_code} {create_resp.text[:300]}")
-        created = create_resp.json()
-        project = created.get("project") or {}
-        project_id = int(project.get("id") or 0)
-        if project_id <= 0:
-            raise RuntimeError("CRM создала объект, но не вернула project.id.")
-
-        bootstrap_payload = {
-            "replace_existing": False,
-            "materials": materials,
-            "tasks": [
-                {
-                    "title": "Проверить тендер и решение об участии",
-                    "description": f"Проверить условия закупки {tender_id}, смету, сроки и риски перед дальнейшей работой.",
-                    "priority": "high",
-                }
-            ],
-        }
-        bootstrap_summary = {"materials": 0, "tasks": 0, "stages": 0}
-        if materials or bootstrap_payload["tasks"]:
+        task_summary = {"tasks": 0, "stages": 0}
+        if created_new:
             boot_resp = session.post(
-                f"{base}/api/projects/{project_id}/bootstrap",
-                json=bootstrap_payload,
+                f"{base}/api/projects/{target_project_id}/bootstrap",
+                json={
+                    "replace_existing": False,
+                    "materials": [],
+                    "tasks": [
+                        {
+                            "title": "Проверить тендер и решение об участии",
+                            "description": f"Проверить условия закупки {tid}, сметы, сроки и риски перед дальнейшей работой.",
+                            "priority": "high",
+                        }
+                    ],
+                },
                 timeout=60,
             )
             if boot_resp.status_code >= 400:
-                raise RuntimeError(f"Объект создан, но импорт сметы не прошел: HTTP {boot_resp.status_code} {boot_resp.text[:300]}")
-            bootstrap_summary = (boot_resp.json().get("summary") or bootstrap_summary)
+                raise RuntimeError(f"Смета импортирована, но стартовая задача не создана: HTTP {boot_resp.status_code} {boot_resp.text[:300]}")
+            task_summary = boot_resp.json().get("summary") or task_summary
+
+        summary = {
+            "materials": len(import_result.get("items") or []),
+            "tasks": int(task_summary.get("tasks") or 0),
+            "stages": int(task_summary.get("stages") or 0),
+            "estimate_sources": int(import_result.get("estimateSources") or 0),
+        }
 
     return {
-        "project_id": project_id,
-        "project_url": _crm_project_url(project_id, "materials"),
-        "materials_sent": len(materials),
-        "summary": bootstrap_summary,
+        "project_id": target_project_id,
+        "project_url": _crm_project_url(target_project_id, "schedule"),
+        "materials_sent": int(import_result.get("imported") or len(materials)),
+        "summary": summary,
+        "already_exists": not created_new,
+        "added_to_existing": not created_new,
     }
 
 
-def export_estimate_to_crm(estimate_id: str, overrides: dict | None = None) -> dict:
-    creds = _crm_credentials()
-    if not creds:
-        raise RuntimeError("В .env auto_bot нужно задать PMBI_CRM_LOGIN и PMBI_CRM_PASSWORD.")
-
+def export_estimate_to_crm(
+    estimate_id: str,
+    overrides: dict | None = None,
+    project_id: int | None = None,
+) -> dict:
     project_payload, materials, prefill = _build_estimate_crm_project_payload(estimate_id, overrides=overrides)
     base = _crm_base_url()
+    source_reference = f"/estimates/{estimate_id}"
 
     import requests
 
     with requests.Session() as session:
-        login_resp = session.post(
-            f"{base}/api/auth/login",
-            json={"login": creds[0], "password": creds[1]},
-            timeout=15,
-        )
-        if login_resp.status_code >= 400:
-            raise RuntimeError(f"CRM не приняла логин: HTTP {login_resp.status_code}.")
-
-        existing_resp = session.get(f"{base}/api/projects", timeout=30)
+        _crm_login(session, base)
+        projects = _crm_projects(session, base)
+        requested_project_id = _requested_crm_project_id(project_id)
+        target = next((row for row in projects if row["id"] == requested_project_id), None) if requested_project_id else None
+        if requested_project_id and not target:
+            raise RuntimeError("Выбранный объект не найден или недоступен в CRM.")
         contract_no = str(project_payload.get("contract_no") or "").strip()
-        if contract_no and existing_resp.status_code < 400:
-            for row in existing_resp.json().get("projects") or []:
-                if str(row.get("contract_no") or row.get("contractNo") or "").strip() == contract_no:
-                    project_id = int(row.get("id") or 0)
-                    if project_id > 0:
-                        return {
-                            "project_id": project_id,
-                            "project_url": _crm_project_url(project_id, "materials"),
-                            "materials_sent": 0,
-                            "summary": {"materials": 0, "tasks": 0, "stages": 0},
-                            "already_exists": True,
-                        }
+        if not target and contract_no:
+            target = next((row for row in projects if row["contract_no"] == contract_no), None)
 
-        create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
-        if create_resp.status_code >= 400:
-            raise RuntimeError(f"CRM не создала объект: HTTP {create_resp.status_code} {create_resp.text[:300]}")
-        created = create_resp.json()
-        project = created.get("project") or {}
-        project_id = int(project.get("id") or 0)
-        if project_id <= 0:
-            raise RuntimeError("CRM создала объект, но не вернула project.id.")
+        created_new = target is None
+        if created_new:
+            create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
+            if create_resp.status_code >= 400:
+                raise RuntimeError(f"CRM не создала объект: HTTP {create_resp.status_code} {create_resp.text[:300]}")
+            project = create_resp.json().get("project") or {}
+            target_project_id = int(project.get("id") or 0)
+            if target_project_id <= 0:
+                raise RuntimeError("CRM создала объект, но не вернула project.id.")
+        else:
+            target_project_id = int(target["id"])
 
-        bootstrap_payload = {
-            "replace_existing": False,
-            "materials": materials,
-            "tasks": [
-                {
-                    "title": "Проверить смету и подготовить объект",
-                    "description": f"Проверить импортированную смету «{prefill.get('estimate_title') or estimate_id}», уточнить материалы, объёмы и план работ.",
-                    "priority": "high",
-                }
-            ],
-        }
-        bootstrap_summary = {"materials": 0, "tasks": 0, "stages": 0}
-        if materials or bootstrap_payload["tasks"]:
+        import_result = _import_crm_estimate(
+            session,
+            base,
+            target_project_id,
+            materials,
+            {
+                "sourceType": "estimate",
+                "sourceKey": str(estimate_id),
+                "externalId": str(estimate_id),
+                "title": str(prefill.get("estimate_title") or f"Смета {estimate_id}"),
+                "fileName": str(prefill.get("original_filename") or ""),
+                "sourceReference": source_reference,
+            },
+            source_label=str(prefill.get("estimate_title") or f"Смета {estimate_id}"),
+            source_reference=source_reference,
+        )
+
+        task_summary = {"tasks": 0, "stages": 0}
+        if created_new:
             boot_resp = session.post(
-                f"{base}/api/projects/{project_id}/bootstrap",
-                json=bootstrap_payload,
+                f"{base}/api/projects/{target_project_id}/bootstrap",
+                json={
+                    "replace_existing": False,
+                    "materials": [],
+                    "tasks": [
+                        {
+                            "title": "Проверить смету и подготовить объект",
+                            "description": f"Проверить импортированную смету «{prefill.get('estimate_title') or estimate_id}», уточнить материалы, объёмы и план работ.",
+                            "priority": "high",
+                        }
+                    ],
+                },
                 timeout=60,
             )
             if boot_resp.status_code >= 400:
-                raise RuntimeError(f"Объект создан, но импорт сметы не прошёл: HTTP {boot_resp.status_code} {boot_resp.text[:300]}")
-            bootstrap_summary = (boot_resp.json().get("summary") or bootstrap_summary)
+                raise RuntimeError(f"Смета импортирована, но стартовая задача не создана: HTTP {boot_resp.status_code} {boot_resp.text[:300]}")
+            task_summary = boot_resp.json().get("summary") or task_summary
+
+        summary = {
+            "materials": len(import_result.get("items") or []),
+            "tasks": int(task_summary.get("tasks") or 0),
+            "stages": int(task_summary.get("stages") or 0),
+            "estimate_sources": int(import_result.get("estimateSources") or 0),
+        }
 
     return {
-        "project_id": project_id,
-        "project_url": _crm_project_url(project_id, "materials"),
-        "materials_sent": len(materials),
-        "summary": bootstrap_summary,
+        "project_id": target_project_id,
+        "project_url": _crm_project_url(target_project_id, "schedule"),
+        "materials_sent": int(import_result.get("imported") or len(materials)),
+        "summary": summary,
+        "already_exists": not created_new,
+        "added_to_existing": not created_new,
     }
 
 
@@ -3559,6 +3747,34 @@ TENDERS_RUN_DETAILS = {
 }
 
 
+def _tender_object_name(raw_title: str, tender_id: str) -> str:
+    title = re.sub(r"\s+", " ", str(raw_title or "")).strip()
+    if not title:
+        return ""
+    remainder = title.replace(str(tender_id or ""), "")
+    remainder = re.sub(r"[№#\s.:;,_—–-]+", "", remainder).casefold()
+    if remainder in {"", "тендер", "закупка", "извещение", "документы"}:
+        return ""
+    return title
+
+
+def _tender_law_and_method(tender_id: str, url: str, law: str, method: str) -> tuple[str, str]:
+    tid = str(tender_id or "").strip()
+    href = str(url or "").casefold()
+    law_text = str(law or "").strip()
+    method_text = str(method or "").strip()
+    if not law_text:
+        law_text = "223-ФЗ" if len(tid) == 11 or "notice223" in href or "/223/" in href else "44-ФЗ"
+    if not method_text and law_text == "44-ФЗ":
+        route_methods = {
+            "/ea20/": "Электронный аукцион",
+            "/ok20/": "Открытый конкурс",
+            "/zk20/": "Запрос котировок",
+        }
+        method_text = next((label for marker, label in route_methods.items() if marker in href), "")
+    return law_text, method_text
+
+
 def _tenders_items() -> tuple[list[dict], dict[str, int]]:
     payload = build_workflow_payload(include_storage=False)
     meta_by_id = load_tender_metadata()
@@ -3567,18 +3783,36 @@ def _tenders_items() -> tuple[list[dict], dict[str, int]]:
         tid = str(item.get("tender_id") or "").strip()
         action = str(item.get("next_action") or "").strip() or "download_documents"
         meta_row = meta_by_id.get(tid, {}) or {}
-        title = str(item.get("title") or "").strip()
-        if not title or title.casefold() in {"документы", "извещение"}:
-            title = f"Закупка № {tid}"
+        raw_title = str(meta_row.get("title") or item.get("title") or "").strip()
+        object_name = _tender_object_name(raw_title, tid)
+        title = object_name or f"Закупка № {tid}"
         price_rub = _float_or_none(item.get("price_rub") if item.get("price_rub") is not None else meta_row.get("price_rub"))
+        eis_url = eis_notice_url(tid, meta_row.get("url"))
+        law, purchase_method = _tender_law_and_method(
+            tid,
+            eis_url,
+            str(meta_row.get("law") or ""),
+            str(meta_row.get("purchase_method") or ""),
+        )
+        eis_stage = str(item.get("stage") or meta_row.get("stage") or "").strip()
+        if eis_stage.casefold() in {"закупки", "этап", "этап закупки", "статус", "статус закупки"}:
+            eis_stage = ""
         item["title"] = title
+        item["object_name"] = object_name
+        item["customer_name"] = str(meta_row.get("customer_name") or "").strip()
+        item["updated_date"] = str(meta_row.get("updated_date") or "").strip()
+        item["law"] = law
+        item["purchase_method"] = purchase_method
+        item["law_method_label"] = " · ".join(x for x in (law, purchase_method) if x)
+        item["eis_stage"] = eis_stage
         item["status_label"] = TENDERS_STATUS_LABELS.get(action, item.get("next_action_label") or "Следующий шаг")
         item["status_detail"] = TENDERS_STATUS_DETAILS.get(action, "")
         item["status_class"] = TENDERS_STATUS_CLASS.get(action, "status-work")
         item["sort_weight"] = TENDERS_STATUS_ORDER.get(action, 50)
         item["price_fmt"] = _fmt_money(price_rub) if price_rub else "не указана"
-        item["eis_url"] = eis_notice_url(tid, meta_row.get("url"))
-        item["result_url"] = f"/merge-report/{tid}/"
+        item["price_value"] = float(price_rub or 0)
+        item["eis_url"] = eis_url
+        item["result_url"] = f"/tenders/{tid}"
         item["main_button_label"] = TENDERS_MAIN_ACTION_LABELS.get(action, item.get("next_action_label") or "Продолжить")
         item["main_run_title"] = TENDERS_RUN_TITLES.get(action, "Продолжаем закупку")
         item["main_run_detail"] = TENDERS_RUN_DETAILS.get(action, "Система выполнит следующий недостающий шаг.")
@@ -3617,25 +3851,52 @@ def dashboard_redirect():
 def _render_tenders_board():
     items, counts = _tenders_items()
     selected_action = (request.args.get("action") or "").strip()
-    if selected_action and selected_action != "all":
+    if selected_action == "needs_work":
+        visible_items = [x for x in items if str(x.get("next_action") or "") != "review"]
+    elif selected_action and selected_action != "all":
         visible_items = [x for x in items if str(x.get("next_action") or "") == selected_action]
     else:
         selected_action = "all"
         visible_items = items
     filters = [
         {"key": "all", "label": "Все", "count": len(items)},
+        {"key": "needs_work", "label": "В работе", "count": max(0, len(items) - int(counts.get("review", 0) or 0))},
         {"key": "download_documents", "label": "Документы", "count": counts.get("download_documents", 0)},
         {"key": "extract_estimate", "label": "Сметы", "count": counts.get("extract_estimate", 0)},
         {"key": "find_market_prices", "label": "Цены", "count": counts.get("find_market_prices", 0)},
         {"key": "build_comparison", "label": "Сравнения", "count": counts.get("build_comparison", 0)},
         {"key": "review", "label": "Готово", "count": counts.get("review", 0)},
     ]
+
+    def _filter_counts(key: str, empty_label: str = "") -> list[dict]:
+        values: dict[str, int] = {}
+        for row in visible_items:
+            raw = str(row.get(key) or "").strip()
+            value = raw or "__empty__"
+            values[value] = values.get(value, 0) + 1
+        result = []
+        for value, count in sorted(values.items(), key=lambda pair: (pair[0] == "__empty__", pair[0].casefold())):
+            result.append({
+                "value": value,
+                "label": empty_label if value == "__empty__" else value,
+                "count": count,
+            })
+        return result
+
+    law_filters = _filter_counts("law", "Закон не указан")
+    stage_filters = _filter_counts("eis_stage", "Статус не указан")
+    method_filters = _filter_counts("purchase_method", "Способ не указан")
+    region_filters = _filter_counts("region", "Регион не указан")
     return render_template(
         "tenders.html",
         items=visible_items,
         filters=filters,
         selected_action=selected_action,
         overview=_tenders_overview(items, counts),
+        law_filters=law_filters,
+        stage_filters=stage_filters,
+        method_filters=method_filters,
+        region_filters=region_filters,
     )
 
 
@@ -3863,6 +4124,263 @@ def index():
     return _render_tenders_board()
 
 
+@app.route("/tenders/<tender_id>")
+def tender_detail_page(tender_id: str):
+    tid = str(tender_id or "").strip()
+    if not re.fullmatch(r"\d{8,25}", tid):
+        abort(404)
+    metadata = load_tender_metadata()
+    meta = dict(metadata.get(tid) or {})
+    estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    if not meta and not estimate_path.is_file():
+        abort(404)
+
+    workflow_items, _ = _tenders_items()
+    workflow = next((dict(item) for item in workflow_items if str(item.get("tender_id") or "") == tid), {})
+    if not workflow:
+        eis_url = eis_notice_url(tid, meta.get("url"))
+        law, method = _tender_law_and_method(tid, eis_url, str(meta.get("law") or ""), str(meta.get("purchase_method") or ""))
+        workflow = {
+            "tender_id": tid,
+            "law": law,
+            "purchase_method": method,
+            "law_method_label": " · ".join(value for value in (law, method) if value),
+            "eis_url": eis_url,
+            "eis_stage": str(meta.get("stage") or "").strip(),
+            "status_label": "Проверить данные тендера",
+            "status_detail": "Продолжите обработку, чтобы получить смету и проверенные цены.",
+        }
+    tender = build_tender_detail(tid, meta, workflow)
+    active_tab = str(request.args.get("tab") or "overview").strip().casefold()
+    tender["active_tab"] = "files" if active_tab == "files" else "overview"
+    tender["documents"] = list_tender_source_files(tid)
+    response = make_response(render_template("tender_detail.html", tender=tender))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+@app.route("/market-audit")
+def market_audit_view():
+    """Read-only viewer for immutable market evidence captured during verification."""
+    record_value = str(request.args.get("record") or "").strip()
+    records_root = (REPO_ROOT / "data" / "market_index" / "audit" / "records").resolve()
+    try:
+        record_path = (REPO_ROOT / record_value).resolve()
+        if not record_path.is_relative_to(records_root) or record_path.suffix.casefold() != ".json":
+            abort(404)
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        abort(404)
+    if not isinstance(payload, dict):
+        abort(404)
+
+    snapshot_value = str(payload.get("snapshot_path") or "").strip()
+    snapshot_html = ""
+    if snapshot_value:
+        blobs_root = (REPO_ROOT / "data" / "market_index" / "audit" / "blobs").resolve()
+        try:
+            snapshot_path = (REPO_ROOT / snapshot_value).resolve()
+            if not snapshot_path.is_relative_to(blobs_root) or snapshot_path.suffix.casefold() != ".gz":
+                raise ValueError("invalid audit snapshot path")
+            with gzip.open(snapshot_path, "rt", encoding="utf-8", errors="replace") as stream:
+                snapshot_html = stream.read(400_000)
+        except (OSError, ValueError):
+            snapshot_html = ""
+    if str(request.args.get("download") or "") == "1" and snapshot_html:
+        response = make_response(
+            send_file(
+                io.BytesIO(snapshot_html.encode("utf-8")),
+                mimetype="text/html; charset=utf-8",
+                as_attachment=True,
+                download_name=f"market-source-{record_path.stem}.html",
+                max_age=0,
+            )
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    response = make_response(render_template_string(
+        """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Аудиторский снимок · AutoBot</title><style>
+        body{margin:0;background:#f4f7fb;color:#20334f;font:14px/1.5 Inter,Arial,sans-serif}.page{max-width:1180px;margin:auto;padding:28px}
+        header,.card{background:#fff;border:1px solid #dfe7f1;border-radius:14px;padding:20px;box-shadow:0 10px 30px rgba(38,59,88,.06)}
+        header{display:flex;justify-content:space-between;gap:20px;align-items:center}h1{margin:4px 0 0;font-size:22px}small{color:#71829a}
+        .actions{display:flex;gap:9px}.btn{padding:10px 14px;border-radius:9px;text-decoration:none;color:#fff;background:#1769d2;font-weight:700}.btn.alt{color:#31506f;background:#eef4fb}
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.grid div{background:#fff;border:1px solid #dfe7f1;border-radius:10px;padding:13px}.grid small,.grid b{display:block}
+        pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,Consolas,monospace;color:#344861}.card{max-height:68vh;overflow:auto}
+        @media(max-width:720px){header{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}.page{padding:14px}}
+        </style></head><body><main class="page"><header><div><small>AutoBot · доказательство цены</small><h1>{{ title }}</h1></div><div class="actions">{% if has_snapshot %}<a class="btn alt" href="?record={{ record|urlencode }}&download=1">Скачать HTML</a>{% endif %}<a class="btn" href="{{ url }}" target="_blank" rel="noopener noreferrer">Оригинал ↗</a></div></header>
+        <section class="grid"><div><small>Цена</small><b>{{ price }} ₽</b></div><div><small>Зафиксировано</small><b>{{ captured }}</b></div><div><small>SHA-256 снимка</small><b>{{ sha or 'нет HTML' }}</b></div></section>
+        <section class="card"><small>Сохранённый HTML-код страницы</small><pre>{{ snapshot if snapshot else 'HTML-снимок отсутствует; сохранены URL, время, цена и метаданные проверки.' }}</pre></section></main></body></html>""",
+        title=str(payload.get("title") or "Источник цены"),
+        price=payload.get("price") or "—",
+        captured=str(payload.get("captured_at") or payload.get("observed_at") or "—"),
+        sha=str(payload.get("snapshot_sha256") or ""),
+        url=str(payload.get("url") or "#"),
+        record=record_value,
+        snapshot=snapshot_html,
+        has_snapshot=bool(snapshot_html),
+    ))
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"
+    return response
+
+
+def _source_file_view_model(tender_id: str, token: str, path: Path) -> dict:
+    inventory = list_tender_source_files(tender_id)
+    item = next((dict(row) for row in inventory.get("files", []) if row.get("token") == token), None)
+    if item is not None:
+        return item
+    stat = path.stat()
+    return {
+        "token": token,
+        "name": repair_filename(path.name),
+        "extension": path.suffix.lstrip(".").upper() or "ФАЙЛ",
+        "kind": "other",
+        "type_label": "Файл",
+        "size_fmt": format_file_size(stat.st_size),
+        "updated": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
+    }
+
+
+@app.route("/tenders/<tender_id>/source-files/<token>/download")
+def tender_source_file_download(tender_id: str, token: str):
+    try:
+        path = resolve_tender_source_file(tender_id, token)
+    except (ValueError, FileNotFoundError, OSError):
+        abort(404)
+    file_model = _source_file_view_model(tender_id, token, path)
+    response = make_response(
+        send_file(
+            path,
+            as_attachment=True,
+            download_name=file_model["name"],
+            conditional=True,
+            max_age=0,
+        )
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/tenders/<tender_id>/source-files/<token>/preview")
+def tender_source_file_preview(tender_id: str, token: str):
+    try:
+        path = resolve_tender_source_file(tender_id, token)
+    except (ValueError, FileNotFoundError, OSError):
+        abort(404)
+    file_model = _source_file_view_model(tender_id, token, path)
+    extension = path.suffix.casefold()
+    if extension == ".pdf" or extension in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+        response = make_response(
+            send_file(
+                path,
+                mimetype=mimetypes.guess_type(path.name)[0],
+                as_attachment=False,
+                download_name=file_model["name"],
+                conditional=True,
+                max_age=0,
+            )
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data: blob:"
+        return response
+    try:
+        preview = build_source_file_preview(path)
+    except Exception as exc:
+        preview = {
+            "kind": "unavailable",
+            "message": f"Не удалось открыть предпросмотр ({type(exc).__name__}). Файл можно скачать без изменений.",
+        }
+    response = make_response(
+        render_template(
+            "source_file_preview.html",
+            tender_id=str(tender_id),
+            file=file_model,
+            preview=preview,
+            back_url=f"/tenders/{tender_id}?tab=files",
+            download_url=f"/tenders/{tender_id}/source-files/{token}/download",
+            archive_source_token=token,
+        )
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'self'"
+    return response
+
+
+@app.route("/tenders/<tender_id>/source-files/<token>/members/<member_token>/download")
+def tender_archive_member_download(tender_id: str, token: str, member_token: str):
+    try:
+        path = resolve_tender_source_file(tender_id, token)
+        member = read_archive_member(path, member_token)
+    except (ValueError, FileNotFoundError, OSError):
+        abort(404)
+    response = make_response(
+        send_file(
+            io.BytesIO(member["data"]),
+            mimetype=mimetypes.guess_type(member["name"])[0],
+            as_attachment=True,
+            download_name=member["name"],
+            conditional=True,
+            max_age=0,
+        )
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+@app.route("/tenders/<tender_id>/source-files/<token>/members/<member_token>/preview")
+def tender_archive_member_preview(tender_id: str, token: str, member_token: str):
+    try:
+        path = resolve_tender_source_file(tender_id, token)
+        member = read_archive_member(path, member_token)
+    except (ValueError, FileNotFoundError, OSError):
+        abort(404)
+
+    extension = Path(member["name"]).suffix.casefold()
+    download_url = f"/tenders/{tender_id}/source-files/{token}/members/{member_token}/download"
+    if extension == ".pdf" or extension in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+        response = make_response(
+            send_file(
+                io.BytesIO(member["data"]),
+                mimetype=mimetypes.guess_type(member["name"])[0],
+                as_attachment=False,
+                download_name=member["name"],
+                conditional=True,
+                max_age=0,
+            )
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data: blob:"
+        return response
+
+    try:
+        preview = build_source_bytes_preview(member["data"], member["name"], member["chain"])
+    except Exception as exc:
+        preview = {
+            "kind": "unavailable",
+            "message": f"Не удалось открыть предпросмотр ({type(exc).__name__}). Файл можно скачать без изменений.",
+        }
+    response = make_response(
+        render_template(
+            "source_file_preview.html",
+            tender_id=str(tender_id),
+            file=member,
+            preview=preview,
+            back_url=f"/tenders/{tender_id}/source-files/{token}/preview",
+            download_url=download_url,
+            archive_source_token=token,
+        )
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'self'"
+    return response
+
+
 @app.route("/tenders/old")
 def tenders_old():
     query = request.query_string.decode("utf-8", errors="ignore").strip()
@@ -3890,7 +4408,7 @@ USER_ESTIMATES_INDEX = USER_ESTIMATES_DIR / "index.json"
 
 
 def _estimate_upload_allowed(filename: str) -> bool:
-    return Path(filename or "").suffix.lower() in (".xlsx", ".xls", ".xlsm")
+    return Path(filename or "").suffix.lower() in (".xlsx", ".xls", ".xlsm", ".pdf")
 
 
 def _safe_upload_filename(filename: str) -> str:
@@ -3898,7 +4416,7 @@ def _safe_upload_filename(filename: str) -> str:
     stem = Path(raw).stem
     suffix = Path(raw).suffix.lower()
     stem = re.sub(r"[^0-9A-Za-zА-Яа-я_. -]+", "_", stem).strip(" ._")[:80] or "estimate"
-    if suffix not in (".xlsx", ".xls", ".xlsm"):
+    if suffix not in (".xlsx", ".xls", ".xlsm", ".pdf"):
         suffix = ".xlsx"
     return f"{stem}{suffix}"
 
@@ -4015,6 +4533,25 @@ def _position_type(name: str, unit: str = "", basis_code: str = "") -> tuple[str
     if code_type:
         return code_type
     text = f"{name} {unit}".casefold().replace("ё", "е")
+    forced_material_keys = (
+        "видеокамер",
+        "камера ip",
+        "камеры видеонаблюден",
+        "trassir",
+    )
+    forced_work_keys = (
+        "погруз",
+        "перевозк",
+        "автосамосвал",
+        "комплекс работ",
+        "обращен",
+        "строительных отход",
+        "строительными отход",
+    )
+    if any(k in text for k in forced_material_keys):
+        return "material", "Материал"
+    if any(k in text for k in forced_work_keys):
+        return "work", "Работа"
     material_keys = (
         "бетон", "раствор", "смесь", "цемент", "песок", "щебень", "грунт", "краска", "эмаль",
         "плитк", "кирпич", "труба", "кабель", "провод", "арматур", "битум", "мастик", "лист",
@@ -4032,13 +4569,13 @@ def _position_type(name: str, unit: str = "", basis_code: str = "") -> tuple[str
         "укладка", "изоляция", "испытание",
     )
     if any(k in text for k in service_keys):
-        return "service", "Услуга"
+        return "work", "Работа"
     if any(k in text for k in work_keys):
         return "work", "Работа"
     if any(k in text for k in material_keys):
         return "material", "Материал"
     if any(k in text for k in product_keys):
-        return "product", "Товар/изделие"
+        return "material", "Материал"
     return "other", "Другое"
 
 
@@ -4766,6 +5303,117 @@ def _research_queries_from_text(raw: str, *, limit: int = 8) -> list[str]:
     return out
 
 
+def _crm_login(session, base: str) -> None:
+    creds = _crm_credentials()
+    if not creds:
+        raise RuntimeError("В .env auto_bot нужно задать PMBI_CRM_LOGIN и PMBI_CRM_PASSWORD.")
+    response = session.post(
+        f"{base}/api/auth/login",
+        json={"login": creds[0], "password": creds[1]},
+        timeout=15,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"CRM не приняла логин: HTTP {response.status_code}.")
+
+
+def _crm_projects(session, base: str) -> list[dict]:
+    response = session.get(f"{base}/api/projects", timeout=30)
+    if response.status_code >= 400:
+        raise RuntimeError(f"CRM не вернула список объектов: HTTP {response.status_code}.")
+    rows = response.json().get("projects") or []
+    projects: list[dict] = []
+    for row in rows:
+        try:
+            project_id = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if project_id <= 0:
+            continue
+        projects.append(
+            {
+                "id": project_id,
+                "title": str(row.get("title") or f"Объект #{project_id}").strip(),
+                "contract_no": str(row.get("contract_no") or row.get("contractNo") or "").strip(),
+                "address": str(row.get("address") or "").strip(),
+            }
+        )
+    return projects
+
+
+def crm_projects_for_picker() -> list[dict]:
+    import requests
+
+    base = _crm_base_url()
+    with requests.Session() as session:
+        _crm_login(session, base)
+        return _crm_projects(session, base)
+
+
+def _requested_crm_project_id(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        project_id = int(value)
+    except (TypeError, ValueError):
+        raise RuntimeError("Некорректный объект CRM.")
+    if project_id <= 0:
+        raise RuntimeError("Некорректный объект CRM.")
+    return project_id
+
+
+def _import_crm_estimate(
+    session,
+    base: str,
+    project_id: int,
+    items: list[dict],
+    source: dict,
+    *,
+    source_label: str,
+    source_reference: str = "",
+) -> dict:
+    if not items:
+        raise RuntimeError("В смете нет подходящих строк для добавления в объект.")
+    response = session.post(
+        f"{base}/api/projects/{project_id}/estimate-import",
+        json={
+            "items": items,
+            "source": source,
+            "sourceLabel": source_label,
+            "sourceReference": source_reference,
+            "replace_source": True,
+        },
+        timeout=90,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"CRM не импортировала смету: HTTP {response.status_code} {response.text[:300]}")
+    return response.json()
+
+
+def _research_specs_from_text(raw: str, *, limit: int = 5) -> list[dict[str, str]]:
+    """Lines use `position | unit`; the unit is required for verified prices."""
+    specs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for line in str(raw or "").splitlines():
+        clean = re.sub(r"\s+", " ", line).strip(" \t,;")
+        if len(clean) < 2:
+            continue
+        name, sep, unit = clean.rpartition("|")
+        if not sep:
+            name, unit = clean, ""
+        name = name.strip(" ,;")
+        unit = unit.strip(" ,;")[:32]
+        if len(name) < 2:
+            continue
+        key = (name.casefold(), unit.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        specs.append({"query": name, "unit": unit})
+        if len(specs) >= limit:
+            break
+    return specs
+
+
 def _estimate_upload_progress_cb(job_id: str):
     def _cb(percent: int, stage: str, detail: str = "") -> None:
         with estimate_upload_lock:
@@ -4844,15 +5492,18 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
 def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str], selected_types: list[str] | None = None) -> None:
     try:
         from autobot.market_analytics import COL_NAME
+        from autobot.market_strategy import build_search_plan
         from autobot.merge_estimate_market import _norm_key
         from autobot.real_market_scraper import (
             AvitoBrowserFetcher,
             _build_output_row,
             _compact_query,
+            _dedupe_and_sort,
             _eligible_rows,
             _merge_rows,
             _processed_keys,
             _read_previous,
+            _verify_offers,
             search_market,
         )
 
@@ -4891,7 +5542,7 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
         max_results = max(1, min(10, int((os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5")))
         pause = max(0.0, float((os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4"))
         new_rows: list[dict] = []
-        with AvitoBrowserFetcher(enabled=use_browser and "avito" in sources, headless=browser_headless) as browser:
+        with AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless) as browser:
             for seq, (_, row) in enumerate(eligible, start=1):
                 with estimate_market_lock:
                     job = estimate_market_jobs.get(estimate_id)
@@ -4915,7 +5566,15 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
                 key = _norm_key(work_name)
                 if key in done_keys:
                     continue
-                query = _compact_query(work_name)
+                plan = build_search_plan(
+                    work_name,
+                    row.get("Ед. изм.", ""),
+                    row.get("basis_code", ""),
+                    row.get("Раздел", ""),
+                    city,
+                )
+                queries = list(plan.queries) or [_compact_query(work_name)]
+                query = " | ".join(queries)
                 _estimate_market_set(
                     estimate_id,
                     progress=max(4, min(96, int(round(((seq - 1) / max(1, total)) * 100)))),
@@ -4929,13 +5588,51 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
                     job = estimate_market_jobs.get(estimate_id)
                     if job:
                         _estimate_market_log_append(job, f"Поиск: {seq}/{total} · {work_name[:160]}")
-                offers, err = search_market(
-                    query,
-                    region=city,
-                    sources=active_sources,
-                    max_results=max_results,
-                    browser_fetcher=browser,
-                )
+                offers = []
+                error_parts: list[str] = []
+                if plan.can_auto_price:
+                    primary_sources = [source for source in active_sources if source != "avito"] or active_sources
+                    for planned_query in queries[:2]:
+                        found, found_error = search_market(
+                            planned_query,
+                            region="" if plan.queries else city,
+                            sources=primary_sources,
+                            max_results=max_results,
+                            browser_fetcher=browser,
+                        )
+                        checked = _verify_offers(
+                            row,
+                            found,
+                            plan,
+                            browser_fetcher=browser,
+                            reference_offers=offers,
+                        )
+                        offers = _dedupe_and_sort(offers + checked, max_results=max_results)
+                        if found_error:
+                            error_parts.append(found_error)
+                        if sum(1 for offer in offers if offer.verification == "verified") >= min(3, max_results):
+                            break
+                    if "avito" in active_sources and "web" in active_sources and not any(
+                        offer.verification == "verified" for offer in offers
+                    ):
+                        found, found_error = search_market(
+                            queries[0],
+                            region="" if plan.queries else city,
+                            sources=["avito"],
+                            max_results=max_results,
+                            browser_fetcher=browser,
+                        )
+                        checked = _verify_offers(
+                            row,
+                            found,
+                            plan,
+                            browser_fetcher=browser,
+                            reference_offers=offers,
+                        )
+                        offers = _dedupe_and_sort(offers + checked, max_results=max_results)
+                        if found_error:
+                            error_parts.append(found_error)
+                err = "; ".join(dict.fromkeys(error_parts))
                 err_low = str(err or "").casefold()
                 if "avito" in active_sources and ("ограничил доступ" in err_low or "ip/vpn" in err_low or "captcha" in err_low):
                     active_sources = [x for x in active_sources if x != "avito"]
@@ -4943,7 +5640,7 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
                         job = estimate_market_jobs.get(estimate_id)
                         if job:
                             _estimate_market_log_append(job, "Авито заблокировал доступ — продолжаю только по интернету")
-                new_rows.append(_build_output_row(row, offers=offers, query=query, err=err))
+                new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
                 merged_raw = _merge_rows(prev, new_rows)
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
                 merged_raw.to_excel(raw_path, index=False)
@@ -5074,7 +5771,7 @@ ESTIMATES_TEMPLATE = """
     <section class="panel">
       <h2 style="margin:0 0 10px;font-size:18px;">Загрузить Excel-смету</h2>
       <form id="estimateUploadForm" class="upload-row">
-        <input type="file" name="file" accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+        <input type="file" name="file" accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" required />
         <input type="text" name="title" placeholder="Название сметы (необязательно)" />
         <button class="btn" type="submit">Загрузить и распарсить</button>
       </form>
@@ -5224,7 +5921,7 @@ ESTIMATES_TEMPLATE = """
         logs.textContent = "";
         logs.hidden = true;
         status.textContent = "Начинаю загрузку файла…";
-        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю Excel на сервер", running: true, result_ok: false, log_tail: [] });
+        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю смету на сервер", running: true, result_ok: false, log_tail: [] });
         xhr.open("POST", "/api/estimates/upload");
         xhr.upload.addEventListener("progress", function(ev) {
           if (!ev.lengthComputable) return;
@@ -5307,6 +6004,20 @@ ESTIMATES_TEMPLATE = """
         const href = card.getAttribute("data-estimate-open") || "";
         if (!href) return;
         window.location.href = href;
+      });
+
+      const catalogSearch = document.getElementById("estimateCatalogSearch");
+      const catalogEmpty = document.getElementById("estimateCatalogEmpty");
+      catalogSearch?.addEventListener("input", function() {
+        const query = String(catalogSearch.value || "").trim().toLocaleLowerCase("ru");
+        const cards = Array.from(document.querySelectorAll("[data-estimate-search]"));
+        let visible = 0;
+        cards.forEach(function(card) {
+          const matches = !query || String(card.getAttribute("data-estimate-search") || "").includes(query);
+          card.hidden = !matches;
+          if (matches) visible += 1;
+        });
+        if (catalogEmpty) catalogEmpty.hidden = visible > 0 || !cards.length;
       });
     })();
   </script>
@@ -5836,29 +6547,35 @@ ESTIMATES_TEMPLATE_V2 = """
       .estimate-card-meta { justify-content: flex-start; }
     }
   </style>
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
 </head>
-<body>
-  <div class="page">
-    <nav class="tabs">
-      <a class="tab" href="/tenders">Тендеры</a>
-      <a class="tab is-active" href="/estimates">Сметы</a>
-      <a class="tab" href="/research">Поиск по позиции</a>
+<body class="autobot-page estimates-index-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/tenders">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a href="/tenders">Тендеры</a>
+      <a class="is-active" href="/estimates">Сметы</a>
+      <a href="/research">Поиск позиции</a>
     </nav>
-
+  </header>
+  <div class="page">
     <section class="hero-grid">
       <div class="hero-card">
         <span class="eyebrow">Сметы</span>
         <h1>Загрузка и список смет</h1>
-        <p class="hero-text">Загрузите Excel и откройте нужную смету из списка ниже.</p>
+        <p class="hero-text">Загрузите Excel или PDF. AutoBot выделит позиции, посчитает суммы и подготовит их к сравнению с рынком.</p>
       </div>
 
       <section class="upload-card">
         <div>
-          <h2 class="panel-title">Загрузить Excel</h2>
+          <h2 class="panel-title">Загрузить смету (Excel/PDF)</h2>
         </div>
         <form id="estimateUploadForm" class="upload-row">
           <div class="file-picker">
-            <input class="file-input-native" id="estimateUploadFile" type="file" name="file" accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+            <input class="file-input-native" id="estimateUploadFile" type="file" name="file" accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" required />
             <label class="file-picker-btn" for="estimateUploadFile">
               <svg class="icon-clip" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M21.44 11.05l-8.49 8.49a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"></path>
@@ -5881,7 +6598,7 @@ ESTIMATES_TEMPLATE_V2 = """
           <div class="upload-progress-steps" id="estimateUploadSteps">
             <span class="upload-step" data-step="upload">Отправка файла</span>
             <span class="upload-step" data-step="received">Файл получен</span>
-            <span class="upload-step" data-step="parse">Разбор Excel</span>
+            <span class="upload-step" data-step="parse">Разбор файла</span>
             <span class="upload-step" data-step="catalogue">Каталог позиций</span>
             <span class="upload-step" data-step="save">Сохранение</span>
             <span class="upload-step" data-step="done">Готово</span>
@@ -5899,15 +6616,12 @@ ESTIMATES_TEMPLATE_V2 = """
 
     <section class="catalog-panel">
       <div class="panel-head">
-        <div>
-          <span class="eyebrow">Список</span>
-          <h2 class="panel-title">Загруженные сметы</h2>
-        </div>
+        <label class="catalog-search"><span aria-hidden="true"></span><input type="search" id="estimateCatalogSearch" placeholder="Найти смету" autocomplete="off" /></label>
       </div>
       {% if estimates %}
       <div class="grid">
         {% for e in estimates %}
-        <article class="estimate-card" data-estimate-card="{{ e.id }}">
+        <article class="estimate-card" data-estimate-card="{{ e.id }}" data-estimate-search="{{ (e.title ~ ' ' ~ e.original_filename ~ ' ' ~ e.types_short)|lower }}">
           <div class="estimate-card-top">
             <span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span>
             <div class="estimate-card-meta">
@@ -5968,6 +6682,7 @@ ESTIMATES_TEMPLATE_V2 = """
         </article>
         {% endfor %}
       </div>
+      <div class="empty" id="estimateCatalogEmpty" hidden>По этому запросу смет нет. Очистите поиск и попробуйте снова.</div>
       {% else %}
       <div class="empty">Смет пока нет.</div>
       {% endif %}
@@ -6228,42 +6943,58 @@ RESEARCH_TEMPLATE = """
     .offer-top { display:flex; justify-content:space-between; gap:12px; margin-bottom:6px; }
     .offer-source { display:inline-flex; padding:4px 8px; border-radius:999px; background:#edf4fd; border:1px solid #cfd9e8; font-size:12px; color:#35506f; }
     .offer-price { font-weight:800; color:#2e8b57; white-space:nowrap; }
+    .offer-price.is-candidate { color:#a06b18; }
+    .offer.is-verified { border-color:#b9dfc7; background:#f4fcf7; }
+    .offer.is-candidate { border-color:#ecd8aa; background:#fffaf0; }
+    .verification { margin-top:8px; padding:7px 9px; border-radius:8px; font-size:12px; line-height:1.4; background:#fff; border:1px solid #dfe7f1; color:#50627a; }
+    .verification b { color:#1f6f43; }.offer.is-candidate .verification b { color:#986315; }
+    .strategy-note { margin:10px 0 0; padding:10px 12px; border-radius:10px; background:#eef5ff; color:#4d6480; font-size:12px; line-height:1.45; }
     .offer a { color:#1f72dc; font-weight:700; text-decoration:none; }
     .offer-snippet { margin-top:6px; color:#62748b; font-size:13px; }
     .empty { padding:16px; text-align:center; color:#62748b; }
     @media (max-width:760px){ .form-grid{grid-template-columns:1fr} .btn-row{flex-direction:column} .btn{width:100%;box-sizing:border-box} }
   </style>
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
 </head>
-<body>
-  <div class="page">
-    <h1>Поиск по позиции</h1>
-    <div class="sub">Вставьте одну или несколько позиций, укажите город — и сайт найдёт цены, объявления и ссылки из Авито и обычного интернета.</div>
-    <nav class="tabs" aria-label="Разделы сайта">
-      <a class="tab" href="/tenders">Тендеры</a>
-      <a class="tab" href="/estimates">Сметы</a>
-      <a class="tab is-active" href="/research">Поиск по позиции</a>
+<body class="autobot-page research-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/tenders">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a href="/tenders">Тендеры</a>
+      <a href="/estimates">Сметы</a>
+      <a class="is-active" href="/research">Поиск позиции</a>
     </nav>
+  </header>
+  <div class="page">
+    <header class="research-hero">
+      <span class="eyebrow">Быстрая проверка рынка</span>
+      <h1>Найти цену по позиции</h1>
+      <p class="sub">AutoBot найдёт кандидатов, откроет прямые страницы и отдельно покажет проверенные цены и отклонённые источники.</p>
+    </header>
 
-    <section class="panel">
+    <section class="panel research-form-panel">
       <div class="form-grid">
         <label>Позиции для поиска
-          <textarea id="researchQueries" placeholder="Например:&#10;Керамзитобетон М100 В7,5 D1600&#10;Пескобетон М300&#10;Доставка бетона">{{ default_query }}</textarea>
+          <textarea id="researchQueries" placeholder="Название | единица&#10;Кабель ВВГнг 3х2,5 | м&#10;Укладка тротуарной плитки | м2">{{ default_query }}</textarea>
         </label>
         <div class="grid">
           <label>Город
             <input id="researchCity" type="text" placeholder="Например: Челябинск" value="{{ default_city }}" />
           </label>
-          <div class="muted">Можно вставить несколько строк. Я обработаю до 8 позиций за один запуск.</div>
+          <div class="research-hint"><strong>Единица обязательна для проверки</strong><span>Формат строки: <b>название | единица</b>. Например: «Кабель ВВГнг 3х2,5 | м». Без единицы найденные цены останутся кандидатами. За раз — до 5 позиций.</span></div>
           <div class="btn-row">
-            <button class="btn" id="researchRunBtn" type="button" onclick="runResearch()">Найти цены</button>
+            <button class="btn" id="researchRunBtn" type="button" onclick="runResearch()"><span class="research-button-icon" aria-hidden="true"></span><span data-research-button-label>Найти цены</span></button>
             <button class="btn secondary" type="button" onclick="fillExample()">Подставить пример</button>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="panel">
-      <div id="researchStatus" class="muted">Пока ничего не искали.</div>
+    <section class="panel research-results-panel">
+      <div class="research-status"><span aria-hidden="true"></span><div id="researchStatus" class="muted" aria-live="polite">Пока ничего не искали.</div></div>
       <div id="researchResults" class="results" style="margin-top:12px;"></div>
     </section>
   </div>
@@ -6278,8 +7009,7 @@ RESEARCH_TEMPLATE = """
     function fillExample() {
       const q = document.getElementById("researchQueries");
       const c = document.getElementById("researchCity");
-      if (q) q.value = "Керамзитобетон М100 В7,5 D1600";
-      if (c && !c.value.trim()) c.value = "Челябинск";
+      if (q) q.value = "Кабель ВВГнг 3х2,5 | м\nУкладка тротуарной плитки | м2";
     }
 
     function renderResearch(data) {
@@ -6303,11 +7033,19 @@ RESEARCH_TEMPLATE = """
         h.textContent = String(item.query || "");
         const meta = document.createElement("div");
         meta.className = "meta";
-        const prices = Array.isArray(item.offers) ? item.offers.map(x => Number(x.price || 0)).filter(x => Number.isFinite(x) && x > 0) : [];
+        const prices = Array.isArray(item.offers) ? item.offers.filter(x => x.verified).map(x => Number(x.price || 0)).filter(x => Number.isFinite(x) && x > 0) : [];
+        const verifiedCount = Array.isArray(item.offers) ? item.offers.filter(x => x.verified).length : 0;
+        const candidateCount = Array.isArray(item.offers) ? item.offers.filter(x => !x.verified).length : 0;
         const cityText = item.region ? (" · город: " + item.region) : "";
-        meta.textContent = "Источников: " + (item.offers ? item.offers.length : 0) + cityText + (prices.length ? (" · диапазон: " + money(Math.min(...prices)) + " — " + money(Math.max(...prices))) : "");
+        meta.textContent = (item.position_label ? item.position_label + (item.unit ? " · ед.: " + item.unit : "") + " · " : "") + "проверено: " + verifiedCount + " · кандидатов: " + candidateCount + cityText + (prices.length ? (" · диапазон: " + money(Math.min(...prices)) + " — " + money(Math.max(...prices))) : "");
         card.appendChild(h);
         card.appendChild(meta);
+        if (item.strategy || item.warning) {
+          const strategy = document.createElement("div");
+          strategy.className = "strategy-note";
+          strategy.textContent = [item.strategy, item.warning].filter(Boolean).join(" · ");
+          card.appendChild(strategy);
+        }
         const offersWrap = document.createElement("div");
         offersWrap.className = "offers";
         const offers = Array.isArray(item.offers) ? item.offers : [];
@@ -6319,15 +7057,15 @@ RESEARCH_TEMPLATE = """
         } else {
           for (const offer of offers) {
             const box = document.createElement("div");
-            box.className = "offer";
+            box.className = "offer " + (offer.verified ? "is-verified" : "is-candidate");
             const top = document.createElement("div");
             top.className = "offer-top";
             const source = document.createElement("span");
             source.className = "offer-source";
-            source.textContent = String(offer.source || "Источник");
+            source.textContent = (offer.verified ? "✓ Проверен · " : "? Кандидат · ") + String(offer.source || "Источник");
             const price = document.createElement("span");
-            price.className = "offer-price";
-            price.textContent = money(offer.price);
+            price.className = "offer-price" + (offer.verified ? "" : " is-candidate");
+            price.textContent = offer.verified ? money(offer.price) : "не принято в расчёт";
             top.appendChild(source);
             top.appendChild(price);
             const link = document.createElement("a");
@@ -6343,6 +7081,12 @@ RESEARCH_TEMPLATE = """
               sn.textContent = String(offer.snippet);
               box.appendChild(sn);
             }
+            const verification = document.createElement("div");
+            verification.className = "verification";
+            const adapter = offer.adapter ? (" · адаптер: " + offer.adapter) : "";
+            const unit = offer.matched_unit ? (" · единица: " + offer.matched_unit) : "";
+            verification.textContent = (offer.verified ? "Цена подтверждена" : "Источник отклонён") + " · " + String(offer.reason || "Нет доказательства на прямой странице") + adapter + unit;
+            box.appendChild(verification);
             offersWrap.appendChild(box);
           }
         }
@@ -6363,8 +7107,16 @@ RESEARCH_TEMPLATE = """
       const queries = document.getElementById("researchQueries");
       const city = document.getElementById("researchCity");
       if (!queries) return;
+      if (!String(queries.value || "").trim()) {
+        if (status) status.textContent = "Добавьте хотя бы одну позицию для поиска.";
+        queries.focus();
+        return;
+      }
       if (btn) btn.disabled = true;
-      if (status) status.textContent = "Ищу цены по Авито и интернету…";
+      document.body.classList.add("research-is-running");
+      const buttonLabel = btn ? btn.querySelector("[data-research-button-label]") : null;
+      if (buttonLabel) buttonLabel.textContent = "Ищем предложения…";
+      if (status) status.textContent = "Ищу кандидатов и проверяю цены на прямых страницах…";
       try {
         const resp = await fetch("/api/research-items", {
           method: "POST",
@@ -6384,8 +7136,17 @@ RESEARCH_TEMPLATE = """
         if (status) status.textContent = "Не удалось выполнить поиск.";
       } finally {
         if (btn) btn.disabled = false;
+        document.body.classList.remove("research-is-running");
+        if (buttonLabel) buttonLabel.textContent = "Найти цены";
       }
     }
+
+    document.getElementById("researchQueries")?.addEventListener("keydown", function(event) {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        runResearch();
+      }
+    });
   </script>
 </body>
 </html>
@@ -6490,11 +7251,11 @@ ESTIMATE_DETAIL_TEMPLATE = """
     .tone-good { color:#2e8b57; }
     .tone-warn { color:#a06b18; }
     .tone-bad { color:#c05757; }
-    .table-wrap { overflow:visible; border-radius:14px; border:1px solid var(--border); background:#fff; position:relative; }
-    .table-scroll { overflow-x:auto; overflow-y:visible; border-radius:14px; }
+    .table-wrap { overflow:hidden; border-radius:14px; border:1px solid var(--border); background:#fff; position:relative; }
+    .table-scroll { overflow:auto; max-height:calc(100vh - 190px); border-radius:14px; }
     table { width:100%; border-collapse:collapse; font-size:11px; min-width:900px; }
     th,td { padding:6px 7px; border-bottom:1px solid #e5ecf4; vertical-align:top; }
-    th { position:sticky; top:72px; background:#f1f6fc; color:#35506f; text-align:left; z-index:12; }
+    th { position:sticky; top:0; background:#f1f6fc; color:#35506f; text-align:left; z-index:2; }
     tr:hover td { background:#f7faff; }
     tr.section-row td { background:#edf4fd; color:#1b2a41; font-weight:700; border-bottom-color:#d4e0ef; }
     tr.section-row:hover td { background:#edf4fd; }
@@ -6548,6 +7309,7 @@ ESTIMATE_DETAIL_TEMPLATE = """
     .crm-source-card span { display:block; margin-top:4px; color:#62748b; font-size:12px; line-height:1.45; }
     .crm-form-grid { display:grid; gap:10px; }
     .crm-form-grid label { font-size:12px; }
+    .crm-form-grid label small { display:block; margin-top:5px; color:#718198; line-height:1.35; }
     .crm-status { min-height:18px; color:#62748b; font-size:12px; line-height:1.4; }
     .crm-status.is-error { color:#b14b4b; }
     .crm-status.is-success { color:#257347; }
@@ -6558,8 +7320,20 @@ ESTIMATE_DETAIL_TEMPLATE = """
       .crm-drawer-panel { width:100vw; }
     }
   </style>
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
 </head>
-<body>
+<body class="autobot-page estimate-detail-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/tenders">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a href="/tenders">Тендеры</a>
+      <a class="is-active" href="/estimates">Сметы</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
   <div class="page">
     <div class="page-head">
       <a class="top-back" href="/estimates">← Все сметы</a>
@@ -6854,8 +7628,8 @@ ESTIMATE_DETAIL_TEMPLATE = """
     <aside class="crm-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="estimateCrmDrawerTitle">
       <div class="crm-drawer-head">
         <div>
-          <h2 class="crm-drawer-title" id="estimateCrmDrawerTitle">Создание объекта</h2>
-          <div class="crm-drawer-sub">Данные уже подставлены из сметы. При необходимости их можно поправить перед отправкой в CRM.</div>
+          <h2 class="crm-drawer-title" id="estimateCrmDrawerTitle">Добавить смету в объект</h2>
+          <div class="crm-drawer-sub">Выберите существующий объект или оставьте создание нового. Одна и та же смета при повторном импорте обновится без дублей.</div>
         </div>
         <button class="crm-drawer-close" id="estimateCrmCloseBtn" type="button">Закрыть</button>
       </div>
@@ -6865,6 +7639,12 @@ ESTIMATE_DETAIL_TEMPLATE = """
           <span>{{ crm_prefill.original_filename }} · строк: {{ crm_prefill.row_count }} · сумма: {{ crm_prefill.total_sum_fmt }}</span>
         </div>
         <form id="estimateCrmForm" class="crm-form-grid">
+          <label>Объект CRM
+            <select id="estimateCrmProject" name="project_id">
+              <option value="">Создать новый объект</option>
+            </select>
+            <small id="estimateCrmProjectHint">Загружаю доступные объекты…</small>
+          </label>
           <label>Название объекта
             <input type="text" id="estimateCrmTitle" name="title" required />
           </label>
@@ -6899,6 +7679,7 @@ ESTIMATE_DETAIL_TEMPLATE = """
     let estimateMarketRenderFresh = {{ 'true' if (compare_table.available or sources_table.available) else 'false' }};
     let estimateMarketReloadPending = false;
     let estimateCrmDrawerTimer = null;
+    let estimateCrmProjectsLoaded = false;
     const estimateCrmPrefill = {{ crm_prefill|tojson }};
 
     function setEstimateCrmStatus(message, tone) {
@@ -6932,6 +7713,42 @@ ESTIMATE_DETAIL_TEMPLATE = """
       return node ? (node.value || "") : "";
     }
 
+    function syncEstimateCrmMode() {
+      const select = document.getElementById("estimateCrmProject");
+      const submit = document.getElementById("estimateCrmSubmitBtn");
+      const hint = document.getElementById("estimateCrmProjectHint");
+      const adding = Boolean(select && select.value);
+      if (submit) submit.textContent = adding ? "Добавить смету" : "Создать объект";
+      if (hint && estimateCrmProjectsLoaded) {
+        hint.textContent = adding
+          ? "Смета будет добавлена отдельным файлом к выбранному объекту."
+          : "Будет создан новый объект с данными из этой сметы.";
+      }
+    }
+
+    async function loadEstimateCrmProjects() {
+      if (estimateCrmProjectsLoaded) return;
+      const select = document.getElementById("estimateCrmProject");
+      const hint = document.getElementById("estimateCrmProjectHint");
+      if (!select) return;
+      try {
+        const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        const data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        (data.projects || []).forEach(function(project) {
+          const option = document.createElement("option");
+          option.value = String(project.id);
+          option.textContent = "#" + project.id + " · " + (project.title || "Без названия") + (project.contract_no ? " · " + project.contract_no : "");
+          select.appendChild(option);
+        });
+        estimateCrmProjectsLoaded = true;
+        if (hint) hint.textContent = (data.projects || []).length ? "Выберите объект или создайте новый." : "Доступных объектов пока нет — будет создан новый.";
+        syncEstimateCrmMode();
+      } catch (error) {
+        if (hint) hint.textContent = "Не удалось загрузить объекты: " + (error.message || error);
+      }
+    }
+
     function navigateEstimateCrmProject(url) {
       if (!url) return;
       try {
@@ -6951,10 +7768,11 @@ ESTIMATE_DETAIL_TEMPLATE = """
         estimateCrmDrawerTimer = null;
       }
       fillEstimateCrmForm(estimateCrmPrefill);
-      setEstimateCrmStatus("На основе сметы «" + (estimateCrmPrefill.estimate_title || "") + "». Поля можно поправить перед созданием объекта.", "");
+      setEstimateCrmStatus("На основе сметы «" + (estimateCrmPrefill.estimate_title || "") + "».", "");
       drawer.hidden = false;
       requestAnimationFrame(() => drawer.classList.add("is-open"));
       document.body.style.overflow = "hidden";
+      loadEstimateCrmProjects();
     };
 
     window.closeEstimateCrmDrawer = function() {
@@ -6974,6 +7792,7 @@ ESTIMATE_DETAIL_TEMPLATE = """
       const submitBtn = document.getElementById("estimateCrmSubmitBtn");
       if (submitBtn) submitBtn.disabled = true;
       const payload = {
+        project_id: getEstimateCrmFieldValue("estimateCrmProject") || null,
         title: getEstimateCrmFieldValue("estimateCrmTitle"),
         client_name: getEstimateCrmFieldValue("estimateCrmClient"),
         address: getEstimateCrmFieldValue("estimateCrmAddress"),
@@ -6982,7 +7801,8 @@ ESTIMATE_DETAIL_TEMPLATE = """
         budget: getEstimateCrmFieldValue("estimateCrmBudget"),
         description: getEstimateCrmFieldValue("estimateCrmDescription"),
       };
-      setEstimateCrmStatus("Создаю объект в CRM…", "");
+      const addingToExisting = Boolean(payload.project_id);
+      setEstimateCrmStatus(addingToExisting ? "Добавляю смету в выбранный объект…" : "Создаю объект в CRM…", "");
       try {
         const resp = await fetch("/api/estimates/{{ meta.id }}/export-to-crm", {
           method: "POST",
@@ -6992,11 +7812,11 @@ ESTIMATE_DETAIL_TEMPLATE = """
         let data = {};
         try { data = await resp.json(); } catch (e) {}
         if (!resp.ok || !data.ok) {
-          setEstimateCrmStatus(data.message || ("Не удалось создать объект (HTTP " + resp.status + ")."), "error");
+          setEstimateCrmStatus(data.message || ("Не удалось добавить смету (HTTP " + resp.status + ")."), "error");
           return;
         }
-        if (data.already_exists) {
-          setEstimateCrmStatus("Этот объект уже есть в CRM: #" + data.project_id + ".", "success");
+        if (data.added_to_existing) {
+          setEstimateCrmStatus("Готово: смета добавлена в объект #" + data.project_id + ". Строк обновлено: " + (data.materials_sent || 0) + ".", "success");
           if (data.project_url) navigateEstimateCrmProject(data.project_url);
           return;
         }
@@ -7020,6 +7840,8 @@ ESTIMATE_DETAIL_TEMPLATE = """
     if (estimateCrmCancelBtn) estimateCrmCancelBtn.addEventListener("click", window.closeEstimateCrmDrawer);
     const estimateCrmForm = document.getElementById("estimateCrmForm");
     if (estimateCrmForm) estimateCrmForm.addEventListener("submit", window.submitEstimateCrmForm);
+    const estimateCrmProject = document.getElementById("estimateCrmProject");
+    if (estimateCrmProject) estimateCrmProject.addEventListener("change", syncEstimateCrmMode);
 
     async function deleteEstimate(btn) {
       const title = String({{ meta.title|tojson }});
@@ -7239,8 +8061,20 @@ ESTIMATE_MARKET_VIEW_TEMPLATE = """
     .status-note { color:#a06b18; font-size:10px; margin-top:5px; }
     .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   </style>
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
 </head>
-<body>
+<body class="autobot-page market-view-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/tenders">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a href="/tenders">Тендеры</a>
+      <a class="is-active" href="/estimates">Сметы</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
   <div class="page">
     <p style="margin:0 0 10px;"><a href="/estimates/{{ meta.id }}?{{ back_query }}">← Назад к смете</a> · <a href="/estimates">Все сметы</a> · <a href="/research">Поиск по позиции</a></p>
     <h1 style="margin:0 0 8px;">{{ meta.title }} · Сравнение цен</h1>
@@ -7438,9 +8272,9 @@ def research_page():
 @app.route("/api/research-items", methods=["POST"])
 def api_research_items():
     data = request.get_json(silent=True) or {}
-    queries = _research_queries_from_text(str(data.get("queries") or data.get("query") or ""))
+    specs = _research_specs_from_text(str(data.get("queries") or data.get("query") or ""))
     city = re.sub(r"\s+", " ", str(data.get("city") or "").strip())[:120]
-    if not queries:
+    if not specs:
         return jsonify({"ok": False, "message": "Нужна хотя бы одна позиция для поиска."}), 400
 
     from autobot.item_research import parse_sources, research_item
@@ -7448,13 +8282,15 @@ def api_research_items():
     sources = parse_sources(
         os.environ.get("MARKET_SUMMARY_SOURCES")
         or os.environ.get("MARKET_SOURCES")
-        or "avito,web"
+        or "web,avito"
     )
 
     results: list[dict] = []
-    for query in queries:
+    for spec in specs:
+        query = spec["query"]
+        unit = spec["unit"]
         try:
-            item = research_item(query, region=city, sources=sources, max_results=5)
+            item = research_item(query, unit=unit, region=city, sources=sources, max_results=3)
             offers = []
             for offer in item.offers[:5]:
                 offers.append(
@@ -7464,12 +8300,25 @@ def api_research_items():
                         "price": float(offer.price or 0) if offer.price else 0,
                         "url": str(offer.url or ""),
                         "snippet": str(offer.snippet or "")[:500],
+                        "verification": str(offer.verification or "candidate"),
+                        "verified": str(offer.verification or "") == "verified",
+                        "confidence": float(offer.confidence or 0),
+                        "reason": str(offer.verification_reason or offer.page_error or "")[:500],
+                        "matched_unit": str(offer.matched_unit or ""),
+                        "page_checked": bool(offer.page_checked),
+                        "adapter": str(offer.adapter or ""),
+                        "price_scope": str(offer.price_scope or ""),
                     }
                 )
             results.append(
                 {
                     "query": item.query,
+                    "unit": item.unit,
                     "region": item.region,
+                    "position_type": item.position_type,
+                    "position_label": item.position_label,
+                    "strategy": item.strategy,
+                    "warning": item.warning,
                     "offers": offers,
                     "errors": str(item.errors or ""),
                 }
@@ -7478,6 +8327,7 @@ def api_research_items():
             results.append(
                 {
                     "query": query,
+                    "unit": unit,
                     "region": city,
                     "offers": [],
                     "errors": str(e)[:400],
@@ -7486,7 +8336,7 @@ def api_research_items():
     return jsonify(
         {
             "ok": True,
-            "message": f"Готово. Обработано позиций: {len(results)}.",
+            "message": f"Готово. Проверено позиций: {len(results)}.",
             "results": results,
         }
     )
@@ -7937,7 +8787,7 @@ def api_estimates_upload():
     if not f or not getattr(f, "filename", None):
         return jsonify({"ok": False, "message": "Выберите Excel-файл со сметой."}), 400
     if not _estimate_upload_allowed(f.filename):
-        return jsonify({"ok": False, "message": "Нужен Excel-файл: .xlsx, .xls или .xlsm."}), 400
+        return jsonify({"ok": False, "message": "Нужен файл сметы: .xlsx, .xls, .xlsm или .pdf."}), 400
     estimate_id = uuid.uuid4().hex[:16]
     job_id = uuid.uuid4().hex[:16]
     est_dir = USER_ESTIMATES_DIR / estimate_id
@@ -8300,26 +9150,28 @@ def _extract_tender_id(raw: str) -> str:
     Извлекает regNumber / tender_id из ссылки zakupki.gov.ru или прямого ввода.
     Поддерживает:
     - полный URL с regNumber=...
-    - просто номер (15+ цифр)
-    - любой текст, где встречается длинный числовой id
+    - номер закупки 223-ФЗ (11 цифр) или 44-ФЗ (19 цифр)
+    - любой текст, где встречается такой номер
     """
     s = (raw or "").strip()
     if not s:
         return ""
-    if s.isdigit() and len(s) >= 15:
+    if s.isdigit() and len(s) in {11, 19}:
         return s
     try:
         p = urlparse(s)
         q = parse_qs(p.query)
-        if "regNumber" in q and q["regNumber"]:
-            cand = (q["regNumber"][0] or "").strip()
-            if cand.isdigit() and len(cand) >= 15:
+        for key in ("regNumber", "purchaseNoticeNumber"):
+            if key not in q or not q[key]:
+                continue
+            cand = (q[key][0] or "").strip()
+            if cand.isdigit() and len(cand) in {11, 19}:
                 return cand
     except Exception:
         pass
     import re
 
-    m = re.search(r"\b(\d{15,25})\b", s)
+    m = re.search(r"(?<!\d)(\d{19}|\d{11})(?!\d)", s)
     if m:
         return m.group(1)
     return ""
@@ -8330,10 +9182,21 @@ def _truthy_env(name: str, default: str = "0") -> bool:
     return v in ("1", "true", "yes", "on")
 
 
-def _run_market_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[int, str]:
+def _run_market_for_tender(
+    tid: str,
+    *,
+    force_no_resume: bool = False,
+    max_rows_override: int | None = None,
+    rerun_selected: bool = False,
+    sources_override: str | None = None,
+    only_without_verified: bool = False,
+    avito_collect_only: bool = False,
+) -> tuple[int, str]:
     rows_map = _estimate_rows_by_tender_id()
     max_rows_arg: str | None = None
-    max_rows_raw = (os.environ.get("MARKET_MAX_ROWS") or os.environ.get("MARKET_MAX_ROWS") or "").strip()
+    max_rows_raw = str(max_rows_override or "").strip()
+    if not max_rows_raw:
+        max_rows_raw = (os.environ.get("MARKET_MAX_ROWS") or os.environ.get("MARKET_MAX_ROWS") or "").strip()
     if max_rows_raw:
         try:
             cap_rows = int(max_rows_raw)
@@ -8344,9 +9207,9 @@ def _run_market_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[
             est_n = int(rows_map.get(tid, 0) or 0)
             use = cap_rows if est_n <= 0 else min(est_n, cap_rows)
             max_rows_arg = str(max(1, use))
-    pause = (os.environ.get("MARKET_PAUSE_SEC") or os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4"
-    sources = (os.environ.get("MARKET_SOURCES") or "avito,web").strip() or "avito,web"
-    max_results = (os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5"
+    pause = "0" if avito_collect_only else ((os.environ.get("MARKET_PAUSE_SEC") or os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4")
+    sources = (sources_override or os.environ.get("MARKET_SOURCES") or "web,avito").strip() or "web,avito"
+    max_results = "3" if avito_collect_only else ((os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5")
     cmd = [
         sys.executable,
         str(_TOOLS_RUN_MODULE),
@@ -8364,6 +9227,12 @@ def _run_market_for_tender(tid: str, *, force_no_resume: bool = False) -> tuple[
         cmd.extend(["--max-rows", max_rows_arg])
     if force_no_resume or _truthy_env("MARKET_NO_RESUME") or _truthy_env("MARKET_NO_RESUME"):
         cmd.append("--no-resume")
+    elif rerun_selected:
+        cmd.append("--rerun-selected")
+    if only_without_verified:
+        cmd.append("--only-without-verified")
+    if avito_collect_only:
+        cmd.extend(["--avito-collect-only", "--avito-safe-interval-sec", "35"])
     timeout_raw = (os.environ.get("MARKET_TIMEOUT_SEC") or os.environ.get("MARKET_TIMEOUT_SEC") or "21600").strip() or "21600"
     try:
         timeout_sec = max(60, int(timeout_raw))
@@ -8495,6 +9364,11 @@ def _run_merge_site_all_worker(
     ids_override: list[str] | None = None,
     tender_url_by_id: dict[str, str] | None = None,
     force_market_no_resume: bool = False,
+    market_max_rows: int | None = None,
+    market_rerun_selected: bool = False,
+    market_sources_override: str | None = None,
+    market_only_without_verified: bool = False,
+    market_avito_collect_only: bool = False,
 ) -> None:
     errors: list[str] = []
     ok_html = 0
@@ -8522,7 +9396,13 @@ def _run_merge_site_all_worker(
             merge_site_state["ended_at"] = None
             merge_site_state["error_ids"] = []
             merge_site_state["chat_events"] = []
-            mode = "только отсутствующие/ошибки" if only_missing else "все сметы"
+            mode = (
+                f"Авито: до {market_max_rows or 10} позиций без подтверждённой цены"
+                if market_avito_collect_only else (
+                    f"контрольная выборка по {market_max_rows} позиций"
+                    if market_max_rows else ("только отсутствующие/ошибки" if only_missing else "все сметы")
+                )
+            )
             merge_site_state["log_lines"] = [f"Режим: {mode}. К обработке: {len(ids)}"]
             if not ids:
                 merge_site_state["log_lines"].append(
@@ -8550,10 +9430,11 @@ def _run_merge_site_all_worker(
             try:
                 est_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
                 cout = ""
-                if not est_path.is_file():
-                    turl = ""
-                    if tender_url_by_id and tid in tender_url_by_id:
-                        turl = (tender_url_by_id.get(tid) or "").strip()
+                explicit_turl = ""
+                if tender_url_by_id and tid in tender_url_by_id:
+                    explicit_turl = (tender_url_by_id.get(tid) or "").strip()
+                if not est_path.is_file() or explicit_turl:
+                    turl = explicit_turl
                     if not turl:
                         # Пробуем URL из metadata для автодозагрузки.
                         md = load_tender_metadata().get(tid, {})
@@ -8611,7 +9492,10 @@ def _run_merge_site_all_worker(
                     errors.append(tid)
                     continue
 
-                done_before, total_works = _market_progress_for_tender(tid)
+                if market_max_rows:
+                    done_before, total_works = 0, min(int(market_max_rows), _cnt)
+                else:
+                    done_before, total_works = _market_progress_for_tender(tid)
                 rem_before = max(0, total_works - done_before)
                 with merge_site_lock:
                     merge_site_state["market_done"] = int(done_before)
@@ -8625,7 +9509,15 @@ def _run_merge_site_all_worker(
                         _tg_send(f"{pref}\n🟢 Рынок уже обработал строки сметы: <b>{done_before}/{total_works}</b>")
                     _tg_flush_spool()
                 _tg_flush_spool()
-                market_code, market_cmd = _run_market_for_tender(tid, force_no_resume=force_market_no_resume)
+                market_code, market_cmd = _run_market_for_tender(
+                    tid,
+                    force_no_resume=force_market_no_resume,
+                    max_rows_override=market_max_rows,
+                    rerun_selected=market_rerun_selected,
+                    sources_override=market_sources_override,
+                    only_without_verified=market_only_without_verified,
+                    avito_collect_only=market_avito_collect_only,
+                )
                 with merge_site_lock:
                     merge_site_state["log_lines"].append(f"  market: {market_cmd}")
                 if market_code != 0:
@@ -8644,7 +9536,10 @@ def _run_merge_site_all_worker(
                     errors.append(tid)
                     continue
 
-                done_after, total_after = _market_progress_for_tender(tid)
+                if market_max_rows:
+                    done_after, total_after = min(int(market_max_rows), _cnt), min(int(market_max_rows), _cnt)
+                else:
+                    done_after, total_after = _market_progress_for_tender(tid)
                 rem_after = max(0, total_after - done_after)
                 with merge_site_lock:
                     merge_site_state["market_done"] = int(done_after)
@@ -8674,7 +9569,7 @@ def _run_merge_site_all_worker(
                     ok_full += 1
                     _merge_chat_add("done", f"✅ Тендер {tid}: сравнение готово", tender_id=tid)
                     site_url = get_report_site_public_base()
-                    link = f"{site_url}/merge-report/{tid}/" if site_url else ""
+                    link = f"{site_url}/tenders/{tid}" if site_url else ""
                     with merge_site_lock:
                         merge_site_state["log_lines"].append("  → OK (рынок + merge + HTML)")
                     if link:
@@ -9021,7 +9916,7 @@ def api_start_parse():
     except (TypeError, ValueError):
         return jsonify({"ok": False, "message": "Некорректные числа (max_pages, max_tenders, days_back)"}), 400
     max_pages = max(1, min(max_pages, 20))
-    max_tenders = max(1, min(max_tenders, 50))
+    max_tenders = max(1, min(max_tenders, 100))
     days_back = max(1, min(days_back, 365))
     args = [
         "--max-pages",
@@ -9031,16 +9926,20 @@ def api_start_parse():
         "--days-back",
         str(days_back),
     ]
+    catalog_only_raw = data.get("catalog_only", True)
+    catalog_only = catalog_only_raw not in (False, 0, "0", "false", "False", "no", "off")
+    if catalog_only:
+        args.append("--catalog-only")
     worker = threading.Thread(
         target=_run_main_worker,
-        kwargs={"cli_args": args, "task": "поиск новых закупок"},
+        kwargs={"cli_args": args, "task": "поиск закупок для каталога" if catalog_only else "поиск новых закупок"},
         daemon=True,
     )
     with parse_lock:
         if parse_state["running"]:
             return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
         parse_state["running"] = True
-        parse_state["task"] = "запуск поиска новых закупок"
+        parse_state["task"] = "поиск закупок для каталога" if catalog_only else "запуск поиска новых закупок"
         parse_state["command"] = ""
         parse_state["started_at"] = datetime.now().isoformat(timespec="seconds")
         parse_state["ended_at"] = None
@@ -9138,10 +10037,49 @@ def api_tenders():
                 "stage_display": stage_display,
                 "stage_open": stage_open,
                 "publish_date": (row.get("publish_date") or ""),
+                "updated_date": (row.get("updated_date") or ""),
+                "customer_name": (row.get("customer_name") or ""),
+                "law": (row.get("law") or ""),
+                "purchase_method": (row.get("purchase_method") or ""),
             }
         )
     items.sort(key=lambda x: (x.get("region") or "", str(x.get("tender_id") or "")))
     return jsonify({"items": items[:200]})
+
+
+@app.route("/api/tenders/<tender_id>/delete", methods=["POST"])
+def api_delete_tender(tender_id: str):
+    tid = str(tender_id or "").strip()
+    if not re.fullmatch(r"\d{8,25}", tid):
+        return jsonify({"ok": False, "message": "Некорректный номер тендера."}), 400
+    data = request.get_json(silent=True) or {}
+    if str(data.get("confirm_tender_id") or "").strip() != tid:
+        return jsonify({"ok": False, "message": "Удаление не подтверждено номером тендера."}), 400
+    with parse_lock:
+        parse_running = bool(parse_state.get("running"))
+    with merge_site_lock:
+        merge_running = bool(merge_site_state.get("running"))
+    if parse_running or merge_running:
+        return jsonify({"ok": False, "message": "Дождитесь завершения текущей задачи AutoBot и повторите удаление."}), 409
+    try:
+        with tender_delete_lock:
+            result = delete_tender_data(tid)
+    except FileNotFoundError:
+        return jsonify({"ok": False, "message": "Тендер уже удалён или не найден."}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)[:500]}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"Не удалось удалить тендер: {str(exc)[:500]}"}), 500
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/crm/projects")
+def api_crm_projects():
+    try:
+        projects = crm_projects_for_picker()
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)[:700]}), 502
+    return jsonify({"ok": True, "projects": projects})
 
 
 @app.route("/api/export-to-crm", methods=["POST"])
@@ -9153,7 +10091,7 @@ def api_export_to_crm():
     if tid not in load_tender_metadata():
         return jsonify({"ok": False, "message": "Такой тендер не найден в tenders.json"}), 404
     try:
-        result = export_tender_to_crm(tid)
+        result = export_tender_to_crm(tid, project_id=data.get("project_id", data.get("projectId")))
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)[:700]}), 500
     return jsonify({"ok": True, "tender_id": tid, **result})
@@ -9167,7 +10105,11 @@ def api_export_estimate_to_crm(estimate_id: str):
         return jsonify({"ok": False, "message": "Смета не найдена."}), 404
     data = request.get_json(silent=True) or {}
     try:
-        result = export_estimate_to_crm(estimate_id, overrides=data)
+        result = export_estimate_to_crm(
+            estimate_id,
+            overrides=data,
+            project_id=data.get("project_id", data.get("projectId")),
+        )
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)[:700]}), 500
     return jsonify({"ok": True, "estimate_id": estimate_id, **result})
@@ -9265,6 +10207,242 @@ def api_merge_site_status():
     return jsonify(payload)
 
 
+@app.route("/api/avito-status")
+def api_avito_status():
+    """Read the persistent Avito pause without opening Avito."""
+    try:
+        from autobot.real_market_scraper import avito_guard_status
+
+        status = avito_guard_status()
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"Не удалось прочитать состояние Авито: {str(exc)[:300]}"}), 500
+    blocked_until = float(status.get("blocked_until") or 0)
+    status["blocked_until_iso"] = (
+        datetime.fromtimestamp(blocked_until, timezone.utc).isoformat(timespec="seconds") if blocked_until > 0 else ""
+    )
+    return jsonify({"ok": True, **status})
+
+
+@app.route("/api/tenders/<tender_id>/agent-market/jobs", methods=["GET", "POST"])
+def api_tender_agent_market_jobs(tender_id: str):
+    """Create browser-agent jobs from real estimate rows or show their current state."""
+    tid = str(tender_id or "").strip()
+    if not re.fullmatch(r"\d{8,25}", tid):
+        return jsonify({"ok": False, "message": "Некорректный номер тендера"}), 400
+    from autobot.agent_market_queue import enqueue_jobs, job_summary, list_jobs
+
+    if request.method == "GET":
+        jobs = list_jobs(tid)
+        public_jobs = [
+            {
+                "id": job.get("id"),
+                "position_key": job.get("position_key"),
+                "position_name": job.get("position_name"),
+                "status": job.get("status"),
+                "attempts": job.get("attempts"),
+                "worker_id": job.get("worker_id"),
+                "error": job.get("error"),
+                "created_at": job.get("created_at"),
+                "updated_at": job.get("updated_at"),
+                "completed_at": job.get("completed_at"),
+                "offers_found": len((job.get("result") or {}).get("offers") or []),
+                "import": (job.get("result") or {}).get("import") or {},
+            }
+            for job in jobs
+        ]
+        return jsonify(
+            {
+                "ok": True,
+                "enabled": bool(_agent_market_token()),
+                "summary": job_summary(tid),
+                "jobs": public_jobs,
+            }
+        )
+
+    estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    if not estimate_path.is_file():
+        return jsonify({"ok": False, "message": "Для тендера ещё нет распознанной сметы"}), 404
+    data = request.get_json(silent=True) or {}
+    requested_keys = {
+        str(value or "").strip()
+        for value in list(data.get("position_keys") or [])[:100]
+        if str(value or "").strip()
+    }
+    try:
+        limit = max(1, min(int(data.get("limit") or 20), 50))
+    except (TypeError, ValueError):
+        limit = 20
+    metadata = load_tender_metadata()
+    meta = dict(metadata.get(tid) or {})
+    workflow_items, _ = _tenders_items()
+    workflow = next((dict(item) for item in workflow_items if str(item.get("tender_id") or "") == tid), {})
+    tender = build_tender_detail(tid, meta, workflow)
+    selected: list[dict] = []
+    for position in tender.get("positions") or []:
+        key = str(position.get("position_key") or "")
+        if requested_keys and key not in requested_keys:
+            continue
+        if not requested_keys and position.get("verified_count"):
+            continue
+        selected.append(
+            {
+                "schema_version": 1,
+                "tender_id": tid,
+                "position_key": key,
+                "item_no": position.get("item_no"),
+                "name": position.get("name"),
+                "unit": position.get("unit"),
+                "quantity": position.get("quantity"),
+                "section": position.get("section"),
+                "source_file": position.get("source_file"),
+                "basis_code": position.get("basis_code"),
+                "position_type": position.get("type_slug"),
+                "region": tender.get("region"),
+                "estimate_unit_price": position.get("estimate_unit"),
+                "queries": position.get("queries") or [],
+                "max_offers": 5,
+                "task": (
+                    "Найди до 5 актуальных цен на эту конкретную позицию. Открывай прямые страницы товаров/услуг, "
+                    "не обходи CAPTCHA и ограничения сайта. Не используй цену доставки, кредита или похожего товара. "
+                    "Верни только JSON по схеме result_schema."
+                ),
+                "result_schema": {
+                    "schema_version": 1,
+                    "position_key": key,
+                    "offers": [
+                        {
+                            "title": "",
+                            "price": 0,
+                            "currency": "RUB",
+                            "unit": "",
+                            "url": "",
+                            "evidence": "",
+                            "observed_at": "ISO-8601",
+                            "published_at": "",
+                            "location": "",
+                            "confidence": 0.0,
+                        }
+                    ],
+                    "notes": "",
+                },
+            }
+        )
+        if len(selected) >= limit:
+            break
+    if not selected:
+        return jsonify({"ok": False, "message": "Не выбраны позиции для поиска"}), 400
+    outcome = enqueue_jobs(tid, selected)
+    return jsonify(
+        {
+            "ok": True,
+            "created": len(outcome["created"]),
+            "skipped_active": len(outcome["skipped_active"]),
+            "jobs": outcome["created"],
+            "summary": job_summary(tid),
+        }
+    )
+
+
+@app.route("/api/tenders/<tender_id>/agent-market/jobs/<job_id>/cancel", methods=["POST"])
+def api_tender_agent_market_cancel(tender_id: str, job_id: str):
+    from autobot.agent_market_queue import cancel_job
+
+    if not cancel_job(str(job_id or ""), str(tender_id or "")):
+        return jsonify({"ok": False, "message": "Активное задание не найдено"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/agent-market/v1/status")
+def api_agent_market_worker_status():
+    auth_error = _require_agent_market_token()
+    if auth_error:
+        return auth_error
+    return jsonify({"ok": True, "schema_version": 1, "service": "autobot-agent-market"})
+
+
+@app.route("/api/agent-market/v1/claim", methods=["POST"])
+def api_agent_market_claim():
+    auth_error = _require_agent_market_token()
+    if auth_error:
+        return auth_error
+    from autobot.agent_market_queue import claim_job
+
+    data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id") or "").strip()
+    if not worker_id:
+        return jsonify({"ok": False, "message": "Нужен worker_id"}), 400
+    try:
+        lease_seconds = int(data.get("lease_seconds") or 600)
+        job = claim_job(worker_id, lease_seconds=lease_seconds)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    if not job:
+        return jsonify({"ok": True, "job": None}), 200
+    return jsonify({"ok": True, "job": job})
+
+
+@app.route("/api/agent-market/v1/jobs/<job_id>/heartbeat", methods=["POST"])
+def api_agent_market_heartbeat(job_id: str):
+    auth_error = _require_agent_market_token()
+    if auth_error:
+        return auth_error
+    from autobot.agent_market_queue import heartbeat_job
+
+    data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id") or "").strip()
+    if not heartbeat_job(job_id, worker_id, lease_seconds=int(data.get("lease_seconds") or 600)):
+        return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
+    return jsonify({"ok": True})
+
+
+@app.route("/api/agent-market/v1/jobs/<job_id>/complete", methods=["POST"])
+def api_agent_market_complete(job_id: str):
+    auth_error = _require_agent_market_token()
+    if auth_error:
+        return auth_error
+    from autobot.agent_market_queue import complete_job, get_job
+    from autobot.real_market_scraper import import_agent_market_result
+
+    data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id") or "").strip()
+    job = get_job(job_id)
+    if not job or job.get("status") != "leased" or job.get("worker_id") != worker_id:
+        return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
+    try:
+        validated = _validate_agent_market_result(data.get("result"), str(job.get("position_key") or ""))
+        with agent_market_import_lock:
+            imported = import_agent_market_result(str(job.get("tender_id") or ""), job.get("payload") or {}, validated)
+        validated["import"] = imported
+    except (OSError, ValueError, TypeError) as exc:
+        return jsonify({"ok": False, "message": f"Результат не принят: {str(exc)[:500]}"}), 422
+    completed = complete_job(job_id, worker_id, validated)
+    if not completed:
+        return jsonify({"ok": False, "message": "Не удалось завершить задание"}), 409
+    return jsonify({"ok": True, "job_id": job_id, "import": imported})
+
+
+@app.route("/api/agent-market/v1/jobs/<job_id>/fail", methods=["POST"])
+def api_agent_market_fail(job_id: str):
+    auth_error = _require_agent_market_token()
+    if auth_error:
+        return auth_error
+    from autobot.agent_market_queue import fail_job
+
+    data = request.get_json(silent=True) or {}
+    try:
+        ok = fail_job(
+            job_id,
+            str(data.get("worker_id") or "").strip(),
+            str(data.get("error") or "Ошибка агента"),
+            retry=bool(data.get("retry")),
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    if not ok:
+        return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
+    return jsonify({"ok": True})
+
+
 @app.route("/api/reports-coverage")
 def api_reports_coverage():
     return jsonify(_compute_reports_coverage())
@@ -9327,6 +10505,38 @@ def api_generate_merge_site_missing():
     return jsonify({"ok": True})
 
 
+@app.route("/api/generate-merge-site-selected", methods=["POST"])
+def api_generate_merge_site_selected():
+    if _merge_site_busy():
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
+    with parse_lock:
+        if parse_state["running"]:
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("tender_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "message": "Передайте список tender_ids."}), 400
+    ids: list[str] = []
+    seen: set[str] = set()
+    known_ids = set(load_tender_metadata().keys())
+    for raw in raw_ids:
+        tid = str(raw or "").strip()
+        if not re.fullmatch(r"\d{8,25}", tid) or tid in seen or tid not in known_ids:
+            continue
+        seen.add(tid)
+        ids.append(tid)
+        if len(ids) >= 100:
+            break
+    if not ids:
+        return jsonify({"ok": False, "message": "Выберите хотя бы один тендер из каталога."}), 400
+    threading.Thread(
+        target=_run_merge_site_all_worker,
+        kwargs={"ids_override": ids},
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "tender_ids": ids, "count": len(ids)})
+
+
 @app.route("/api/generate-merge-site-one", methods=["POST"])
 def api_generate_merge_site_one():
     if _merge_site_busy():
@@ -9359,6 +10569,106 @@ def api_generate_merge_site_one_rerun_market():
         daemon=True,
     ).start()
     return jsonify({"ok": True, "tender_id": tid, "mode": "rerun_market_no_resume"})
+
+
+@app.route("/api/generate-merge-site-one-sample-market", methods=["POST"])
+def api_generate_merge_site_one_sample_market():
+    """Recheck a small batch without deleting the remaining market report."""
+    if _merge_site_busy():
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
+    with parse_lock:
+        if parse_state["running"]:
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    data = request.get_json(silent=True) or {}
+    tid = str(data.get("tender_id", "")).strip()
+    if not tid:
+        return jsonify({"ok": False, "message": "Нужен tender_id"}), 400
+    try:
+        sample_rows = int(data.get("sample_rows") or 10)
+    except (TypeError, ValueError):
+        sample_rows = 10
+    sample_rows = max(1, min(20, sample_rows))
+    threading.Thread(
+        target=_run_merge_site_all_worker,
+        kwargs={
+            "ids_override": [tid],
+            "market_max_rows": sample_rows,
+            "market_rerun_selected": True,
+        },
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "tender_id": tid, "mode": "sample_market", "sample_rows": sample_rows})
+
+
+@app.route("/api/generate-avito-safe-sample", methods=["POST"])
+def api_generate_avito_safe_sample():
+    """Collect a small fresh Avito sample after the persistent cooldown expires."""
+    if _merge_site_busy():
+        return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
+    with parse_lock:
+        if parse_state["running"]:
+            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    data = request.get_json(silent=True) or {}
+    tid = str(data.get("tender_id", "")).strip()
+    if not re.fullmatch(r"\d{8,25}", tid):
+        return jsonify({"ok": False, "message": "Нужен корректный tender_id."}), 400
+    if tid not in set(_estimate_xlsx_tender_ids()):
+        return jsonify({"ok": False, "message": "Для этого тендера ещё нет готовой сметы."}), 404
+    try:
+        from autobot.real_market_scraper import avito_guard_status
+
+        avito_status = avito_guard_status()
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"Не удалось прочитать состояние Авито: {str(exc)[:300]}"}), 500
+    if bool(avito_status.get("blocked")):
+        remaining_minutes = max(1, int((int(avito_status.get("remaining_seconds") or 0) + 59) // 60))
+        remaining_hours, remaining_tail = divmod(remaining_minutes, 60)
+        remaining_text = (
+            f"{remaining_hours} ч {remaining_tail} мин"
+            if remaining_hours and remaining_tail
+            else (f"{remaining_hours} ч" if remaining_hours else f"{remaining_tail} мин")
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "message": f"Авито пока на паузе — осталось примерно {remaining_text}. AutoBot не будет обращаться к сайту раньше.",
+                "avito": avito_status,
+            }
+        ), 429
+    try:
+        sample_rows = int(data.get("sample_rows") or 2)
+    except (TypeError, ValueError):
+        sample_rows = 2
+    # Одна строка сметы = одна полноценная поисковая навигация Авито. Для
+    # домашнего IP безопасная проба намеренно мала; большой объём берём из кэша
+    # и локального индекса, а не повторными открытиями сайта.
+    sample_rows = max(1, min(2, sample_rows))
+    threading.Thread(
+        target=_run_merge_site_all_worker,
+        kwargs={
+            "ids_override": [tid],
+            "market_max_rows": sample_rows,
+            "market_rerun_selected": True,
+            "market_sources_override": "avito",
+            "market_only_without_verified": True,
+            "market_avito_collect_only": True,
+        },
+        daemon=True,
+    ).start()
+    return jsonify(
+        {
+            "ok": True,
+            "tender_id": tid,
+            "mode": "avito_safe_collect",
+            "sample_rows": sample_rows,
+            "message": "Бережный сбор Авито запущен.",
+            "safety": {
+                "max_rows": 2,
+                "daily_remaining": avito_status.get("daily_remaining"),
+                "next_request_in_seconds": avito_status.get("next_request_in_seconds"),
+            },
+        }
+    )
 
 
 @app.route("/api/generate-merge-site-by-link", methods=["POST"])
@@ -9421,7 +10731,7 @@ def api_tender_viability_refresh():
         pass
 
     base = (get_report_site_public_base() or "").strip().rstrip("/")
-    report_url = f"{base}/merge-report/{tid}/" if base else ""
+    report_url = f"{base}/tenders/{tid}" if base else ""
     return jsonify(
         {
             "ok": True,

@@ -1,0 +1,92 @@
+{% macro render_archive_entries(entries) -%}
+  {% for entry in entries %}
+    <div class="archive-entry{% if entry.likely_estimate %} is-estimate{% endif %}{% if entry.service %} is-service{% endif %}">
+      <span class="archive-entry-type">{{ "Папка" if entry.directory else entry.extension }}</span>
+      <div class="archive-entry-name">
+        <strong>{{ entry.short_name }}</strong>
+        {% if entry.name != entry.short_name %}<small>{{ entry.name }}</small>{% endif %}
+        {% if entry.likely_estimate %}<b>Сметный документ</b>{% endif %}
+        {% if entry.nested_error %}<em>{{ entry.nested_error }}</em>{% endif %}
+      </div>
+      <small class="archive-entry-size">{{ entry.size_fmt }}</small>
+      {% if not entry.directory %}
+      <div class="archive-entry-actions">
+        {% if entry.can_preview %}<a href="/tenders/{{ tender_id }}/source-files/{{ archive_source_token }}/members/{{ entry.token }}/preview">Посмотреть</a>{% endif %}
+        <a href="/tenders/{{ tender_id }}/source-files/{{ archive_source_token }}/members/{{ entry.token }}/download">Скачать</a>
+      </div>
+      {% endif %}
+    </div>
+    {% if entry.children %}
+      <section class="archive-nested">
+        <header><span>Вложенный архив</span><strong>{{ entry.short_name }}</strong><small>{{ entry.children|length }} позиций</small></header>
+        <div class="archive-list nested-level">{{ render_archive_entries(entry.children) }}</div>
+      </section>
+    {% endif %}
+  {% endfor %}
+{%- endmacro %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}" />
+  <title>{{ file.name }} · AutoBot</title>
+</head>
+<body class="preview-page">
+  <header class="topbar">
+    <a class="brand" href="/tenders/{{ tender_id }}?tab=files">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Просмотр документа</small></span>
+    </a>
+    <div class="preview-actions">
+      <a class="btn secondary" href="{{ back_url }}">← Назад</a>
+      <a class="btn primary" href="{{ download_url }}">Скачать</a>
+    </div>
+  </header>
+
+  <main class="preview-shell">
+    <section class="preview-heading">
+      <div><span class="file-ext kind-{{ file.kind }}">{{ file.extension }}</span><div><h1>{{ file.name }}</h1><p>{{ file.type_label }} · {{ file.size_fmt }} · обновлён {{ file.updated }}</p></div></div>
+      {% if preview.truncated %}<span class="preview-warning">Показана часть большого файла</span>{% endif %}
+    </section>
+
+    {% if preview.kind == "excel" %}
+      {% for sheet in preview.sheets %}
+      <section class="preview-block">
+        <h2>Лист: {{ sheet.name }}</h2>
+        <div class="preview-table-wrap"><table class="preview-table"><thead><tr>{% for column in sheet.columns %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>{% for row in sheet.rows %}<tr>{% for value in row %}<td>{{ value }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+      </section>
+      {% endfor %}
+    {% elif preview.kind == "document" %}
+      <article class="document-preview">{% for paragraph in preview.paragraphs %}<p>{{ paragraph }}</p>{% else %}<p>В документе не найден текст для предпросмотра.</p>{% endfor %}</article>
+    {% elif preview.kind == "archive" %}
+      {% if preview.estimate_entries %}
+      <section class="archive-estimates">
+        <div class="archive-estimates-heading"><span>AutoBot нашёл</span><h2>Сметные документы · {{ preview.estimate_count }}</h2><p>ЛСР, ССР и файлы со сметами вынесены сюда, чтобы их не искать внутри вложенных архивов.</p></div>
+        <div class="archive-estimate-list">
+          {% for entry in preview.estimate_entries %}
+          <div>
+            <span class="file-ext kind-{{ entry.kind }}">{{ entry.extension }}</span>
+            <div><strong>{{ entry.short_name }}</strong><small>{{ entry.name }} · {{ entry.size_fmt }}</small></div>
+            <div class="archive-entry-actions">
+              {% if entry.can_preview %}<a href="/tenders/{{ tender_id }}/source-files/{{ archive_source_token }}/members/{{ entry.token }}/preview">Посмотреть</a>{% endif %}
+              <a href="/tenders/{{ tender_id }}/source-files/{{ archive_source_token }}/members/{{ entry.token }}/download">Скачать</a>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+      <section class="preview-block">
+        <div class="archive-section-heading"><div><h2>Содержимое архива · {{ preview.total }} файлов</h2><p>Вложенные ZIP и RAR раскрываются прямо здесь. Служебные подписи оставлены внизу списка.</p></div>{% if preview.nested_count %}<span>{{ preview.nested_count }} вложенных архивов</span>{% endif %}</div>
+        <div class="archive-list">{{ render_archive_entries(preview.entries) }}</div>
+      </section>
+    {% elif preview.kind == "text" %}
+      <section class="preview-block"><pre class="text-preview">{{ preview.text }}</pre></section>
+    {% else %}
+      <section class="preview-unavailable"><strong>Предпросмотр недоступен</strong><p>{{ preview.message }}</p><a class="btn primary" href="/tenders/{{ tender_id }}/source-files/{{ file.token }}/download">Скачать файл</a></section>
+    {% endif %}
+  </main>
+</body>
+</html>
