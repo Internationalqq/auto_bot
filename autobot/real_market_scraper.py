@@ -1631,7 +1631,15 @@ def _dedupe_and_sort(offers: list[MarketOffer], *, max_results: int) -> list[Mar
         combined_engines = ", ".join(dict.fromkeys(engines))
         best_discovery_score = max(float(prev.discovery_score or 0), float(offer.discovery_score or 0))
         best_discovery_reason = offer.discovery_reason if float(offer.discovery_score or 0) > float(prev.discovery_score or 0) else prev.discovery_reason
-        if prev.price <= 0 < offer.price:
+        verification_rank = {"verified": 0, "candidate": 1, "rejected": 2}
+        prev_rank = verification_rank.get(prev.verification, 3)
+        offer_rank = verification_rank.get(offer.verification, 3)
+        if offer_rank < prev_rank:
+            offer.url = canonical_url
+            by_url[canonical_url] = offer
+        elif offer_rank > prev_rank:
+            pass
+        elif prev.price <= 0 < offer.price:
             offer.url = canonical_url
             by_url[canonical_url] = offer
         elif offer.price > 0 and prev.price > 0 and offer.price < prev.price:

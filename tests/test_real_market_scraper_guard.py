@@ -468,6 +468,21 @@ def test_offer_dedupe_ignores_search_tracking_parameters() -> None:
     assert offers[0].price == 1200
 
 
+def test_verified_offer_replaces_old_candidate_for_same_url() -> None:
+    candidate = _offer("https://supplier.example/item")
+    candidate.price = 2000
+    candidate.verification = "candidate"
+    verified = _offer("https://supplier.example/item")
+    verified.price = 2400
+    verified.verification = "verified"
+
+    offers = market._dedupe_and_sort([candidate, verified], max_results=5)
+
+    assert len(offers) == 1
+    assert offers[0].verification == "verified"
+    assert offers[0].price == 2400
+
+
 def test_agent_result_is_verified_by_autobot_before_market_import(tmp_path: Path, monkeypatch) -> None:
     tender_id = "0171200001926000664"
     estimate_path = tmp_path / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
