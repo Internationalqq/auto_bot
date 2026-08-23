@@ -76,11 +76,19 @@ def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
 
     assert 'class="command-tool-icon is-avito"' in template
+    assert 'class="command-tool-icon is-hermes"' in template
+    assert 'data-feature-open="rulesModal"' not in template
+    assert 'id="rulesModal"' not in template
+    assert "Карточка откроет окно с подробностями" in template
+    assert "Смета против НМЦК" in template
+    assert "Статус обработки" in template
+    assert "Повторно найти цены" in template
+    assert "Найти цены на Авито" in template
     assert 'type: "autobot:feature-modal", open: true' in template
     assert 'type: "autobot:feature-modal", open: false' in template
     assert ".command-tool-icon.is-avito i:nth-child(4)" in styles
+    assert ".command-tool-icon.is-hermes" in styles
     assert "max-height: calc(100dvh - 20px)" in styles
     assert 'JSON.stringify({ mode: "web"' in template
     assert 'JSON.stringify({ mode: "avito"' in template
     assert "Дожать 20 без цены" in template
-    assert "Поиск по Авито" in template

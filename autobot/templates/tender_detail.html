@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-4" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-5" />
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
@@ -91,37 +91,32 @@
 
     <section class="tender-command-center" aria-label="Инструменты анализа тендера">
       <header>
-        <div><small>Центр управления</small><strong>Анализ тендера</strong><span>Подробности открываются поверх страницы — таблица остаётся на месте.</span></div>
+        <div><small>Действия с тендером</small><strong>Что хотите сделать?</strong><span>Карточка откроет окно с подробностями. Поиск начнётся только после нажатия синей кнопки внутри.</span></div>
         <span class="command-center-state" id="commandCenterState">Обновляю состояние…</span>
       </header>
       <div class="command-tool-grid">
         {% if tender.has_estimate %}
         <button class="command-tool" type="button" data-feature-open="estimateModal">
           <span class="command-tool-icon is-green" aria-hidden="true">₽</span>
-          <span class="command-tool-copy"><small>Смета и НМЦК</small><strong>{{ tender.estimate_check_title }}</strong><span>{{ tender.estimate_gap_direction }} {{ tender.estimate_gap_fmt }}</span></span>
+          <span class="command-tool-copy"><small>Только посмотреть</small><strong>Смета против НМЦК</strong><span>{{ tender.estimate_check_title }} · {{ tender.estimate_gap_direction }} {{ tender.estimate_gap_fmt }}</span></span>
           <b aria-hidden="true">→</b>
         </button>
         {% endif %}
         <button class="command-tool" type="button" data-feature-open="readinessModal">
           <span class="command-tool-icon" aria-hidden="true">{{ tender.coverage }}%</span>
-          <span class="command-tool-copy"><small>Готовность данных</small><strong>{{ tender.coverage }}% позиций проверено</strong><span id="readinessLauncherStatus">Этапы и журнал выполнения</span></span>
+          <span class="command-tool-copy"><small>Только посмотреть</small><strong>Статус обработки</strong><span id="readinessLauncherStatus">{{ tender.coverage }}% позиций с ценой · этапы и журнал</span></span>
           <b aria-hidden="true">→</b>
         </button>
         <button class="command-tool is-live" type="button" data-feature-open="agentMarketModal">
-          <span class="command-tool-icon is-blue" aria-hidden="true"><i></i></span>
-          <span class="command-tool-copy"><small>Hermes · обычные сайты</small><strong id="agentLauncherTitle">Дожать без цены</strong><span id="agentLauncherStatus">Только сложные позиции после веб-поиска</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
-          <b aria-hidden="true">→</b>
-        </button>
-        <button class="command-tool" type="button" data-feature-open="rulesModal">
-          <span class="command-tool-icon is-violet" aria-hidden="true">✓</span>
-          <span class="command-tool-copy"><small>Методика проверки</small><strong>Как принимается цена</strong><span>Источники, единицы и контроль отклонений</span></span>
+          <span class="command-tool-icon is-hermes" aria-hidden="true">⚕</span>
+          <span class="command-tool-copy"><small>Запустить · Hermes · обычные сайты</small><strong id="agentLauncherTitle">Повторно найти цены</strong><span id="agentLauncherStatus">До 20 сложных строк, где цены ещё нет</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
           <b aria-hidden="true">→</b>
         </button>
         <button class="command-tool" type="button" data-feature-open="avitoModal">
           <span class="command-tool-icon is-avito" aria-hidden="true">
             <i></i><i></i><i></i><i></i>
           </span>
-          <span class="command-tool-copy"><small>Авито · Hermes на Mac mini</small><strong>Поиск по Авито</strong><span id="avitoLauncherStatus">Отдельная браузерная очередь</span></span>
+          <span class="command-tool-copy"><small>Запустить · Hermes · Авито</small><strong>Найти цены на Авито</strong><span id="avitoLauncherStatus">До 5 строк через браузер Mac mini</span></span>
           <b aria-hidden="true">→</b>
         </button>
       </div>
@@ -168,16 +163,6 @@
       <button class="metric attention" type="button" data-bucket-filter="other" aria-pressed="false"><small>Требуют разбора</small><strong>{{ tender.counts.other }}</strong></button>
       <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Обработано рынком</small><strong>{{ tender.counts.processed }}</strong></button>
       <button class="metric verified" type="button" data-bucket-filter="verified" aria-pressed="false"><small>С проверенной ценой</small><strong>{{ tender.counts.verified }}</strong></button>
-    </section>
-
-    <section class="market-rules" data-feature-content="rulesModal">
-      <div class="rules-title"><span aria-hidden="true">✓</span><div><strong>Как AutoBot теперь принимает цену</strong><small>Найденная цифра сама по себе больше не считается рынком.</small></div></div>
-      <div class="rules-grid">
-        <div><b>Работы и услуги</b><span>Ищем прайс подрядчика или объявление услуги с той же единицей: ₽/м², ₽/м³, ₽/час.</span></div>
-        <div><b>Материалы и товары</b><span>Ищем карточку поставщика с совпадающими характеристиками и ценой за шт., кг, м² или м³.</span></div>
-        <div><b>Проверка источника</b><span>В медиану идут только прямая ссылка, совпадение названия и подтверждённая единица цены.</span></div>
-        <div><b>Контроль масштаба</b><span>Цена сверяется со сметой в одной единице. Сильное расхождение остаётся кандидатом и не портит расчёт.</span></div>
-      </div>
     </section>
 
     <section class="agent-market-card" id="agentMarketCard" data-feature-content="agentMarketModal">
@@ -373,7 +358,7 @@
   <aside class="feature-modal" id="estimateModal" hidden aria-labelledby="estimateModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Финансовый контроль</small><h2 id="estimateModalTitle">Смета и начальная цена</h2><p>Проверка полноты извлечённых локальных смет и расхождения с НМЦК.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Только просмотр · ничего не запускается</small><h2 id="estimateModalTitle">Смета против НМЦК</h2><p>Показывает, сходится ли сумма извлечённых локальных смет с начальной ценой тендера.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -382,7 +367,7 @@
   <aside class="feature-modal" id="readinessModal" hidden aria-labelledby="readinessModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Состояние обработки</small><h2 id="readinessModalTitle">Готовность тендера</h2><p>Этапы AutoBot, текущий прогресс и технический журнал.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Только просмотр · ничего не запускается</small><h2 id="readinessModalTitle">Статус обработки</h2><p>Показывает, что AutoBot уже сделал, сколько позиций получило цену и какие ошибки возникли.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -390,15 +375,7 @@
   <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Hermes · обычные сайты</small><h2 id="agentMarketModalTitle">Дожать без цены</h2><p>Вторая попытка только для сложных позиций, которые не закрыл быстрый веб-поиск AutoBot.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
-      <div class="feature-modal-body" data-feature-body></div>
-    </section>
-  </aside>
-
-  <aside class="feature-modal" id="rulesModal" hidden aria-labelledby="rulesModalTitle">
-    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
-    <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Методика AutoBot</small><h2 id="rulesModalTitle">Как принимается рыночная цена</h2><p>Короткие правила, по которым предложение становится проверенным источником.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Запускает Hermes на Mac mini · обычные сайты</small><h2 id="agentMarketModalTitle">Повторно найти недостающие цены</h2><p>Выберите строки таблицы или отправьте первые 20 позиций без цены. Hermes откроет сайты поставщиков и вернёт прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -406,7 +383,7 @@
   <aside class="feature-modal" id="avitoModal" hidden aria-labelledby="avitoModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Hermes · браузер Mac mini</small><h2 id="avitoModalTitle">Поиск по Авито</h2><p>Отдельная очередь объявлений: прямые ссылки, цены, единицы и понятный статус блокировки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Запускает Hermes на Mac mini · только Авито</small><h2 id="avitoModalTitle">Найти цены в объявлениях Авито</h2><p>Выберите строки таблицы или отправьте первые 5 позиций без цены. Hermes откроет объявления и сохранит прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -678,8 +655,8 @@
           if (position) position.textContent = total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
           if (currentStatus) currentStatus.textContent = total && processed >= total ? "Результаты уже добавлены в таблицу сметы" : "Hermes сейчас ничего не обрабатывает";
           if (updated) updated.textContent = "";
-          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Дожать без цены";
-          if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "Только сложные позиции после веб-поиска";
+          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Повторно найти цены";
+          if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "До 20 сложных строк, где цены ещё нет";
           if (commandState) commandState.textContent = total && processed >= total ? "Фоновый анализ завершён" : "Инструменты готовы";
         }
         if (agentMarketNote) {
@@ -750,7 +727,7 @@
             : "Для подключения Mac mini не настроен MARKET_AGENT_TOKEN.";
           if (avitoSafeTitle) avitoSafeTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Отдельный поиск объявлений через Hermes";
           if (avitoSafeStatus) avitoSafeStatus.textContent = "Поиск выполняется браузерной сессией Mac mini, а не IP сервера AutoBot.";
-          if (launcher) launcher.textContent = total && processed >= total ? "Последняя очередь завершена" : "Отдельная браузерная очередь";
+          if (launcher) launcher.textContent = total && processed >= total ? "Последняя очередь завершена" : "До 5 строк через браузер Mac mini";
         }
         const jobs = (current ? [current] : []).concat(progress.recent || []).slice(0, 6);
         if (avitoAgentJobs) {

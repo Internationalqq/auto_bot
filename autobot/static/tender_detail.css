@@ -85,17 +85,16 @@ button { color: inherit; }
 .command-tool-grid { margin-top: 15px; display: grid; grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); gap: 9px; }
 .command-tool { min-width: 0; min-height: 88px; padding: 13px 14px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; background: #f8fafc; border: 1px solid #e0e7f0; border-radius: 11px; cursor: pointer; text-align: left; transition: border-color .16s, box-shadow .16s, transform .16s, background .16s; }.command-tool:hover { border-color: #8bb8ee; background: #fbfdff; box-shadow: 0 7px 18px rgba(27, 67, 111, .08); transform: translateY(-1px); }.command-tool:focus-visible { outline: 3px solid rgba(20, 116, 232, .2); outline-offset: 2px; }
 .command-tool > b { color: #8ba0ba; font-size: 18px; }.command-tool:hover > b { color: var(--blue); }
-.command-tool-icon { width: 42px; height: 42px; display: grid; place-items: center; color: #fff; background: #627b9c; border-radius: 11px; font-size: 12px; font-weight: 900; font-variant-numeric: tabular-nums; }.command-tool-icon.is-green { background: #23966a; font-size: 20px; }.command-tool-icon.is-blue { background: #1673e6; }.command-tool-icon.is-violet { background: #7559c8; font-size: 19px; }
+.command-tool-icon { width: 42px; height: 42px; display: grid; place-items: center; color: #fff; background: #627b9c; border-radius: 11px; font-size: 12px; font-weight: 900; font-variant-numeric: tabular-nums; }.command-tool-icon.is-green { background: #23966a; font-size: 20px; }
+.command-tool-icon.is-hermes { color: #fff; background: linear-gradient(145deg, #143a67, #1673e6 58%, #29a77a); font-family: Georgia, "Times New Roman", serif; font-size: 27px; font-weight: 400; line-height: 1; text-shadow: 0 2px 6px rgba(3, 26, 55, .28); box-shadow: 0 6px 15px rgba(22, 115, 230, .2); }
 .command-tool-icon.is-avito { position: relative; overflow: hidden; background: #fff; border: 1px solid #dfe5ed; box-shadow: 0 4px 12px rgba(39, 57, 82, .08); }
 .command-tool-icon.is-avito i { position: absolute; display: block; border-radius: 50%; }
 .command-tool-icon.is-avito i:nth-child(1) { width: 14px; height: 14px; left: 7px; top: 7px; background: #00aaff; }
 .command-tool-icon.is-avito i:nth-child(2) { width: 9px; height: 9px; right: 7px; top: 8px; background: #97cf26; }
 .command-tool-icon.is-avito i:nth-child(3) { width: 9px; height: 9px; left: 8px; bottom: 7px; background: #ff6163; }
 .command-tool-icon.is-avito i:nth-child(4) { width: 14px; height: 14px; right: 6px; bottom: 6px; background: #a169f7; }
-.command-tool-icon.is-blue i { width: 10px; height: 10px; background: #fff; border-radius: 50%; box-shadow: 0 0 0 5px rgba(255,255,255,.2); animation: agent-pulse-light 1.8s ease-out infinite; }
 .command-tool-copy { min-width: 0; display: grid; gap: 3px; }.command-tool-copy small { color: #71839e; font-size: 9px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }.command-tool-copy strong { overflow: hidden; color: #273e5e; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }.command-tool-copy > span:not(.command-mini-track) { overflow: hidden; color: #7889a0; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .command-mini-track { height: 4px; margin-top: 3px; overflow: hidden; background: #dce6f1; border-radius: 999px; }.command-mini-track i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #1474e8, #39b77c); border-radius: inherit; transition: width .5s ease; }
-@keyframes agent-pulse-light { 70%, 100% { box-shadow: 0 0 0 10px rgba(255,255,255,0); } }
 
 .estimate-check { margin-top: 18px; padding: 21px 23px; background: #fff; border: 1px solid var(--line); border-left: 5px solid #8a9bb4; border-radius: 14px; box-shadow: var(--shadow); }
 .estimate-check > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
@@ -137,13 +136,6 @@ button { color: inherit; }
 button.metric { color: inherit; cursor: pointer; font: inherit; }.metric:hover, .metric.is-active { color: var(--blue); border-color: #78aeea; background: #edf5ff; box-shadow: none; }
 .metric small { color: inherit; font-size: 10px; font-weight: 800; }.metric strong { font-size: 13px; font-variant-numeric: tabular-nums; }
 .metric.attention strong { color: var(--amber); }.metric.verified strong { color: var(--green); }
-
-.market-rules { margin-top: 18px; padding: 22px 24px; background: #eef6ff; border: 1px solid #cfe4ff; border-radius: 14px; }
-.rules-title { display: flex; align-items: center; gap: 12px; }.rules-title > span { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: #1474e8; color: #fff; font-weight: 900; }
-.rules-title div { display: grid; gap: 3px; }.rules-title strong { font-size: 16px; }.rules-title small { color: #59708f; }
-.rules-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 17px; }
-.rules-grid > div { padding: 14px; display: grid; gap: 6px; background: rgba(255,255,255,.72); border-radius: 9px; }
-.rules-grid b { font-size: 13px; }.rules-grid span { color: #5e6f89; font-size: 12px; line-height: 1.5; }
 
 .agent-market-card { margin-top: 14px; padding: 20px 22px; background: #fff; border: 1px solid #cfdceb; border-radius: 14px; box-shadow: 0 6px 20px rgba(23,43,77,.035); }
 .agent-market-head { display: flex; align-items: center; justify-content: space-between; gap: 28px; }
@@ -326,9 +318,9 @@ body.feature-modal-open { overflow: hidden; }
 .feature-modal-head > div { min-width: 0; }.feature-modal-head small { color: var(--blue); font-size: 9px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }.feature-modal-head h2 { margin: 5px 0 3px; color: #1c3150; font-size: 21px; }.feature-modal-head p { margin: 0; color: #71819a; font-size: 11px; line-height: 1.45; }
 .feature-modal-head > button { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; color: #5e718b; background: #f5f8fc; border: 1px solid #dbe4ef; border-radius: 9px; cursor: pointer; font-size: 23px; line-height: 1; }.feature-modal-head > button:hover { color: var(--blue); background: #edf5ff; }
 .feature-modal-body { min-height: 0; padding: 14px; overflow: auto; }
-.feature-modal-body > .estimate-check, .feature-modal-body > .progress-card, .feature-modal-body > .market-rules, .feature-modal-body > .agent-market-card { display: block; margin: 0; box-shadow: none; }
+.feature-modal-body > .estimate-check, .feature-modal-body > .progress-card, .feature-modal-body > .agent-market-card { display: block; margin: 0; box-shadow: none; }
 .feature-modal-body > .avito-safe-card { margin: 0; display: grid; box-shadow: none; }
-.feature-modal-body > .agent-market-card { border-color: #d7e2ef; }.feature-modal-body > .market-rules { background: #eef6ff; }
+.feature-modal-body > .agent-market-card { border-color: #d7e2ef; }
 
 .source-preview-drawer[hidden] { display: none; }
 .source-preview-drawer { position: fixed; inset: 0; z-index: 120; }
@@ -354,7 +346,6 @@ body.feature-modal-open { overflow: hidden; }
   .avito-safe-actions { width: 100%; max-width: none; justify-content: space-between; }.avito-safe-actions > span { text-align: left; }
   .agent-live { grid-template-columns: 1fr; }.agent-market-summary { width: 100%; grid-template-columns: repeat(5, minmax(80px, 1fr)); }
   .estimate-check-grid { grid-template-columns: 1fr; }
-  .rules-grid { grid-template-columns: 1fr 1fr; }
   .source-files-toolbar { grid-template-columns: 1fr 210px; }.source-files-toolbar > span { grid-column: 1 / -1; }.source-file-row { grid-template-columns: 52px minmax(0, 1fr); }.source-file-actions { grid-column: 2; }
 }
 
@@ -371,7 +362,7 @@ body.feature-modal-open { overflow: hidden; }
   .tender-tabs { overflow-x: auto; }.tender-tabs a { flex: 0 0 auto; }.source-files-heading { align-items: flex-start; flex-direction: column; }.source-files-heading > small { text-align: left; }.source-file-stats { grid-template-columns: 1fr; }.source-files-toolbar { grid-template-columns: 1fr; }.source-file-row { grid-template-columns: 44px minmax(0, 1fr); gap: 11px; }.file-ext { width: 42px; height: 46px; }.source-file-actions { grid-column: 1 / -1; }.source-file-actions .btn { flex: 1; }.preview-disabled { display: none; }
   .preview-actions { width: 100%; }.preview-actions .btn { flex: 1; }.preview-shell { width: min(100% - 22px, 1500px); padding-top: 14px; }.preview-heading { align-items: flex-start; flex-direction: column; }.document-preview { padding: 24px 20px; }
   .archive-estimate-list > div { grid-template-columns: 38px minmax(0, 1fr); }.archive-estimate-list .archive-entry-actions { grid-column: 1 / -1; }.archive-estimate-list .archive-entry-actions a { flex: 1; }.archive-section-heading { flex-direction: column; }.archive-entry { grid-template-columns: 52px minmax(0, 1fr) auto; }.archive-entry-actions { grid-column: 1 / -1; }.archive-entry-actions a { flex: 1; }.archive-nested { margin-left: 8px; }.archive-nested > header { grid-template-columns: 1fr; gap: 3px; }
-  .rules-grid { grid-template-columns: 1fr; }.source-preview-panel { width: 100vw; }
+  .source-preview-panel { width: 100vw; }
   .avito-safe-card { padding: 18px; }.avito-safe-actions { align-items: stretch; flex-direction: column; }.avito-safe-actions .btn { width: 100%; min-width: 0; }.avito-agent-state { grid-template-columns: 1fr; }.avito-agent-state p { grid-column: 1; }
   .agent-market-card { padding: 18px; }.agent-market-actions { width: 100%; }.agent-market-actions .btn { flex: 1; }.agent-live { padding: 13px; }.agent-live-title { align-items: flex-start; }.agent-live-title strong { font-size: 17px; white-space: normal; }.agent-current { grid-template-columns: 12px minmax(0, 1fr); }.agent-current time { grid-column: 2; }.agent-market-summary { grid-template-columns: 1fr 1fr; }.agent-market-summary > span { border-bottom: 1px solid #e0e7f0; }.agent-journal-head { align-items: flex-start; flex-direction: column; gap: 3px; }.agent-job { grid-template-columns: 88px minmax(0,1fr); }.agent-job small { grid-column: 1 / -1; }
   .feature-modal { padding: 0; align-items: end; }.feature-modal-panel, .feature-modal-panel.is-wide { width: 100%; max-height: 100vh; max-height: 100dvh; border-radius: 17px 17px 0 0; transform: translateY(28px); }.feature-modal-head { padding: 14px 16px 12px; }.feature-modal-head h2 { font-size: 19px; }.feature-modal-body { padding: 10px; }#agentMarketModal .feature-modal-panel { height: 100vh; height: 100dvh; }
