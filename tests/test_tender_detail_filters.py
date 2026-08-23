@@ -68,3 +68,15 @@ def test_verified_price_metric_is_an_actual_filter_button():
     assert 'data-bucket-filter="verified"' in template
     assert 'data-market-verified="{{ \'1\' if p.verified_count else \'0\' }}"' in template
     assert 'activeBucket === "verified" && row.dataset.marketVerified === "1"' in template
+
+
+def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert 'class="command-tool-icon is-avito"' in template
+    assert 'type: "autobot:feature-modal", open: true' in template
+    assert 'type: "autobot:feature-modal", open: false' in template
+    assert ".command-tool-icon.is-avito i:nth-child(4)" in styles
+    assert "max-height: calc(100dvh - 20px)" in styles

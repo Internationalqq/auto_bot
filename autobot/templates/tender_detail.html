@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-2" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-3" />
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
@@ -118,7 +118,9 @@
           <b aria-hidden="true">→</b>
         </button>
         <button class="command-tool" type="button" data-feature-open="avitoModal">
-          <span class="command-tool-icon is-coral" aria-hidden="true">A</span>
+          <span class="command-tool-icon is-avito" aria-hidden="true">
+            <i></i><i></i><i></i><i></i>
+          </span>
           <span class="command-tool-copy"><small>Авито · бережный режим</small><strong>Контрольный сбор</strong><span id="avitoLauncherStatus">Проверяю доступ…</span></span>
           <b aria-hidden="true">→</b>
         </button>
@@ -455,6 +457,7 @@
         activeFeatureModal = modal;
         modal.hidden = false;
         document.body.classList.add("feature-modal-open");
+        if (window.parent !== window) window.parent.postMessage({ type: "autobot:feature-modal", open: true }, "*");
         window.requestAnimationFrame(function() {
           modal.classList.add("is-open");
           modal.querySelector(".feature-modal-head [data-feature-close]")?.focus({ preventScroll: true });
@@ -465,7 +468,10 @@
       window.setTimeout(function() {
         modal.hidden = true;
         if (activeFeatureModal === modal) activeFeatureModal = null;
-        if (!activeFeatureModal) document.body.classList.remove("feature-modal-open");
+        if (!activeFeatureModal) {
+          document.body.classList.remove("feature-modal-open");
+          if (window.parent !== window) window.parent.postMessage({ type: "autobot:feature-modal", open: false }, "*");
+        }
         activeFeatureTrigger?.focus({ preventScroll: true });
         activeFeatureTrigger = null;
       }, 180);
