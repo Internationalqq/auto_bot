@@ -380,6 +380,44 @@ def job_progress(tender_id: str, *, path: Path | str | None = None) -> dict[str,
     }
 
 
+def patch_queued_job_payloads(
+    tender_id: str,
+    patch: dict[str, Any],
+    *,
+    path: Path | str | None = None,
+) -> int:
+    """Merge fast-mode settings into jobs that have not been claimed yet."""
+    tid = str(tender_id or "").strip()
+    clean_patch = {str(key): value for key, value in dict(patch or {}).items() if str(key).strip()}
+    if not tid or not clean_patch:
+        return 0
+    init_db(path)
+    changed = 0
+    with closing(_connect(path)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            rows = connection.execute(
+                "SELECT id, payload_json FROM agent_market_jobs WHERE tender_id = ? AND status = 'queued'",
+                (tid,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                payload.update(clean_patch)
+                connection.execute(
+                    "UPDATE agent_market_jobs SET payload_json = ? WHERE id = ? AND status = 'queued'",
+                    (json.dumps(payload, ensure_ascii=False), row["id"]),
+                )
+                changed += 1
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+    return changed
+
+
 def get_job(job_id: str, *, path: Path | str | None = None) -> dict[str, Any] | None:
     init_db(path)
     with closing(_connect(path)) as connection:

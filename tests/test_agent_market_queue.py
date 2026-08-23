@@ -14,6 +14,7 @@ from autobot.agent_market_queue import (
     job_progress,
     job_summary,
     list_jobs,
+    patch_queued_job_payloads,
 )
 
 
@@ -86,6 +87,24 @@ class AgentMarketQueueTests(unittest.TestCase):
         self.assertGreaterEqual(len(first), 32)
         self.assertEqual(first, second)
         self.assertEqual(token_path.read_text(encoding="utf-8").strip(), first)
+
+    def test_patch_queued_payloads_does_not_change_leased_job(self) -> None:
+        second = {**self.position, "position_key": "second", "name": "Second position"}
+        enqueue_jobs("12345678", [self.position, second], path=self.db_path)
+        leased = claim_job("mac-mini", path=self.db_path)
+
+        changed = patch_queued_job_payloads(
+            "12345678",
+            {"search_mode": "fast_web", "max_sources": 3},
+            path=self.db_path,
+        )
+
+        jobs = {job["position_key"]: job for job in list_jobs("12345678", path=self.db_path)}
+        self.assertEqual(changed, 1)
+        self.assertNotIn("search_mode", leased["payload"])
+        self.assertNotIn("search_mode", jobs[leased["position_key"]]["payload"])
+        self.assertEqual(jobs["second"]["payload"]["search_mode"], "fast_web")
+        self.assertEqual(jobs["second"]["payload"]["max_sources"], 3)
 
 
 if __name__ == "__main__":
