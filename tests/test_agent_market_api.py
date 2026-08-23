@@ -139,6 +139,43 @@ class AgentMarketApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    @patch("autobot.real_market_scraper.import_agent_market_result")
+    @patch("autobot.real_market_scraper.probe_agent_market_start_urls")
+    def test_worker_failure_recovers_from_trusted_direct_source(self, probe_sources, import_result) -> None:
+        queue.patch_queued_job_payloads(
+            "12345678",
+            {"start_urls": ["https://supplier.example/sand/"], "max_attempts": 1},
+        )
+        job = self.client.post(
+            "/api/agent-market/v1/claim", headers=self.auth(), json={"worker_id": "mac-mini"}
+        ).get_json()["job"]
+        probe_sources.return_value = {
+            "schema_version": 2,
+            "position_key": "pos-1",
+            "offers": [{
+                "title": "Щебень 20-40",
+                "price": 2400,
+                "currency": "RUB",
+                "unit": "м3",
+                "url": "https://supplier.example/sand/",
+                "evidence": "Щебень 20-40 — 2400 руб/м3",
+            }],
+            "_autobot_direct_probe": True,
+        }
+        import_result.return_value = {"imported": 1, "verified": 1, "offer_outcomes": []}
+
+        response = self.client.post(
+            f"/api/agent-market/v1/jobs/{job['id']}/fail",
+            headers=self.auth(),
+            json={"worker_id": "mac-mini", "error": "result has no acceptable offers with direct URLs", "retry": False},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["recovered"])
+        self.assertEqual(queue.get_job(job["id"])["status"], "completed")
+        validated = import_result.call_args.args[2]
+        self.assertTrue(validated["_autobot_direct_probe"])
+
     def test_post_filters_ineligible_rows_and_prioritizes_materials(self) -> None:
         reports_dir = Path(self.tempdir.name) / "reports"
         reports_dir.mkdir(exist_ok=True)

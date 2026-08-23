@@ -53,6 +53,7 @@ from autobot.market_strategy import (
     assess_price_plausibility,
     build_search_plan,
     check_offer,
+    is_direct_source_url,
     market_query_name,
     normalize_unit,
 )
@@ -1068,6 +1069,10 @@ def _session_get(url: str, timeout: int = 25) -> str:
         timeout=timeout,
     )
     r.raise_for_status()
+    if not r.encoding or str(r.encoding).casefold() in {"iso-8859-1", "latin-1"}:
+        apparent = str(r.apparent_encoding or "").strip()
+        if apparent:
+            r.encoding = apparent
     return r.text
 
 
@@ -3083,6 +3088,85 @@ def _backfill_price_index_from_report(tender_id: str, frame: pd.DataFrame) -> tu
     return result, stored_total
 
 
+def probe_agent_market_start_urls(
+    tender_id: str,
+    position_payload: dict[str, object],
+    *,
+    max_sources: int = 1,
+) -> dict[str, object]:
+    """Strictly extract a price from a preselected direct supplier page.
+
+    This is a bounded fallback for a browser-agent failure, not web discovery:
+    URLs must already be present in the trusted job payload and the normal page
+    adapter must confirm identity, price and unit.
+    """
+
+    tid = str(tender_id or "").strip()
+    name = str(position_payload.get("name") or "").strip()
+    urls = [
+        str(url or "").strip()
+        for url in list(position_payload.get("start_urls") or [])
+        if is_direct_source_url(url)
+    ][: max(1, min(3, int(max_sources or 1)))]
+    if not tid or not name or not urls:
+        return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Нет прямых источников для строгой проверки"}
+    estimate_path = estimate_path_for_tender(tid)
+    if not estimate_path.is_file():
+        return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Нет сметы для проверки прямых источников"}
+    estimate = pd.read_excel(estimate_path)
+    matches = estimate[estimate[COL_NAME].fillna("").astype(str).map(_norm_key) == _norm_key(name)]
+    if matches.empty:
+        return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Позиция больше не найдена в смете"}
+    source_row = matches.iloc[0]
+    plan = build_search_plan(
+        source_row.get(COL_NAME, ""),
+        source_row.get("Ед. изм.", ""),
+        source_row.get("basis_code", ""),
+        source_row.get("Раздел", ""),
+        str(position_payload.get("region") or ""),
+    )
+    inspection_name = market_query_name(source_row.get(COL_NAME, ""), plan.position.slug)
+    offers: list[dict[str, object]] = []
+    failures: list[str] = []
+    for url in urls:
+        page_html, source_error, _ = _fetch_source_page(url, timeout=10, browser_fetcher=None)
+        if not page_html:
+            failures.append(f"{urlparse(url).netloc}: {source_error or 'страница не открылась'}")
+            continue
+        inspection = inspect_source_page(
+            page_html,
+            url,
+            name=inspection_name,
+            target_unit=str(source_row.get("Ед. изм.", "") or ""),
+            position_bucket=plan.position.bucket,
+        )
+        if not inspection.accepted or not inspection.price:
+            failures.append(f"{urlparse(url).netloc}: {inspection.reason or 'цена не подтверждена'}")
+            continue
+        offers.append(
+            {
+                "title": inspection.title or inspection_name,
+                "price": float(inspection.price),
+                "currency": "RUB",
+                "unit": inspection.unit,
+                "url": url,
+                "evidence": inspection.evidence,
+                "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "confidence": 0.82,
+                "price_scope": inspection.price_scope,
+            }
+        )
+        break
+    return {
+        "schema_version": 2,
+        "position_key": str(position_payload.get("position_key") or ""),
+        "offers": offers,
+        "notes": "AutoBot проверил заранее выбранный прямой источник после неудачи Hermes"
+        + (f"; {'; '.join(failures[:3])}" if failures else ""),
+        "_autobot_direct_probe": True,
+    }
+
+
 def import_agent_market_result(
     tender_id: str,
     position_payload: dict[str, object],
@@ -3115,6 +3199,7 @@ def import_agent_market_result(
     )
     search_mode = str(position_payload.get("search_mode") or "").strip().casefold()
     avito_agent_mode = search_mode == "avito_agent"
+    direct_probe_mode = bool(result.get("_autobot_direct_probe"))
     imported: list[MarketOffer] = []
     for item in list(result.get("offers") or [])[:10]:
         if not isinstance(item, dict):
@@ -3152,13 +3237,15 @@ def import_agent_market_result(
         reason = (
             "Прямое объявление открыто Hermes в браузерной сессии Mac mini; AutoBot проверяет соответствие позиции и единицы"
             if avito_agent_mode
+            else "AutoBot открыл заранее выбранный прямой источник и извлёк цену со страницы"
+            if direct_probe_mode
             else "Получено браузерным агентом; AutoBot ещё не подтвердил страницу и соответствие позиции"
         )
         if plausibility.status in {"review", "extreme"}:
             reason += f"; {plausibility.reason}"
         imported.append(
             MarketOffer(
-                source=("Hermes · Авито" if avito_agent_mode else f"Hermes Agent · {host or 'веб'}"),
+                source=("Hermes · Авито" if avito_agent_mode else f"AutoBot · {host or 'прямой источник'}" if direct_probe_mode else f"Hermes Agent · {host or 'веб'}"),
                 title=str(item.get("title") or name).strip()[:500],
                 price=price,
                 url=url,
@@ -3170,7 +3257,7 @@ def import_agent_market_result(
                 observed_at=observed_at,
                 position_type=plan.position.slug,
                 page_checked=avito_agent_mode,
-                adapter="hermes-avito-agent" if avito_agent_mode else "hermes-browser-agent",
+                adapter="hermes-avito-agent" if avito_agent_mode else "autobot-direct-source" if direct_probe_mode else "hermes-browser-agent",
                 price_scope=str(item.get("price_scope") or "").strip(),
                 evidence=evidence,
                 published_at=str(item.get("published_at") or "").strip(),
@@ -3179,7 +3266,7 @@ def import_agent_market_result(
                 plausibility=plausibility.status,
                 identity_verified=False,
                 source_weight=source_quality(url, host),
-                discovery_engine="Hermes Avito browser" if avito_agent_mode else "Hermes browser",
+                discovery_engine="Hermes Avito browser" if avito_agent_mode else "AutoBot direct source" if direct_probe_mode else "Hermes browser",
                 discovery_score=max(0.0, min(1.0, float(item.get("confidence") or 0.45))),
                 discovery_reason=(
                     "Прямое объявление открыто постоянной браузерной сессией Mac mini"

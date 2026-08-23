@@ -112,6 +112,39 @@ class AgentMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(imported["offer_outcomes"][0]["price"], 650)
         self.assertEqual(imported["offer_outcomes"][0]["raw_price"], 65000)
 
+    def test_direct_source_probe_requires_page_price_and_matching_unit(self) -> None:
+        tender_id = "12345678"
+        name = "Песок природный для строительных работ | класс, мелкий"
+        page = "<h1>Карьерный песок</h1><div>Песок строительный мелкий — 300 ₽/м³</div>"
+        with tempfile.TemporaryDirectory() as tempdir:
+            estimate_path = Path(tempdir) / "estimate.xlsx"
+            pd.DataFrame([{
+                market.COL_NAME: name,
+                "Ед. изм.": "м3",
+                market.COL_QTY: 10,
+                market.COL_UNIT_PRICE: 450,
+                market.COL_SUM: 4500,
+                "basis_code": "ФСБЦ",
+                "Раздел": "Материалы",
+            }]).to_excel(estimate_path, index=False)
+            with (
+                patch.object(market, "estimate_path_for_tender", return_value=estimate_path),
+                patch.object(market, "_fetch_source_page", return_value=(page, "", "http")),
+            ):
+                result = market.probe_agent_market_start_urls(
+                    tender_id,
+                    {
+                        "position_key": "sand-1",
+                        "name": name,
+                        "region": "Ярославская область",
+                        "start_urls": ["https://supplier.example/sand/"],
+                    },
+                )
+
+        self.assertTrue(result["_autobot_direct_probe"])
+        self.assertEqual(result["offers"][0]["price"], 300)
+        self.assertEqual(result["offers"][0]["unit"], "м3")
+
 
 if __name__ == "__main__":
     unittest.main()

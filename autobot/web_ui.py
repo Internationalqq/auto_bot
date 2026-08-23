@@ -10483,7 +10483,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             )
         else:
             source_instruction = (
-                "Снача открой эти прямые источники по порядку: " + ", ".join(start_urls) + ". "
+                "Сначала открой эти прямые источники по порядку: " + ", ".join(start_urls) + ". "
                 if start_urls
                 else ""
             )
@@ -10605,13 +10605,34 @@ def api_agent_market_fail(job_id: str):
     auth_error = _require_agent_market_token()
     if auth_error:
         return auth_error
-    from autobot.agent_market_queue import fail_job
+    from autobot.agent_market_queue import complete_job, fail_job, get_job
+    from autobot.real_market_scraper import import_agent_market_result, probe_agent_market_start_urls
 
     data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id") or "").strip()
+    job = get_job(job_id)
+    if job and job.get("status") == "leased" and job.get("worker_id") == worker_id:
+        payload = job.get("payload") or {}
+        if str(job.get("job_mode") or "web") == "web" and payload.get("start_urls"):
+            try:
+                recovered = probe_agent_market_start_urls(str(job.get("tender_id") or ""), payload, max_sources=1)
+                if recovered.get("offers"):
+                    validated = _validate_agent_market_result(recovered, str(job.get("position_key") or ""))
+                    validated["_autobot_direct_probe"] = True
+                    with agent_market_import_lock:
+                        imported = import_agent_market_result(str(job.get("tender_id") or ""), payload, validated)
+                    validated["import"] = imported
+                    completed = complete_job(job_id, worker_id, validated)
+                    if completed:
+                        return jsonify({"ok": True, "recovered": True, "job_id": job_id, "import": imported})
+            except (OSError, ValueError, TypeError):
+                # The original worker failure remains the authoritative result
+                # when the bounded direct-source fallback cannot be verified.
+                pass
     try:
         ok = fail_job(
             job_id,
-            str(data.get("worker_id") or "").strip(),
+            worker_id,
             str(data.get("error") or "Ошибка агента"),
             retry=bool(data.get("retry")),
         )
