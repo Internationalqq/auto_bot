@@ -10237,6 +10237,7 @@ _AGENT_MARKET_SOURCE_HINTS = (
         "regions": ("яросл",),
         "markers": ("песок строительный", "песок карьерный", "песок мелкий"),
         "urls": (
+            "https://yaroslavl.scheben-rf.ru/pesok_karerniy/",
             "https://xn--90ahb6al8czar.xn--p1ai/karernyj-pesok/",
             "https://pesok-yaroslavl.ru/kariernyy-pesok",
             "https://postavka76.ru/pages/pesok.htm",
