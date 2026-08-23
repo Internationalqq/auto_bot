@@ -243,6 +243,32 @@ class MarketSourceAdapterTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertEqual(result.price, 2650)
 
+    def test_material_table_binds_cube_price_to_its_column(self) -> None:
+        page = """
+        <h1>Щебень гранитный в Ярославле</h1>
+        <table>
+          <thead><tr><td>Материал</td><td>Цена за м3 (куб)</td><td>Цена за тонну</td></tr></thead>
+          <tbody>
+            <tr itemscope itemtype="http://schema.org/Product">
+              <td itemprop="name">Щебень гранитный (фр. 20-40)</td>
+              <td itemprop="description">От 2400 руб</td>
+              <td itemprop="offers"><meta itemprop="price" content="1500">От 1500 руб</td>
+            </tr>
+          </tbody>
+        </table>
+        """
+        result = inspect_source_page(
+            page,
+            "https://supplier.example/scheben-granitniy/",
+            name="Щебень гранитный 20-40",
+            target_unit="м3",
+            position_bucket="materials",
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.price, 2400)
+        self.assertEqual(result.unit, "м3")
+        self.assertEqual(result.extractor, "table-row")
+
 
 if __name__ == "__main__":
     unittest.main()

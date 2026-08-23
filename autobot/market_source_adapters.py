@@ -350,7 +350,7 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
         if getattr(tag, "name", "") == "tr":
             table = tag.find_parent("table")
             if table is not None:
-                table_heading = _clean(" ".join(cell.get_text(" ", strip=True) for cell in table.select("caption, thead th")))
+                table_heading = _clean(" ".join(cell.get_text(" ", strip=True) for cell in table.select("caption, thead th, thead td")))
                 context = _clean(f"{context}. {table_heading}")
         for text in _price_segments(tag):
             if len(text) < 8 or len(text) > 900 or text in seen:
@@ -380,6 +380,53 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
             overlap = _overlap(name, text if position_bucket == "works" else evidence)
             for price in values[:3]:
                 facts.append(_PriceFact(text[:240], price, unit, fact_scope, evidence, "price-block", overlap))
+    return facts
+
+
+def _table_row_facts(soup: BeautifulSoup, name: str, position_bucket: str) -> list[_PriceFact]:
+    """Bind each table price to its own column header and product row.
+
+    Supplier price lists often expose both RUB/m3 and RUB/tonne in the same row.
+    Treating the whole row as one text block can attach the tonne price to the
+    cubic-metre header, so preserve the visual column relationship here.
+    """
+
+    facts: list[_PriceFact] = []
+    seen: set[tuple[str, float, str]] = set()
+    for table in soup.select("table")[:120]:
+        header_row = table.select_one("thead tr")
+        if header_row is None:
+            header_row = next((row for row in table.select("tr")[:3] if row.find("th")), None)
+        headers = (
+            [_clean(cell.get_text(" ", strip=True)) for cell in header_row.find_all(["th", "td"], recursive=False)]
+            if header_row is not None
+            else []
+        )
+        for row in table.select("tbody tr") or table.select("tr"):
+            if header_row is not None and row is header_row:
+                continue
+            cells = row.find_all(["td", "th"], recursive=False)
+            if len(cells) < 2:
+                continue
+            title = _clean(cells[0].get_text(" ", strip=True))
+            if not title:
+                continue
+            for index, cell in enumerate(cells[1:], start=1):
+                cell_text = _clean(cell.get_text(" ", strip=True))
+                values = parse_ruble_values(cell_text)
+                if not values:
+                    continue
+                header = headers[index] if index < len(headers) else ""
+                unit = detect_price_unit(f"{header} {cell_text}")
+                evidence = _clean(f"{title}. {header}: {cell_text}")[:1600]
+                scope = _scope(evidence) if position_bucket == "works" else "product"
+                overlap = _overlap(name, title)
+                for price in values[:3]:
+                    key = (title.casefold(), price, unit)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    facts.append(_PriceFact(title[:240], price, unit, scope, evidence, "table-row", overlap))
     return facts
 
 
@@ -422,6 +469,7 @@ def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, 
         scope_score = 1.0 if position_bucket != "works" or fact.scope == "work_only" else 0.0
         extractor_score = {
             "json-ld": 1.0,
+            "table-row": 0.96,
             "microdata": 0.92,
             "price-block": 0.78,
             "metadata": 0.64,
@@ -482,6 +530,7 @@ def inspect_source_page(
     facts = _jsonld_facts(soup, name)
     facts.extend(_microdata_facts(soup, name))
     facts.extend(_meta_fact(soup, name, position_bucket))
+    facts.extend(_table_row_facts(soup, name, position_bucket))
     facts.extend(_block_facts(soup, name, page_text, position_bucket))
     facts.extend(_inline_price_facts(page_text, name, position_bucket))
     best = _best_fact(facts, target_unit, position_bucket, name)
