@@ -227,6 +227,21 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertIn("beton-yrs.ru", concrete[0])
         self.assertIn("pesok_karerniy", sand[0])
 
+    def test_historical_agent_block_price_is_normalized_for_display(self) -> None:
+        price, unit = web_ui._agent_market_offer_display_values(
+            {"price": 65000, "unit": "100 м"},
+            {"price": 65000, "verification": "candidate"},
+        )
+        self.assertEqual(price, 650)
+        self.assertEqual(unit, "м")
+
+        normalized_price, normalized_unit = web_ui._agent_market_offer_display_values(
+            {"price": 65000, "unit": "100 м"},
+            {"raw_price": 65000, "price": 650, "matched_unit": "м"},
+        )
+        self.assertEqual(normalized_price, 650)
+        self.assertEqual(normalized_unit, "м")
+
     def test_get_exposes_verified_offer_outcome_for_live_results(self) -> None:
         job = queue.claim_job("mac-mini")
         queue.complete_job(

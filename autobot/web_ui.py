@@ -10266,6 +10266,30 @@ def _agent_market_start_urls(name: object, queries: object, region: object) -> l
     return []
 
 
+def _agent_market_offer_display_values(raw_offer: dict, outcome: dict) -> tuple[object, str]:
+    """Present historical block-unit offers as a comparable base-unit price."""
+
+    from autobot.market_strategy import normalize_unit
+    from autobot.real_market_scraper import _agent_unit_multiplier
+
+    raw_unit = str(raw_offer.get("unit") or outcome.get("matched_unit") or "").strip()
+    display_unit = normalize_unit(outcome.get("matched_unit") or raw_unit) or raw_unit
+    raw_price = raw_offer.get("price")
+    # New imports expose both raw_price and the already-normalized price.
+    # Historical imports did not, so normalize those once for display only.
+    if outcome.get("raw_price") not in (None, ""):
+        display_price = outcome.get("price", raw_price)
+    else:
+        display_price = raw_price
+        try:
+            multiplier = _agent_unit_multiplier(raw_unit)
+            if multiplier > 1:
+                display_price = float(display_price) / multiplier
+        except (TypeError, ValueError):
+            pass
+    return display_price, display_unit
+
+
 @app.route("/api/tenders/<tender_id>/agent-market/jobs", methods=["GET", "POST"])
 def api_tender_agent_market_jobs(tender_id: str):
     """Create browser-agent jobs from real estimate rows or show their current state."""
@@ -10307,6 +10331,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                         verification = "verified" if len(raw_offers) == 1 and int(imported.get("verified") or 0) else "candidate"
                 if verification not in {"verified", "candidate"}:
                     verification = "rejected"
+                display_price, display_unit = _agent_market_offer_display_values(raw_offer, outcome)
                 result_totals["found"] += 1
                 result_totals[verification] += 1
                 public_results.append(
@@ -10315,8 +10340,8 @@ def api_tender_agent_market_jobs(tender_id: str):
                         "position_key": job.get("position_key"),
                         "position_name": job.get("position_name"),
                         "title": str(raw_offer.get("title") or "Источник цены")[:500],
-                        "price": raw_offer.get("price"),
-                        "unit": str(raw_offer.get("unit") or outcome.get("matched_unit") or "")[:80],
+                        "price": display_price,
+                        "unit": str(display_unit)[:80],
                         "url": url,
                         "evidence": str(raw_offer.get("evidence") or "")[:800],
                         "verification": verification,
