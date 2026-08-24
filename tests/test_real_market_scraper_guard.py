@@ -283,6 +283,47 @@ def test_saved_extreme_price_is_downgraded_without_network() -> None:
     assert checked.iloc[0]["Непроверенных кандидатов"] == 1
 
 
+def test_saved_fine_sand_with_contradictory_module_is_downgraded() -> None:
+    bundle = [
+        {
+            "source": "Интернет",
+            "title": "Песок мелкий I класса",
+            "snippet": "Модуль крупности, мм: до 1; цена 300 ₽ за м³",
+            "price": 300,
+            "url": "https://supplier.example/pesok-melkiy/",
+            "verification": "verified",
+            "confidence": 0.9,
+            "matched_unit": "м3",
+            "page_checked": True,
+            "identity_verified": True,
+        }
+    ]
+    frame = pd.DataFrame(
+        [
+            {
+                market.COL_NAME: "Песок природный для строительных работ | класс, мелкий",
+                market.COL_UNIT_PRICE: 300,
+                "Ед. изм.": "м3",
+                "Цена-сайт-телефон (json)": json.dumps(bundle, ensure_ascii=False),
+                "Проверенных источников": 1,
+                "Цены за ед. (рынок, руб)": "300",
+                "Медиана цена за ед. (рынок)": 300,
+            }
+        ]
+    )
+
+    checked, changed = market._revalidate_previous(frame)
+
+    saved = json.loads(checked.iloc[0]["Цена-сайт-телефон (json)"])[0]
+    assert changed == 1
+    assert saved["verification"] == "candidate"
+    assert saved["identity_verified"] is False
+    assert saved["rejection_code"] == "spec_mismatch"
+    assert "модуль крупности" in saved["verification_reason"].casefold()
+    assert checked.iloc[0]["Проверенных источников"] == 0
+    assert checked.iloc[0]["Непроверенных кандидатов"] == 1
+
+
 def test_avito_guard_status_is_read_only_and_reports_remaining(tmp_path: Path, monkeypatch) -> None:
     guard_path = tmp_path / "avito_guard.json"
     blocked_until = time.time() + 7200

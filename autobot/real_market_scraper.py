@@ -2747,7 +2747,7 @@ def _read_previous(path: Path) -> pd.DataFrame:
 
 
 def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Apply current scale checks to saved evidence without another web request."""
+    """Apply current identity and scale checks without another web request."""
 
     bundle_column = "Цена-сайт-телефон (json)"
     if frame.empty or bundle_column not in frame.columns:
@@ -2783,9 +2783,13 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
                 "Цена отличается от сметы",
                 "Аномальный масштаб цены относительно сметы",
             ))
-            if new_status == "candidate" and (
-                bool(item.get("identity_verified")) or was_scale_downgrade
-            ) and plausibility.status in {"plausible", "unknown"}:
+            should_check_identity = new_status == "verified" or (
+                new_status == "candidate"
+                and (bool(item.get("identity_verified")) or was_scale_downgrade)
+                and plausibility.status in {"plausible", "unknown"}
+            )
+            identity_check = None
+            if should_check_identity:
                 identity_check = check_offer(
                     name=market_query_name(row.get(COL_NAME, "")),
                     unit=row.get("Ед. изм.", ""),
@@ -2798,6 +2802,15 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
                     page_checked=bool(item.get("page_checked")),
                     source_unit=item.get("matched_unit", ""),
                 )
+            if new_status == "verified" and identity_check and identity_check.status != "verified":
+                new_status = "candidate"
+                item["identity_verified"] = False
+                item["verification_reason"] = identity_check.reason
+                item["confidence"] = min(float(item.get("confidence") or 0.5), identity_check.confidence)
+                item["rejection_code"] = "spec_mismatch"
+                item["rejection_stage"] = "identity"
+                row_changed = True
+            elif new_status == "candidate" and identity_check:
                 if identity_check.status == "verified":
                     new_status = "verified"
                     item["identity_verified"] = True
