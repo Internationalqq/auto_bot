@@ -91,7 +91,9 @@ class AgentMarketApiTests(unittest.TestCase):
         job = queue.list_jobs("12345678", mode="avito")[0]
         self.assertEqual(job["payload"]["search_mode"], "avito_agent")
         self.assertEqual(job["payload"]["allowed_domains"], ["avito.ru"])
-        self.assertIn("https://www.avito.ru/all?", job["payload"]["start_urls"][0])
+        self.assertIn("https://www.avito.ru/yaroslavl?", job["payload"]["start_urls"][0])
+        self.assertIn("%d1%89%d0%b5%d0%b1%d0%b5%d0%bd%d1%8c", job["payload"]["start_urls"][0].casefold())
+        self.assertNotIn("%d1%86%d0%b5%d0%bd%d0%b0", job["payload"]["start_urls"][0].casefold())
         self.assertIn("не обходи captcha", job["payload"]["task"].casefold())
 
     @patch("autobot.real_market_scraper.import_agent_market_result")

@@ -10266,6 +10266,28 @@ def _agent_market_start_urls(name: object, queries: object, region: object) -> l
     return []
 
 
+def _agent_avito_search(name: object, position_type: object, region: object) -> tuple[str, str]:
+    """Build a short native Avito query instead of sending an SEO-style web query."""
+
+    from autobot.market_strategy import market_query_name
+
+    query = re.sub(r"\s+", " ", market_query_name(name, str(position_type or ""))).strip()
+    region_text = str(region or "").casefold().replace("ё", "е")
+    location = "all"
+    for marker, slug in (
+        ("ярослав", "yaroslavl"),
+        ("екатеринбург", "ekaterinburg"),
+        ("свердлов", "sverdlovskaya_oblast"),
+        ("санкт-петербург", "sankt-peterburg"),
+        ("ленинград", "leningradskaya_oblast"),
+        ("моск", "moskva"),
+    ):
+        if marker in region_text:
+            location = slug
+            break
+    return query, f"https://www.avito.ru/{location}?" + urlencode({"q": query})
+
+
 def _agent_market_offer_display_values(raw_offer: dict, outcome: dict) -> tuple[object, str]:
     """Present historical block-unit offers as a comparable base-unit price."""
 
@@ -10483,8 +10505,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             },
         }
         if job_mode == "avito":
-            avito_query = re.sub(r"\s+", " ", f"{primary_query} {region}".strip())
-            avito_url = "https://www.avito.ru/all?" + urlencode({"q": avito_query})
+            avito_query, avito_url = _agent_avito_search(position.get("name"), position_type, region)
             payload.update(
                 {
                     "search_mode": "avito_agent",
@@ -10497,6 +10518,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                     "task": (
                         "Ищи цену только на Авито через браузерную сессию Mac mini. "
                         f"Начни с готовой страницы поиска: {avito_url}. "
+                        f"Короткий запрос Авито: {avito_query}. Дождись появления карточек выдачи. "
                         "Открой не более 3 подходящих объявлений и верни только прямые ссылки вида avito.ru/..._123456789. "
                         "Для каждого предложения запиши точное название, цену, единицу, город и короткий видимый фрагмент страницы в evidence. "
                         "В price пиши число ровно как на странице, а в unit — его знаменатель (например, 650 и м или 65000 и 100 м); не пересчитывай сам. "
