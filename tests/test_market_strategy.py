@@ -118,11 +118,20 @@ class MarketStrategyTests(unittest.TestCase):
             snippet="Песок мелко- и крупнозернистый; ПГС; 550 ₽ за м³",
             url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/pesok_pgs_2603045420",
         )
+        contradictory = check_offer(
+            **common,
+            title="Песок мелкий I класса",
+            snippet="Модуль крупности, мм: до 1; цена 300 ₽ за м³",
+            url="https://supplier.example/pesok-melkiy/",
+        )
 
         self.assertEqual(specific.status, "verified")
         self.assertEqual(specific.matched_unit, "м3")
         self.assertEqual(too_fine.status, "candidate")
+        self.assertIn("модуль крупности", too_fine.reason.casefold())
         self.assertEqual(mixed.status, "candidate")
+        self.assertEqual(contradictory.status, "candidate")
+        self.assertIn("модуль крупности", contradictory.reason.casefold())
 
     def test_linear_and_running_metre_are_compatible(self) -> None:
         self.assertTrue(units_compatible("м", "пог. м"))

@@ -588,25 +588,42 @@ def check_offer(
         and "щебен" in evidence_folded
         and any(rock in evidence_folded for rock in ("гранит", "базальт", "диабаз", "габбро"))
     )
+    fine_sand_required = (
+        position.bucket == "materials"
+        and "песок" in name_folded
+        and "мелк" in name_folded
+    )
+    sand_module_seen = False
     fine_sand_module = False
     for module_match in re.finditer(
         r"модул\w*\s+крупност\w*[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)",
         evidence_folded,
     ):
+        sand_module_seen = True
         try:
             module_min, module_max = sorted(float(value.replace(",", ".")) for value in module_match.groups())
         except ValueError:
             continue
-        # ГОСТ 8736: «мелкий» — свыше 1,5 до 2,0. Диапазон
+        # ГОСТ 8736-2025: «мелкий» — свыше 1,5 до 2,0. Диапазон
         # 1,0–1,5 относится к «очень мелкому» и не является точной заменой.
         if module_min >= 1.5 and module_max <= 2.0:
             fine_sand_module = True
             break
+    if re.search(r"модул\w*\s+крупност\w*[^0-9]{0,20}до\s*\d+(?:[.,]\d+)?", evidence_folded):
+        # Одна верхняя граница не доказывает принадлежность всей партии
+        # диапазону «мелкий», даже если так написано в названии товара.
+        sand_module_seen = True
+    if fine_sand_required and sand_module_seen and not fine_sand_module:
+        return OfferCheck(
+            "candidate",
+            0.42,
+            "Указанный модуль крупности не соответствует группе «мелкий песок»",
+            "",
+            observed_at,
+        )
     fine_natural_sand = (
-        position.bucket == "materials"
-        and "песок" in name_folded
+        fine_sand_required
         and "песок" in evidence_folded
-        and "мелк" in name_folded
         and (
             fine_sand_module
             or ("мелк" in evidence_folded and "круп" not in evidence_folded and "пгс" not in evidence_folded)
