@@ -245,6 +245,18 @@
         <p id="avitoAgentNote">Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.</p>
       </div>
       <div class="agent-market-jobs avito-agent-jobs" id="avitoAgentJobs" hidden></div>
+      <div class="agent-results" id="avitoAgentResults" hidden>
+        <div class="agent-results-head">
+          <div><small>Результаты Авито</small><strong>Объявления, которые Hermes открыл в браузере</strong></div>
+        </div>
+        <div class="agent-result-totals">
+          <span><small>Найдено</small><b id="avitoResultFound">0</b></span>
+          <span class="is-verified"><small>Принято</small><b id="avitoResultVerified">0</b></span>
+          <span class="is-candidate"><small>На проверке</small><b id="avitoResultCandidate">0</b></span>
+          <span class="is-rejected"><small>Отклонено</small><b id="avitoResultRejected">0</b></span>
+        </div>
+        <div class="agent-result-list" id="avitoAgentResultList"></div>
+      </div>
     </section>
 
     <section class="positions-card">
@@ -747,7 +759,6 @@
           avitoQueueObservedRunning = true;
         } else if (avitoQueueObservedRunning && total && processed >= total) {
           avitoQueueObservedRunning = false;
-          window.setTimeout(function() { window.location.reload(); }, 900);
         }
         const launcher = document.getElementById("avitoLauncherStatus");
         avitoSafeCard?.classList.toggle("is-ready", !!data.enabled && !progress.failed);
@@ -783,6 +794,30 @@
               ? (Number(job.offers_found || 0) ? ("Объявлений: " + Number(job.offers_found || 0)) : (job.notes || "Подходящих объявлений не найдено"))
               : (job.error || (job.status === "leased" ? "Открывает объявления" : "Ожидает обработки"));
             return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+          }).join("");
+        }
+        const avitoResults = Array.isArray(data.results) ? data.results : [];
+        const avitoTotals = data.result_totals || {};
+        const avitoResultsPanel = document.getElementById("avitoAgentResults");
+        const avitoResultsList = document.getElementById("avitoAgentResultList");
+        [["avitoResultFound", "found"], ["avitoResultVerified", "verified"], ["avitoResultCandidate", "candidate"], ["avitoResultRejected", "rejected"]].forEach(function(pair) {
+          const node = document.getElementById(pair[0]);
+          if (node) node.textContent = String(Number(avitoTotals[pair[1]] || 0));
+        });
+        if (avitoResultsPanel) avitoResultsPanel.hidden = avitoResults.length === 0;
+        if (avitoResultsList) {
+          const labels = { verified: "Принята", candidate: "На проверке", rejected: "Отклонена" };
+          avitoResultsList.innerHTML = avitoResults.map(function(item) {
+            const verification = ["verified", "candidate", "rejected"].includes(item.verification) ? item.verification : "candidate";
+            const price = formatAgentPrice(item.price) + (item.unit ? " / " + escapeHtml(item.unit) : "");
+            const reason = item.reason || item.evidence || "Hermes открыл объявление; AutoBot проверяет соответствие позиции";
+            const sourceLink = item.url
+              ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener noreferrer">Открыть объявление ↗</a>'
+              : "";
+            return '<article class="agent-result is-' + verification + '">' +
+              '<div class="agent-result-state"><span>' + escapeHtml(labels[verification]) + '</span><b>' + price + '</b></div>' +
+              '<div class="agent-result-copy"><small>' + escapeHtml(item.position_name || "Позиция сметы") + '</small><strong>' + escapeHtml(item.title || "Объявление Авито") + '</strong><p>' + escapeHtml(reason) + '</p></div>' +
+              '<div class="agent-result-link">' + sourceLink + '</div></article>';
           }).join("");
         }
         refreshAgentSelection();
