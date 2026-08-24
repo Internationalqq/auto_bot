@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,6 +121,19 @@ class AgentMarketEvidenceTests(unittest.TestCase):
                     "Раздел": "Бордюры",
                 }]
             ).to_excel(estimate_path, index=False)
+            source_url = "https://contractor.example/prices/borders/"
+            pd.DataFrame([{
+                market.COL_NAME: name,
+                "Цена-сайт-телефон (json)": json.dumps([{
+                    "source": "Старое значение",
+                    "title": "Установка бетонного бордюра",
+                    "price": 6.5,
+                    "url": source_url,
+                    "verification": "verified",
+                    "matched_unit": "м",
+                    "page_checked": True,
+                }], ensure_ascii=False),
+            }]).to_excel(output_path, index=False)
 
             def fake_verify(_row, offers, _plan, **_kwargs):
                 captured["offer"] = offers[0]
@@ -146,11 +160,15 @@ class AgentMarketEvidenceTests(unittest.TestCase):
                         "title": "Установка бетонного бордюра",
                         "price": 65000,
                         "unit": "100 м",
-                        "url": "https://contractor.example/prices/borders/",
+                        "url": source_url,
                         "evidence": "Установка бордюра — 650 руб. за погонный метр",
                     }]},
                 )
-                output_row_count = len(pd.read_excel(output_path))
+                refreshed_output = pd.read_excel(output_path)
+                output_row_count = len(refreshed_output)
+                refreshed_bundle = json.loads(
+                    refreshed_output.loc[refreshed_output[market.COL_NAME] == name, "Цена-сайт-телефон (json)"].iloc[0]
+                )
 
         self.assertEqual(captured["offer"].price, 650)
         self.assertEqual(captured["offer"].agent_price, 65000)
@@ -158,6 +176,7 @@ class AgentMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(imported["offer_outcomes"][0]["raw_price"], 65000)
         self.assertEqual(imported["equivalent_positions_updated"], 1)
         self.assertEqual(output_row_count, 2)
+        self.assertEqual(refreshed_bundle[0]["price"], 650)
 
     def test_direct_source_probe_requires_page_price_and_matching_unit(self) -> None:
         tender_id = "12345678"

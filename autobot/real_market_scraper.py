@@ -3409,6 +3409,13 @@ def import_agent_market_result(
         reference_offers=saved,
     )
     stored_verified = _store_verified_offers_in_index(tid, source_row, imported)
+    refreshed_urls = {_canonical_offer_url(offer.url) for offer in imported if offer.url}
+    if refreshed_urls:
+        # A newly imported observation of the same direct page must replace its
+        # stale normalization.  Keeping the historically lower value here once
+        # preserved the old 8.50 ₽/м interpretation after a 100 m roll had been
+        # correctly re-read as 850 ₽/шт.
+        saved = [offer for offer in saved if _canonical_offer_url(offer.url) not in refreshed_urls]
     offers = _dedupe_and_sort(saved + imported, max_results=12)
     query = str(position_payload.get("query") or "").strip()
     if not query:
