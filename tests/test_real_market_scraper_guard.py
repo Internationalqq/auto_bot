@@ -324,6 +324,45 @@ def test_saved_fine_sand_with_contradictory_module_is_downgraded() -> None:
     assert checked.iloc[0]["Непроверенных кандидатов"] == 1
 
 
+def test_saved_checked_fine_sand_candidate_with_exact_module_is_promoted() -> None:
+    bundle = [
+        {
+            "source": "Интернет",
+            "title": "Карьерный песок",
+            "snippet": "Модуль крупности 1,5–2,0; цена за куб 300 ₽/м³",
+            "price": 300,
+            "url": "https://supplier.example/karernyj-pesok/",
+            "verification": "candidate",
+            "verification_reason": "Слабое совпадение с названием позиции",
+            "confidence": 0.3,
+            "matched_unit": "м3",
+            "page_checked": True,
+            "identity_verified": False,
+        }
+    ]
+    frame = pd.DataFrame(
+        [
+            {
+                market.COL_NAME: "Песок природный для строительных работ | класс, мелкий",
+                market.COL_UNIT_PRICE: 300,
+                "Ед. изм.": "м3",
+                "Цена-сайт-телефон (json)": json.dumps(bundle, ensure_ascii=False),
+                "Проверенных источников": 0,
+                "Непроверенных кандидатов": 1,
+            }
+        ]
+    )
+
+    checked, changed = market._revalidate_previous(frame)
+
+    saved = json.loads(checked.iloc[0]["Цена-сайт-телефон (json)"])[0]
+    assert changed == 1
+    assert saved["verification"] == "verified"
+    assert saved["identity_verified"] is True
+    assert saved["matched_unit"] == "м3"
+    assert checked.iloc[0]["Проверенных источников"] == 1
+
+
 def test_avito_guard_status_is_read_only_and_reports_remaining(tmp_path: Path, monkeypatch) -> None:
     guard_path = tmp_path / "avito_guard.json"
     blocked_until = time.time() + 7200

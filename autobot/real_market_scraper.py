@@ -2785,7 +2785,11 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
             ))
             should_check_identity = new_status == "verified" or (
                 new_status == "candidate"
-                and (bool(item.get("identity_verified")) or was_scale_downgrade)
+                and (
+                    bool(item.get("page_checked"))
+                    or bool(item.get("identity_verified"))
+                    or was_scale_downgrade
+                )
                 and plausibility.status in {"plausible", "unknown"}
             )
             identity_check = None
