@@ -2814,7 +2814,14 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
                     basis_code=row.get("basis_code", ""),
                     section=row.get("Раздел", ""),
                     title=item.get("title", ""),
-                    snippet=item.get("snippet", ""),
+                    snippet="\n".join(
+                        part
+                        for part in (
+                            str(item.get("snippet") or "").strip(),
+                            str(item.get("evidence") or "").strip(),
+                        )
+                        if part
+                    ),
                     url=item.get("url", ""),
                     price=item.get("price", ""),
                     page_checked=bool(item.get("page_checked")),

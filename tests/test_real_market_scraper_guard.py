@@ -329,7 +329,8 @@ def test_saved_checked_fine_sand_candidate_with_exact_module_is_promoted() -> No
         {
             "source": "Интернет",
             "title": "Карьерный песок",
-            "snippet": "Модуль крупности 1,5–2,0; цена за куб 300 ₽/м³",
+            "snippet": "",
+            "evidence": "Модуль крупности 1,5–2,0; цена за куб 300 ₽/м³",
             "price": 300,
             "url": "https://supplier.example/karernyj-pesok/",
             "verification": "candidate",
