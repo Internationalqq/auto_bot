@@ -10612,6 +10612,225 @@ def _agent_market_offer_display_values(raw_offer: dict, outcome: dict) -> tuple[
     return display_price, display_unit
 
 
+def _agent_market_public_offer_rows(job: dict) -> list[dict]:
+    """Build small, safe result rows for the tender progress interface."""
+    result = job.get("result") or {}
+    imported = result.get("import") or {}
+    outcomes = {
+        str(item.get("url") or "").strip(): item
+        for item in list(imported.get("offer_outcomes") or [])
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    }
+    raw_offers = [item for item in list(result.get("offers") or [])[:10] if isinstance(item, dict)]
+    rows: list[dict] = []
+    for raw_offer in raw_offers:
+        url = str(raw_offer.get("url") or "").strip()
+        outcome = outcomes.get(url) or {}
+        verification = str(outcome.get("verification") or "").strip().casefold()
+        if not verification:
+            if imported.get("offer_outcomes") is not None:
+                verification = "rejected"
+            else:
+                verification = "verified" if len(raw_offers) == 1 and int(imported.get("verified") or 0) else "candidate"
+        if verification not in {"verified", "candidate"}:
+            verification = "rejected"
+        display_price, display_unit = _agent_market_offer_display_values(raw_offer, outcome)
+        rows.append(
+            {
+                "job_id": job.get("id"),
+                "position_key": job.get("position_key"),
+                "position_name": job.get("position_name"),
+                "title": str(raw_offer.get("title") or "Источник цены")[:500],
+                "price": display_price,
+                "unit": str(display_unit)[:80],
+                "url": url,
+                "evidence": str(raw_offer.get("evidence") or "")[:800],
+                "verification": verification,
+                "reason": str(outcome.get("verification_reason") or imported.get("message") or "")[:800],
+                "completed_at": job.get("completed_at"),
+            }
+        )
+    return rows
+
+
+def _agent_market_compact_reason(job: dict, offers: list[dict]) -> str:
+    status = str(job.get("status") or "").strip().casefold()
+    if status == "queued":
+        return "Ждёт, когда Mac mini заберёт задание"
+    if status == "leased":
+        return "Hermes открыл браузер и проверяет объявления"
+    if status == "failed":
+        return str(job.get("error") or "Задание завершилось с ошибкой")[:220]
+    verified = [item for item in offers if item.get("verification") == "verified"]
+    candidates = [item for item in offers if item.get("verification") == "candidate"]
+    if verified:
+        return f"Подтверждено цен: {len(verified)}"
+    if candidates:
+        return str(candidates[0].get("reason") or "Найдены цены, но требуется ручная проверка")[:220]
+    result = job.get("result") or {}
+    imported = result.get("import") or {}
+    detail = " ".join(
+        str(value or "")
+        for value in (job.get("error"), result.get("notes"), imported.get("message"))
+    ).casefold()
+    if any(marker in detail for marker in ("captcha", "ограничен", "ограничение доступа", "проблема с ip")):
+        return "Авито ограничил доступ до подтверждения цены"
+    if any(marker in detail for marker in ("нерелевант", "неподходящ", "не подход", "другой класс", "другая марка")):
+        return "Подходящее объявление не удалось подтвердить"
+    return "Подтверждённая цена не найдена"
+
+
+def _agent_market_latest_run(jobs: list[dict]) -> dict:
+    """Summarize only the latest launch instead of mixing it with all history."""
+    empty = {
+        "id": "",
+        "status": "idle",
+        "total": 0,
+        "processed": 0,
+        "queued": 0,
+        "leased": 0,
+        "completed": 0,
+        "failed": 0,
+        "canceled": 0,
+        "percent": 0,
+        "offers_found": 0,
+        "verified_offers": 0,
+        "candidate_offers": 0,
+        "rejected_offers": 0,
+        "positions_verified": 0,
+        "positions_with_candidates": 0,
+        "positions_without_offers": 0,
+        "started_at": 0,
+        "completed_at": 0,
+        "elapsed_seconds": 0,
+        "current_index": 0,
+        "current": None,
+        "positions": [],
+    }
+    if not jobs:
+        return empty
+
+    newest = max(jobs, key=lambda item: float(item.get("created_at") or 0))
+    newest_payload = newest.get("payload") or {}
+    batch_id = str(newest_payload.get("batch_id") or "").strip()
+    if batch_id:
+        run_jobs = [job for job in jobs if str((job.get("payload") or {}).get("batch_id") or "") == batch_id]
+    else:
+        # Old jobs did not have batch_id. Keep the newest creation cluster so
+        # the interface can still show a useful summary for the control run.
+        newest_created = float(newest.get("created_at") or 0)
+        run_jobs = [job for job in jobs if newest_created - float(job.get("created_at") or 0) <= 10 * 60]
+        oldest_created = min((float(job.get("created_at") or 0) for job in run_jobs), default=newest_created)
+        batch_id = f"legacy-{int(oldest_created)}"
+
+    # A canceled duplicate is a queue correction, not a researched position.
+    # Hide it from the user when the launch also contains real processed jobs.
+    non_canceled_jobs = [job for job in run_jobs if str(job.get("status") or "") != "canceled"]
+    if non_canceled_jobs:
+        run_jobs = non_canceled_jobs
+
+    latest_by_position: dict[str, dict] = {}
+    for job in sorted(run_jobs, key=lambda item: float(item.get("created_at") or 0), reverse=True):
+        key = str(job.get("position_key") or "").strip()
+        if key and key not in latest_by_position:
+            latest_by_position[key] = job
+    run_jobs = list(latest_by_position.values())
+
+    def item_order(job: dict) -> tuple[float, float]:
+        raw_no = (job.get("payload") or {}).get("item_no")
+        try:
+            item_no = float(raw_no)
+        except (TypeError, ValueError):
+            item_no = 1_000_000.0
+        return item_no, float(job.get("created_at") or 0)
+
+    status_counts = {status: 0 for status in ("queued", "leased", "completed", "failed", "canceled")}
+    positions: list[dict] = []
+    verified_offers = candidate_offers = rejected_offers = 0
+    positions_verified = positions_with_candidates = positions_without_offers = 0
+    for job in sorted(run_jobs, key=item_order):
+        status = str(job.get("status") or "")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        offer_rows = _agent_market_public_offer_rows(job)
+        verified = sum(item.get("verification") == "verified" for item in offer_rows)
+        candidates = sum(item.get("verification") == "candidate" for item in offer_rows)
+        rejected = sum(item.get("verification") == "rejected" for item in offer_rows)
+        verified_offers += verified
+        candidate_offers += candidates
+        rejected_offers += rejected
+        if verified:
+            state = "verified"
+            positions_verified += 1
+        elif candidates:
+            state = "candidate"
+        elif status in {"queued", "leased", "failed", "canceled"}:
+            state = status
+        else:
+            state = "empty"
+        if candidates:
+            positions_with_candidates += 1
+        if not verified and not candidates:
+            positions_without_offers += 1
+        positions.append(
+            {
+                "job_id": job.get("id"),
+                "position_key": job.get("position_key"),
+                "item_no": (job.get("payload") or {}).get("item_no"),
+                "position_name": job.get("position_name"),
+                "status": status,
+                "state": state,
+                "verified": verified,
+                "candidate": candidates,
+                "rejected": rejected,
+                "offers_found": len(offer_rows),
+                "reason": _agent_market_compact_reason(job, offer_rows),
+                "created_at": job.get("created_at"),
+                "updated_at": job.get("updated_at"),
+                "completed_at": job.get("completed_at"),
+                "offers": offer_rows[:5],
+            }
+        )
+
+    total = len(run_jobs)
+    processed = sum(status_counts.get(status, 0) for status in ("completed", "failed", "canceled"))
+    active = [item for item in positions if item.get("status") in {"queued", "leased"}]
+    active.sort(key=lambda item: (0 if item.get("status") == "leased" else 1, item.get("created_at") or 0))
+    started_at = min((float(job.get("created_at") or 0) for job in run_jobs), default=0)
+    completed_at = (
+        max((float(job.get("completed_at") or job.get("updated_at") or 0) for job in run_jobs), default=0)
+        if total and processed >= total
+        else 0
+    )
+    end_at = completed_at or time.time()
+    status = "running" if active else ("completed" if total and processed >= total else "idle")
+    return {
+        **empty,
+        "id": batch_id,
+        "status": status,
+        "total": total,
+        "processed": processed,
+        "queued": status_counts.get("queued", 0),
+        "leased": status_counts.get("leased", 0),
+        "completed": status_counts.get("completed", 0),
+        "failed": status_counts.get("failed", 0),
+        "canceled": status_counts.get("canceled", 0),
+        "percent": int(round((processed / total) * 100)) if total else 0,
+        "offers_found": verified_offers + candidate_offers + rejected_offers,
+        "verified_offers": verified_offers,
+        "candidate_offers": candidate_offers,
+        "rejected_offers": rejected_offers,
+        "positions_verified": positions_verified,
+        "positions_with_candidates": positions_with_candidates,
+        "positions_without_offers": positions_without_offers,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "elapsed_seconds": max(0, int(round(end_at - started_at))) if started_at else 0,
+        "current_index": min(total, processed + 1) if active else processed,
+        "current": active[0] if active else None,
+        "positions": positions,
+    }
+
+
 @app.route("/api/tenders/<tender_id>/agent-market/jobs", methods=["GET", "POST"])
 def api_tender_agent_market_jobs(tender_id: str):
     """Create browser-agent jobs from real estimate rows or show their current state."""
@@ -10634,43 +10853,11 @@ def api_tender_agent_market_jobs(tender_id: str):
         public_results: list[dict] = []
         result_totals = {"found": 0, "verified": 0, "candidate": 0, "rejected": 0}
         for job in latest_jobs.values():
-            result = job.get("result") or {}
-            imported = result.get("import") or {}
-            outcomes = {
-                str(item.get("url") or "").strip(): item
-                for item in list(imported.get("offer_outcomes") or [])
-                if isinstance(item, dict) and str(item.get("url") or "").strip()
-            }
-            raw_offers = [item for item in list(result.get("offers") or [])[:10] if isinstance(item, dict)]
-            for raw_offer in raw_offers:
-                url = str(raw_offer.get("url") or "").strip()
-                outcome = outcomes.get(url) or {}
-                verification = str(outcome.get("verification") or "").strip().casefold()
-                if not verification:
-                    if imported.get("offer_outcomes") is not None:
-                        verification = "rejected"
-                    else:
-                        verification = "verified" if len(raw_offers) == 1 and int(imported.get("verified") or 0) else "candidate"
-                if verification not in {"verified", "candidate"}:
-                    verification = "rejected"
-                display_price, display_unit = _agent_market_offer_display_values(raw_offer, outcome)
+            for row in _agent_market_public_offer_rows(job):
+                verification = row["verification"]
                 result_totals["found"] += 1
                 result_totals[verification] += 1
-                public_results.append(
-                    {
-                        "job_id": job.get("id"),
-                        "position_key": job.get("position_key"),
-                        "position_name": job.get("position_name"),
-                        "title": str(raw_offer.get("title") or "Источник цены")[:500],
-                        "price": display_price,
-                        "unit": str(display_unit)[:80],
-                        "url": url,
-                        "evidence": str(raw_offer.get("evidence") or "")[:800],
-                        "verification": verification,
-                        "reason": str(outcome.get("verification_reason") or imported.get("message") or "")[:800],
-                        "completed_at": job.get("completed_at"),
-                    }
-                )
+                public_results.append(row)
         public_jobs = [
             {
                 "id": job.get("id"),
@@ -10697,6 +10884,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                 "mode": job_mode,
                 "summary": job_summary(tid, mode=job_mode),
                 "progress": job_progress(tid, mode=job_mode),
+                "latest_run": _agent_market_latest_run(jobs),
                 "jobs": public_jobs,
                 "results": public_results[:60],
                 "result_totals": result_totals,
@@ -10709,6 +10897,7 @@ def api_tender_agent_market_jobs(tender_id: str):
     data = request.get_json(silent=True) or {}
     requested_mode = str(data.get("mode") or requested_mode).strip().casefold()
     job_mode = "avito" if requested_mode == "avito" else "web"
+    batch_id = uuid.uuid4().hex
     requested_keys = {
         str(value or "").strip()
         for value in list(data.get("position_keys") or [])[:100]
@@ -10787,6 +10976,8 @@ def api_tender_agent_market_jobs(tender_id: str):
         start_urls = _agent_market_start_urls(position.get("name"), queries, region)
         payload = {
             "schema_version": 2,
+            "batch_id": batch_id,
+            "batch_created_at": time.time(),
             "tender_id": tid,
             "position_key": key,
             "item_no": position.get("item_no"),
@@ -10899,6 +11090,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "skipped_ineligible": skipped_ineligible,
             "jobs": outcome["created"],
             "summary": job_summary(tid, mode=job_mode),
+            "batch_id": batch_id,
         }
     )
 

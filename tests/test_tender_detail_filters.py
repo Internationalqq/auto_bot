@@ -70,6 +70,69 @@ def test_verified_price_metric_is_an_actual_filter_button():
     assert 'activeBucket === "verified" && row.dataset.marketVerified === "1"' in template
 
 
+def test_position_table_omits_search_strategy_and_sources_stay_in_their_column():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert 'class="strategy"' not in template
+    assert "Как ищем цену" not in template
+    assert 'class="source-details"' in template
+    assert ".source-list { width: 100%; min-width: 0;" in styles
+    assert "width: 360px" not in styles
+
+
+def test_tender_header_uses_a_back_arrow_to_return_to_the_board():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert 'href="/tenders" aria-label="Назад к списку тендеров"' in template
+    assert 'class="brand-back"' in template
+    assert 'class="brand-mark"' not in template
+    assert ".brand-back i" in styles
+
+
+def test_position_table_fits_without_horizontal_scrolling():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert ".table-wrap { width: 100%; max-width: 100%; overflow-x: hidden; }" in styles
+    assert "table { width: 100%; min-width: 0;" in styles
+    assert "min-width: 1280px" not in styles
+    assert '@media (max-width: 760px)' in styles
+    assert 'data-label="Источники"' in template
+    assert 'data-label="Результат"' not in template
+
+
+def test_market_price_replaces_the_redundant_result_column():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert "<th>Результат</th>" not in template
+    assert 'class="verdict ' not in template
+    assert 'market-price-{{ p.verdict_class }}' in template
+    assert 'title="{{ p.verdict }}"' in template
+    assert 'colspan="7"' in template
+    assert 'colspan="8"' not in template
+    assert ".market-price-good > b" in styles
+    assert ".market-price-bad > b" in styles
+
+
+def test_selection_number_and_position_columns_are_compact():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert "th:nth-child(1) { width: 28px; }" in styles
+    assert "th:nth-child(2) { width: 34px; }" in styles
+    assert ".select-col { padding-left: 2px; padding-right: 0;" in styles
+    assert ".row-no { padding-left: 2px; padding-right: 3px;" in styles
+    assert 'title="Выбрать позицию для поиска цены агентом"' in template
+
+
 def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     package_dir = Path(tender_detail.__file__).parent
     template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
@@ -92,3 +155,18 @@ def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     assert 'JSON.stringify({ mode: "web"' in template
     assert 'JSON.stringify({ mode: "avito"' in template
     assert "Дожать 20 без цены" in template
+
+
+def test_avito_modal_shows_one_minimal_latest_run_summary():
+    package_dir = Path(tender_detail.__file__).parent
+    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
+    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    assert 'id="avitoRunTitle"' in template
+    assert 'id="avitoRunProgressFill"' in template
+    assert 'id="avitoRunPositionList"' in template
+    assert "const run = data.latest_run || {};" in template
+    assert "formatAgentDuration(run.elapsed_seconds)" in template
+    assert 'class="agent-run-journal"' in template
+    assert ".agent-run-position-list" in styles
+    assert ".agent-run-offers" in styles

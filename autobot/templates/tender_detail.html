@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-5" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260824-5" />
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/tenders">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
+    <a class="brand" href="/tenders" aria-label="Назад к списку тендеров">
+      <span class="brand-back" aria-hidden="true"><i></i></span>
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы">
@@ -230,33 +230,47 @@
     </section>
 
     <section class="avito-safe-card" id="avitoSafeCard" data-feature-content="avitoModal">
-      <div class="avito-safe-copy">
-        <small>Авито · браузерная сессия Mac mini</small>
-        <strong id="avitoSafeTitle">Отдельный поиск объявлений через Hermes</strong>
-        <span id="avitoSafeStatus">AutoBot передаст позиции агенту, а Hermes откроет Авито в постоянном браузерном профиле на Mac.</span>
+      <div class="avito-safe-top">
+        <div class="avito-safe-copy">
+          <small>Hermes · браузер Mac mini</small>
+          <strong id="avitoSafeTitle">Поиск цен на Авито</strong>
+          <span id="avitoSafeStatus">Позиции уходят в отдельную очередь и проверяются по одной.</span>
+        </div>
+        <div class="avito-safe-actions">
+          <span>Выберите строки в смете или запустите первые 5 без подтверждённой цены</span>
+          <button class="btn primary" type="button" id="runAvitoSafeBtn">Искать 5 без цены</button>
+        </div>
       </div>
-      <div class="avito-safe-actions">
-        <span>До 5 позиций за запуск · до 3 объявлений на позицию · без обхода CAPTCHA и повторного штурма блокировки</span>
-        <button class="btn primary" type="button" id="runAvitoSafeBtn">Искать 5 без цены</button>
-      </div>
-      <div class="avito-agent-state" aria-live="polite">
-        <div><small>Прогресс</small><strong id="avitoAgentProgress">Очередь свободна</strong></div>
-        <div><small>Сейчас</small><strong id="avitoAgentCurrent">Hermes ничего не ищет</strong></div>
+
+      <section class="agent-run" id="avitoRunSummary" aria-live="polite">
+        <header class="agent-run-head">
+          <span class="agent-run-state" id="avitoRunState">Готов к запуску</span>
+          <div>
+            <strong id="avitoRunTitle">Последнего запуска пока нет</strong>
+            <span id="avitoRunMeta">Здесь появятся время, результат и текущая позиция</span>
+          </div>
+        </header>
+        <div class="agent-run-progress" role="progressbar" aria-label="Прогресс поиска на Авито" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <i id="avitoRunProgressFill"></i>
+        </div>
+        <div class="agent-run-metrics">
+          <span><b id="avitoRunProcessed">0 / 0</b><small>позиций</small></span>
+          <span class="is-verified"><b id="avitoRunVerified">0</b><small>цен принято</small></span>
+          <span class="is-candidate"><b id="avitoRunCandidates">0</b><small>кандидатов</small></span>
+          <span class="is-empty"><b id="avitoRunEmpty">0</b><small>без цены</small></span>
+        </div>
+      </section>
+
+      <section class="agent-run-results" id="avitoRunResults" hidden>
+        <header><div><small>Последний запуск</small><strong>Что найдено по каждой позиции</strong></div><span id="avitoRunResultHint"></span></header>
+        <div class="agent-run-position-list" id="avitoRunPositionList"></div>
+      </section>
+
+      <details class="agent-run-journal" id="avitoRunJournal">
+        <summary>Технический журнал <span>для диагностики</span></summary>
         <p id="avitoAgentNote">Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.</p>
-      </div>
-      <div class="agent-market-jobs avito-agent-jobs" id="avitoAgentJobs" hidden></div>
-      <div class="agent-results" id="avitoAgentResults" hidden>
-        <div class="agent-results-head">
-          <div><small>Результаты Авито</small><strong>Объявления, которые Hermes открыл в браузере</strong></div>
-        </div>
-        <div class="agent-result-totals">
-          <span><small>Найдено</small><b id="avitoResultFound">0</b></span>
-          <span class="is-verified"><small>Принято</small><b id="avitoResultVerified">0</b></span>
-          <span class="is-candidate"><small>На проверке</small><b id="avitoResultCandidate">0</b></span>
-          <span class="is-rejected"><small>Отклонено</small><b id="avitoResultRejected">0</b></span>
-        </div>
-        <div class="agent-result-list" id="avitoAgentResultList"></div>
-      </div>
+        <div class="agent-market-jobs avito-agent-jobs" id="avitoAgentJobs"></div>
+      </details>
     </section>
 
     <section class="positions-card">
@@ -269,38 +283,37 @@
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th class="select-col"><span class="sr-only">Выбор</span></th><th>№</th><th>Позиция</th><th>Ед. / объём</th><th>Смета</th><th>Рынок</th><th>Источники</th><th>Результат</th>
+            <th class="select-col"><span class="sr-only">Выбор</span></th><th>№</th><th>Позиция</th><th>Ед. / объём</th><th>Смета</th><th>Рынок</th><th>Источники</th>
           </tr></thead>
           <tbody id="positionRows">
           {% for p in tender.positions %}
             {% if p.file_start %}
             <tr class="estimate-file-row" data-file-row data-file-key="{{ p.file_group }}">
-              <td colspan="8"><div><strong>{{ p.file_title }}</strong><span>Позиций: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
+              <td colspan="7"><div><strong>{{ p.file_title }}</strong><span>Позиций: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
             </tr>
             {% endif %}
             {% if p.section_start %}
             <tr class="estimate-section-row" data-section-row data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}">
-              <td colspan="8"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
+              <td colspan="7"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
             </tr>
             {% endif %}
             <tr data-position-row data-position-key="{{ p.position_key }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
-              <td class="select-col"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} в поиск агентом" /></td>
-              <td class="row-no">{{ p.item_no }}</td>
-              <td class="position-name">
+              <td class="select-col" data-label="Выбрать"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} в поиск агентом" title="Выбрать позицию для поиска цены агентом" /></td>
+              <td class="row-no" data-label="№">{{ p.item_no }}</td>
+              <td class="position-name" data-label="Позиция">
                 <div><span class="type type-{{ p.type_slug }}">{{ p.type_label }}</span>{% if p.basis_code %}<code>{{ p.basis_code }}</code>{% endif %}</div>
                 <strong>{{ p.name }}</strong>
                 {% if p.section_note %}<small>{{ p.section_note }}</small>{% endif %}
-                <details class="strategy"><summary>Как ищем цену</summary><p>{{ p.strategy }}</p><p>{{ p.source_strategy }}</p>{% if p.warning %}<mark>{{ p.warning }}</mark>{% endif %}<a href="/research?q={{ (p.name ~ ' | ' ~ (p.unit if p.unit != '—' else ''))|urlencode }}&city={{ tender.region|urlencode }}">Проверить отдельно в лаборатории →</a></details>
               </td>
-              <td><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
-              <td class="money"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money market-price"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}взвешенная медиана · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}</td>
-              <td class="sources">
+              <td data-label="Ед. / объём"><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
+              <td class="money" data-label="Смета"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
+              <td class="money market-price market-price-{{ p.verdict_class }}" data-label="Рынок" title="{{ p.verdict }}" aria-label="Рыночная цена {{ p.market_unit_fmt }}. {{ p.verdict }}"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}взвешенная медиана · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% if p.market_status %}<small class="row-status">{{ p.market_status }}</small>{% endif %}</td>
+              <td class="sources" data-label="Источники">
                 {% if p.verified_count %}<span class="source-count verified">✓ {{ p.verified_count }} проверено</span>{% endif %}
                 {% if p.candidate_count %}<span class="source-count candidate">? {{ p.candidate_count }} кандид.</span>{% endif %}
                 {% if not p.sources %}<span class="source-empty">Нет источников</span>{% endif %}
                 {% if p.sources %}
-                <details><summary>Показать {{ p.sources|length }}</summary><div class="source-list">
+                <details class="source-details"><summary><span>Источники</span><b>{{ p.sources|length }}</b><i aria-hidden="true"></i></summary><div class="source-list">
                   {% for source in p.sources %}
                   <button type="button" class="source {{ 'is-verified' if source.verified else 'is-candidate' }}" data-source-preview data-source-url="{{ source.url }}" data-source-audit="{{ source.audit_record_path }}" data-source-title="{{ source.title }}" data-source-price="{{ source.price_fmt }}" data-source-comparison-price="{{ source.comparison_price_fmt }}" data-source-price-basis="{{ source.price_basis }}" data-source-ratio="{{ source.estimate_ratio_fmt }}" data-source-reason="{{ source.reason }}" data-source-evidence="{{ source.evidence }}" data-source-location="{{ source.location }}" data-source-published="{{ source.published_at }}">
                     <span>{{ "Проверен" if source.verified else "Кандидат" }} · {{ source.source }}{% if source.index_hit %} · из индекса{% endif %}</span>
@@ -310,7 +323,6 @@
                 </div></details>
                 {% endif %}
               </td>
-              <td><span class="verdict {{ p.verdict_class }}">{{ p.verdict }}</span>{% if p.market_status %}<small class="row-status">{{ p.market_status }}</small>{% endif %}</td>
             </tr>
           {% endfor %}
           </tbody>
@@ -439,10 +451,15 @@
     const avitoSafeButton = document.getElementById("runAvitoSafeBtn");
     const avitoSafeTitle = document.getElementById("avitoSafeTitle");
     const avitoSafeStatus = document.getElementById("avitoSafeStatus");
-    const avitoAgentProgress = document.getElementById("avitoAgentProgress");
-    const avitoAgentCurrent = document.getElementById("avitoAgentCurrent");
     const avitoAgentNote = document.getElementById("avitoAgentNote");
     const avitoAgentJobs = document.getElementById("avitoAgentJobs");
+    const avitoRunSummary = document.getElementById("avitoRunSummary");
+    const avitoRunState = document.getElementById("avitoRunState");
+    const avitoRunTitle = document.getElementById("avitoRunTitle");
+    const avitoRunMeta = document.getElementById("avitoRunMeta");
+    const avitoRunProgressFill = document.getElementById("avitoRunProgressFill");
+    const avitoRunResults = document.getElementById("avitoRunResults");
+    const avitoRunPositionList = document.getElementById("avitoRunPositionList");
     const queueAgentMarketButton = document.getElementById("queueAgentMarketBtn");
     const agentMarketNote = document.getElementById("agentMarketNote");
     const agentMarketJobs = document.getElementById("agentMarketJobs");
@@ -578,6 +595,25 @@
       return Number.isFinite(number) && number > 0
         ? number.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽"
         : "Цена не указана";
+    }
+
+    function formatAgentDuration(value) {
+      const seconds = Math.max(0, Math.round(Number(value || 0)));
+      if (!seconds) return "меньше минуты";
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const rest = seconds % 60;
+      if (hours) return hours + " ч " + minutes + " мин";
+      if (minutes) return minutes + " мин" + (rest ? " " + rest + " сек" : "");
+      return rest + " сек";
+    }
+
+    function formatAgentTime(value) {
+      const timestamp = Number(value || 0);
+      if (!timestamp) return "";
+      return new Date(timestamp * 1000).toLocaleString("ru-RU", {
+        day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      });
     }
 
     document.getElementById("agentReloadTable")?.addEventListener("click", function() { window.location.reload(); });
@@ -751,73 +787,104 @@
         const data = await response.json().catch(function() { return {}; });
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
         avitoAgentQueueEnabled = !!data.enabled;
-        const progress = data.progress || data.summary || {};
-        const total = Number(progress.total || 0);
-        const processed = Number(progress.processed || 0);
-        const current = progress.current || null;
-        if (progress.running) {
+        const run = data.latest_run || {};
+        const total = Number(run.total || 0);
+        const processed = Number(run.processed || 0);
+        const percent = Math.max(0, Math.min(100, Number(run.percent || 0)));
+        const current = run.current || null;
+        const running = run.status === "running";
+        if (running) {
           avitoQueueObservedRunning = true;
         } else if (avitoQueueObservedRunning && total && processed >= total) {
           avitoQueueObservedRunning = false;
         }
         const launcher = document.getElementById("avitoLauncherStatus");
-        avitoSafeCard?.classList.toggle("is-ready", !!data.enabled && !progress.failed);
-        avitoSafeCard?.classList.toggle("is-paused", !!progress.failed);
-        if (avitoAgentProgress) {
-          avitoAgentProgress.textContent = total
-            ? (processed + " из " + total + " · найдено " + Number(progress.offers_found || 0))
-            : "Очередь свободна";
+        avitoSafeCard?.classList.toggle("is-ready", !!data.enabled && !running && (!total || processed >= total));
+        avitoSafeCard?.classList.toggle("is-paused", Number(run.failed || 0) > 0);
+        avitoRunSummary?.classList.toggle("is-running", running);
+        avitoRunSummary?.classList.toggle("is-done", !!total && processed >= total);
+        if (avitoRunProgressFill) {
+          avitoRunProgressFill.style.width = percent + "%";
+          avitoRunProgressFill.parentElement?.setAttribute("aria-valuenow", String(percent));
         }
+        const metricValues = [
+          ["avitoRunProcessed", processed + " / " + total],
+          ["avitoRunVerified", Number(run.verified_offers || 0)],
+          ["avitoRunCandidates", Number(run.candidate_offers || 0)],
+          ["avitoRunEmpty", Number(run.positions_without_offers || 0)],
+        ];
+        metricValues.forEach(function(pair) {
+          const node = document.getElementById(pair[0]);
+          if (node) node.textContent = String(pair[1]);
+        });
         if (current) {
-          if (avitoAgentCurrent) avitoAgentCurrent.textContent = current.position_name || "Позиция без названия";
-          if (avitoAgentNote) avitoAgentNote.textContent = current.status === "leased"
-            ? "Hermes открыл Авито на Mac mini. При CAPTCHA или блокировке задание остановится без повторного штурма."
-            : "Задание ждёт следующего опроса Mac mini.";
+          const currentIndex = Number(run.current_index || Math.min(total, processed + 1));
+          if (avitoRunState) avitoRunState.textContent = current.status === "leased" ? "Hermes ищет" : "Ждёт Mac mini";
+          if (avitoRunTitle) avitoRunTitle.textContent = "Позиция " + currentIndex + " из " + total;
+          if (avitoRunMeta) avitoRunMeta.textContent = current.position_name || "Позиция без названия";
+          if (avitoAgentNote) avitoAgentNote.textContent = current.reason || "Задание выполняется";
           if (avitoSafeTitle) avitoSafeTitle.textContent = "Hermes ищет объявления";
           if (avitoSafeStatus) avitoSafeStatus.textContent = "Текущая позиция: " + (current.position_name || "без названия");
-          if (launcher) launcher.textContent = "Сейчас: " + (current.position_name || "позиция");
+          if (launcher) launcher.textContent = currentIndex + " из " + total + " · " + (current.position_name || "позиция");
         } else {
-          if (avitoAgentCurrent) avitoAgentCurrent.textContent = total && processed >= total ? "Все задания обработаны" : "Hermes ничего не ищет";
+          if (avitoRunState) avitoRunState.textContent = total ? "Готово" : "Готов к запуску";
+          if (avitoRunTitle) avitoRunTitle.textContent = total
+            ? (processed + " из " + total + " позиций обработано")
+            : "Последнего запуска пока нет";
+          if (avitoRunMeta) {
+            avitoRunMeta.textContent = total
+              ? (Number(run.offers_found || 0) + " объявлений · " + Number(run.positions_verified || 0) + " поз. с подтверждённой ценой · за " + formatAgentDuration(run.elapsed_seconds) + (run.completed_at ? " · " + formatAgentTime(run.completed_at) : ""))
+              : "Здесь появятся время, результат и текущая позиция";
+          }
           if (avitoAgentNote) avitoAgentNote.textContent = data.enabled
-            ? (total && processed >= total ? "Результаты добавлены к позициям сметы." : "Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.")
+            ? (total && processed >= total ? "Запуск завершён. Ниже показаны все позиции и причины результата." : "Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.")
             : "Для подключения Mac mini не настроен MARKET_AGENT_TOKEN.";
-          if (avitoSafeTitle) avitoSafeTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Отдельный поиск объявлений через Hermes";
-          if (avitoSafeStatus) avitoSafeStatus.textContent = "Поиск выполняется браузерной сессией Mac mini, а не IP сервера AutoBot.";
-          if (launcher) launcher.textContent = total && processed >= total ? "Последняя очередь завершена" : "До 5 строк через браузер Mac mini";
+          if (avitoSafeTitle) avitoSafeTitle.textContent = "Поиск цен на Авито";
+          if (avitoSafeStatus) avitoSafeStatus.textContent = total
+            ? ("Последний запуск: " + processed + " из " + total + " · " + formatAgentDuration(run.elapsed_seconds))
+            : "Позиции уходят в отдельную очередь и проверяются по одной.";
+          if (launcher) launcher.textContent = total && processed >= total
+            ? (processed + " из " + total + " · " + Number(run.verified_offers || 0) + " цен принято")
+            : "До 5 строк через браузер Mac mini";
         }
-        const jobs = (current ? [current] : []).concat(progress.recent || []).slice(0, 6);
+
+        const positions = Array.isArray(run.positions) ? run.positions : [];
+        if (avitoRunResults) avitoRunResults.hidden = positions.length === 0;
+        const hint = document.getElementById("avitoRunResultHint");
+        if (hint) hint.textContent = Number(run.offers_found || 0) + " объявлений · " + Number(run.verified_offers || 0) + " принято";
+        if (avitoRunPositionList) {
+          const stateLabels = {
+            verified: "Цена подтверждена", candidate: "Нужна проверка", empty: "Без цены",
+            queued: "В очереди", leased: "Идёт поиск", failed: "Ошибка", canceled: "Отменено",
+          };
+          avitoRunPositionList.innerHTML = positions.map(function(item, index) {
+            const state = stateLabels[item.state] ? item.state : "empty";
+            const offers = Array.isArray(item.offers) ? item.offers : [];
+            const badges = [];
+            if (Number(item.verified || 0)) badges.push('<span class="is-verified">' + Number(item.verified) + ' принято</span>');
+            if (Number(item.candidate || 0)) badges.push('<span class="is-candidate">' + Number(item.candidate) + ' на проверке</span>');
+            const offerDetails = offers.length ? '<details class="agent-run-offers"><summary>Показать объявления <b>' + offers.length + '</b></summary><div>' + offers.map(function(offer) {
+              const verification = ["verified", "candidate", "rejected"].includes(offer.verification) ? offer.verification : "candidate";
+              const price = formatAgentPrice(offer.price) + (offer.unit ? " / " + escapeHtml(offer.unit) : "");
+              const link = offer.url ? '<a href="' + escapeHtml(offer.url) + '" target="_blank" rel="noopener noreferrer">Открыть ↗</a>' : '';
+              return '<article class="agent-run-offer is-' + verification + '"><div><small>' + (verification === "verified" ? "Принято" : verification === "candidate" ? "На проверке" : "Отклонено") + '</small><strong>' + price + '</strong></div><span>' + escapeHtml(offer.title || "Объявление Авито") + '</span>' + link + '</article>';
+            }).join("") + '</div></details>' : '';
+            return '<article class="agent-run-position is-' + state + '">' +
+              '<span class="agent-run-number">' + (item.item_no ? escapeHtml(item.item_no) : (index + 1)) + '</span>' +
+              '<div class="agent-run-position-copy"><div><span>' + escapeHtml(stateLabels[state]) + '</span>' + badges.join("") + '</div><strong>' + escapeHtml(item.position_name || "Позиция сметы") + '</strong><p>' + escapeHtml(item.reason || "Нет пояснения") + '</p>' + offerDetails + '</div></article>';
+          }).join("");
+        }
+
+        const jobs = positions.slice().sort(function(left, right) {
+          return Number(right.updated_at || 0) - Number(left.updated_at || 0);
+        }).slice(0, 10);
         if (avitoAgentJobs) {
-          avitoAgentJobs.hidden = jobs.length === 0;
           avitoAgentJobs.innerHTML = jobs.map(function(job) {
             const status = agentStatusLabels[job.status] || job.status;
             const detail = job.status === "completed"
-              ? (Number(job.offers_found || 0) ? ("Объявлений: " + Number(job.offers_found || 0)) : (job.notes || "Подходящих объявлений не найдено"))
-              : (job.error || (job.status === "leased" ? "Открывает объявления" : "Ожидает обработки"));
+              ? (Number(job.offers_found || 0) ? ("Объявлений: " + Number(job.offers_found || 0)) : job.reason)
+              : job.reason;
             return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
-          }).join("");
-        }
-        const avitoResults = Array.isArray(data.results) ? data.results : [];
-        const avitoTotals = data.result_totals || {};
-        const avitoResultsPanel = document.getElementById("avitoAgentResults");
-        const avitoResultsList = document.getElementById("avitoAgentResultList");
-        [["avitoResultFound", "found"], ["avitoResultVerified", "verified"], ["avitoResultCandidate", "candidate"], ["avitoResultRejected", "rejected"]].forEach(function(pair) {
-          const node = document.getElementById(pair[0]);
-          if (node) node.textContent = String(Number(avitoTotals[pair[1]] || 0));
-        });
-        if (avitoResultsPanel) avitoResultsPanel.hidden = avitoResults.length === 0;
-        if (avitoResultsList) {
-          const labels = { verified: "Принята", candidate: "На проверке", rejected: "Отклонена" };
-          avitoResultsList.innerHTML = avitoResults.map(function(item) {
-            const verification = ["verified", "candidate", "rejected"].includes(item.verification) ? item.verification : "candidate";
-            const price = formatAgentPrice(item.price) + (item.unit ? " / " + escapeHtml(item.unit) : "");
-            const reason = item.reason || item.evidence || "Hermes открыл объявление; AutoBot проверяет соответствие позиции";
-            const sourceLink = item.url
-              ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener noreferrer">Открыть объявление ↗</a>'
-              : "";
-            return '<article class="agent-result is-' + verification + '">' +
-              '<div class="agent-result-state"><span>' + escapeHtml(labels[verification]) + '</span><b>' + price + '</b></div>' +
-              '<div class="agent-result-copy"><small>' + escapeHtml(item.position_name || "Позиция сметы") + '</small><strong>' + escapeHtml(item.title || "Объявление Авито") + '</strong><p>' + escapeHtml(reason) + '</p></div>' +
-              '<div class="agent-result-link">' + sourceLink + '</div></article>';
           }).join("");
         }
         refreshAgentSelection();
@@ -825,6 +892,9 @@
         avitoAgentQueueEnabled = false;
         avitoSafeCard?.classList.remove("is-ready");
         avitoSafeCard?.classList.add("is-paused");
+        if (avitoRunState) avitoRunState.textContent = "Нет связи";
+        if (avitoRunTitle) avitoRunTitle.textContent = "Не удалось получить состояние очереди";
+        if (avitoRunMeta) avitoRunMeta.textContent = error.message || String(error);
         if (avitoAgentNote) avitoAgentNote.textContent = "Не удалось прочитать очередь Авито: " + (error.message || error);
         const launcher = document.getElementById("avitoLauncherStatus");
         if (launcher) launcher.textContent = "Очередь временно недоступна";

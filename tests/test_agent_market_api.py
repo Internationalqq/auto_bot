@@ -100,6 +100,47 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual(job["payload"]["max_offers"], 2)
         self.assertEqual(job["payload"]["max_sources"], 2)
         self.assertIn("не теряй их", job["payload"]["task"].casefold())
+        self.assertEqual(job["payload"]["batch_id"], response.get_json()["batch_id"])
+
+    def test_latest_run_summary_does_not_mix_old_history(self) -> None:
+        jobs = [
+            {
+                "id": "old", "position_key": "old-pos", "position_name": "Старая позиция",
+                "status": "completed", "created_at": 100, "updated_at": 130, "completed_at": 130,
+                "payload": {"batch_id": "old-batch", "item_no": 99}, "result": {"offers": []},
+            },
+            {
+                "id": "new-1", "position_key": "pos-1", "position_name": "Геотекстиль",
+                "status": "completed", "created_at": 1000, "updated_at": 1120, "completed_at": 1120,
+                "payload": {"batch_id": "new-batch", "item_no": 1},
+                "result": {
+                    "offers": [{"title": "Геотекстиль 2x25", "price": 3050, "unit": "рулон", "url": "https://www.avito.ru/item/1"}],
+                    "import": {"offer_outcomes": [{"url": "https://www.avito.ru/item/1", "verification": "verified", "price": 61, "matched_unit": "м2"}]},
+                },
+            },
+            {
+                "id": "new-2", "position_key": "pos-2", "position_name": "Бетон В20",
+                "status": "completed", "created_at": 1000, "updated_at": 1180, "completed_at": 1180,
+                "payload": {"batch_id": "new-batch", "item_no": 2},
+                "result": {"offers": [], "notes": "Подходящих объявлений не найдено"},
+            },
+            {
+                "id": "new-canceled", "position_key": "duplicate-pos", "position_name": "Отменённый дубль",
+                "status": "canceled", "created_at": 1000, "updated_at": 1001, "completed_at": 1001,
+                "payload": {"batch_id": "new-batch", "item_no": 3}, "result": {"offers": []},
+            },
+        ]
+
+        run = web_ui._agent_market_latest_run(jobs)
+
+        self.assertEqual(run["id"], "new-batch")
+        self.assertEqual(run["total"], 2)
+        self.assertEqual(run["processed"], 2)
+        self.assertEqual(run["verified_offers"], 1)
+        self.assertEqual(run["positions_verified"], 1)
+        self.assertEqual(run["positions_without_offers"], 1)
+        self.assertEqual(run["elapsed_seconds"], 180)
+        self.assertEqual([item["position_name"] for item in run["positions"]], ["Геотекстиль", "Бетон В20"])
 
     @patch("autobot.real_market_scraper.import_agent_market_result")
     def test_claim_and_complete_normalizes_agent_result(self, import_result) -> None:
