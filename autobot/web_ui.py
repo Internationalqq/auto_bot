@@ -10673,7 +10673,17 @@ def _agent_market_compact_reason(job: dict, offers: list[dict]) -> str:
         str(value or "")
         for value in (job.get("error"), result.get("notes"), imported.get("message"))
     ).casefold()
-    if any(marker in detail for marker in ("captcha", "ограничен", "ограничение доступа", "проблема с ip")):
+    restriction_markers = (
+        "доступ ограничен",
+        "ограничение доступа",
+        "показал ограничение",
+        "показала ограничение",
+        "показал captcha",
+        "показала captcha",
+        "captcha появилась",
+        "проблема с ip",
+    )
+    if any(marker in detail for marker in restriction_markers):
         return "Авито ограничил доступ до подтверждения цены"
     if any(marker in detail for marker in ("нерелевант", "неподходящ", "не подход", "другой класс", "другая марка")):
         return "Подходящее объявление не удалось подтвердить"
