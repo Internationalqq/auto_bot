@@ -149,6 +149,7 @@ merge_site_lock = threading.Lock()
 
 estimate_upload_jobs: dict[str, dict] = {}
 estimate_upload_lock = threading.Lock()
+estimate_upload_workers: set[str] = set()
 estimate_market_jobs: dict[str, dict] = {}
 estimate_market_lock = threading.Lock()
 tender_delete_lock = threading.Lock()
@@ -4426,8 +4427,14 @@ def favicon_svg():
     return resp
 
 
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "service": "autobot"})
+
+
 USER_ESTIMATES_DIR = REPO_ROOT / "data" / "user_estimates"
 USER_ESTIMATES_INDEX = USER_ESTIMATES_DIR / "index.json"
+ESTIMATE_UPLOAD_JOBS_DIR = USER_ESTIMATES_DIR / ".upload_jobs"
 
 
 def _estimate_upload_allowed(filename: str) -> bool:
@@ -5272,6 +5279,43 @@ def _estimate_upload_log_append(job: dict, line: str) -> None:
     job["log_lines"] = logs[-20:]
 
 
+def _estimate_upload_job_path(job_id: str) -> Path | None:
+    clean_job_id = str(job_id or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{16,40}", clean_job_id):
+        return None
+    return ESTIMATE_UPLOAD_JOBS_DIR / f"{clean_job_id}.json"
+
+
+def _estimate_upload_persist_locked(job: dict) -> None:
+    """Persist upload state so a page or container reload can recover it."""
+    target = _estimate_upload_job_path(str(job.get("job_id") or ""))
+    if target is None:
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_suffix(f".{threading.get_ident()}.tmp")
+        temp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(target)
+    except OSError:
+        # Progress persistence must never abort OCR itself. The in-memory
+        # status remains available until the process exits.
+        return
+
+
+def _estimate_upload_load_locked(job_id: str) -> dict | None:
+    target = _estimate_upload_job_path(job_id)
+    if target is None or not target.is_file():
+        return None
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or str(payload.get("job_id") or "") != str(job_id):
+        return None
+    estimate_upload_jobs[job_id] = payload
+    return payload
+
+
 def _estimate_market_log_append(job: dict, line: str) -> None:
     logs = list(job.get("log_lines") or [])
     stamp = datetime.now().strftime("%H:%M:%S")
@@ -5286,6 +5330,8 @@ def _estimate_upload_set(job_id: str, **updates) -> None:
             return
         for key, value in updates.items():
             job[key] = value
+        job["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _estimate_upload_persist_locked(job)
 
 
 def _estimate_market_set(estimate_id: str, **updates) -> None:
@@ -5443,11 +5489,34 @@ def _estimate_upload_progress_cb(job_id: str):
             job = estimate_upload_jobs.get(job_id)
             if not job:
                 return
-            job["progress"] = max(int(job.get("progress") or 0), int(percent))
+            reported_progress = int(percent)
+            job["progress"] = max(int(job.get("progress") or 0), reported_progress)
+            job["progress_estimated"] = int(job["progress"]) > reported_progress
+            changed = (job.get("stage"), job.get("detail")) != (stage, detail)
             job["stage"] = stage
             job["detail"] = detail
-            _estimate_upload_log_append(job, f"{stage}" + (f": {detail}" if detail else ""))
+            job["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            if changed:
+                _estimate_upload_log_append(job, f"{stage}" + (f": {detail}" if detail else ""))
+            _estimate_upload_persist_locked(job)
     return _cb
+
+
+def _estimate_upload_heartbeat(job_id: str, stop_event: threading.Event) -> None:
+    """Keep long blocking OCR passes visibly alive between real checkpoints."""
+    worker_started = time.monotonic()
+    while not stop_event.wait(7):
+        with estimate_upload_lock:
+            job = estimate_upload_jobs.get(job_id)
+            if not job or not job.get("running"):
+                return
+            current = int(job.get("progress") or 0)
+            if 30 <= current < 77:
+                job["progress"] = current + 1
+                job["progress_estimated"] = True
+            job["elapsed_seconds"] = max(0, round(time.monotonic() - worker_started))
+            job["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _estimate_upload_persist_locked(job)
 
 
 def _estimate_upload_cleanup(max_jobs: int = 16) -> None:
@@ -5463,11 +5532,26 @@ def _estimate_upload_cleanup(max_jobs: int = 16) -> None:
 
 
 def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str, original_name: str, src_path: Path) -> None:
+    heartbeat_stop = threading.Event()
+    threading.Thread(
+        target=_estimate_upload_heartbeat,
+        args=(job_id, heartbeat_stop),
+        daemon=True,
+    ).start()
     try:
         from autobot.estimate_excel_analysis import load_estimate_session
 
-        _estimate_upload_set(job_id, running=True, progress=max(30, int(estimate_upload_jobs.get(job_id, {}).get("progress") or 0)), stage="Файл получен", detail="Запускаю разбор Excel")
-        _estimate_upload_set(job_id, updated_at=datetime.now().isoformat(timespec="seconds"))
+        with estimate_upload_lock:
+            current_progress = int((estimate_upload_jobs.get(job_id) or {}).get("progress") or 0)
+        file_kind = "PDF" if src_path.suffix.lower() == ".pdf" else "Excel"
+        _estimate_upload_set(
+            job_id,
+            running=True,
+            progress=max(30, current_progress),
+            progress_estimated=False,
+            stage="Файл получен",
+            detail=f"Запускаю разбор {file_kind}",
+        )
         session = load_estimate_session(src_path, progress_cb=_estimate_upload_progress_cb(job_id))
         rows = [_estimate_row_to_dict(r) for r in session.rows]
         summary = _summarize_estimate_rows(rows)
@@ -5496,7 +5580,10 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
                 job["detail"] = f"Строк: {len(rows)} · смета сохранена"
                 job["estimate_id"] = estimate_id
                 job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                job["updated_at"] = job["ended_at"]
+                job["progress_estimated"] = False
                 _estimate_upload_log_append(job, f"Готово: смета сохранена, строк {len(rows)}")
+                _estimate_upload_persist_locked(job)
     except Exception as e:
         with estimate_upload_lock:
             job = estimate_upload_jobs.get(job_id)
@@ -5505,11 +5592,97 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
                 job["ok"] = False
                 job["error"] = str(e)[:500]
                 job["stage"] = "Ошибка"
-                job["detail"] = "Не удалось распарсить Excel или сохранить смету"
+                job["detail"] = "Не удалось распознать или сохранить смету"
                 job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+                job["updated_at"] = job["ended_at"]
+                job["progress_estimated"] = False
                 _estimate_upload_log_append(job, f"Ошибка: {str(e)[:300]}")
+                _estimate_upload_persist_locked(job)
     finally:
+        heartbeat_stop.set()
+        with estimate_upload_lock:
+            estimate_upload_workers.discard(job_id)
         _estimate_upload_cleanup()
+
+
+def _start_estimate_upload_worker(job_id: str, *, recovering: bool = False) -> bool:
+    """Start a new upload worker or resume one restored from persistent state."""
+    with estimate_upload_lock:
+        job = estimate_upload_jobs.get(job_id) or _estimate_upload_load_locked(job_id)
+        if not job or not job.get("running") or job_id in estimate_upload_workers:
+            return False
+
+        estimate_id = re.sub(
+            r"[^0-9a-fA-F-]",
+            "",
+            str(job.get("target_estimate_id") or job.get("estimate_id") or ""),
+        )[:40]
+        source_value = str(job.get("source_path") or "").strip()
+        source_path = Path(source_value)
+        if source_value and not source_path.is_absolute():
+            source_path = REPO_ROOT / source_path
+        try:
+            resolved_source = source_path.resolve()
+            resolved_root = USER_ESTIMATES_DIR.resolve()
+        except OSError:
+            resolved_source = source_path
+            resolved_root = USER_ESTIMATES_DIR
+
+        source_is_safe = bool(source_value) and resolved_root in resolved_source.parents
+        if not estimate_id or not source_is_safe or not resolved_source.is_file():
+            job["running"] = False
+            job["ok"] = False
+            job["stage"] = "Ошибка восстановления"
+            job["detail"] = "Исходный файл сметы не найден после перезапуска"
+            job["error"] = job["detail"]
+            job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+            job["updated_at"] = job["ended_at"]
+            _estimate_upload_log_append(job, job["detail"])
+            _estimate_upload_persist_locked(job)
+            return False
+
+        if _estimate_meta_path(estimate_id).is_file() and _estimate_rows_path(estimate_id).is_file():
+            job["running"] = False
+            job["ok"] = True
+            job["progress"] = 100
+            job["progress_estimated"] = False
+            job["stage"] = "Готово"
+            job["detail"] = "Смета была сохранена до перезапуска"
+            job["estimate_id"] = estimate_id
+            job["ended_at"] = datetime.now().isoformat(timespec="seconds")
+            job["updated_at"] = job["ended_at"]
+            _estimate_upload_log_append(job, "Готово: восстановлен сохранённый результат")
+            _estimate_upload_persist_locked(job)
+            return False
+
+        if recovering:
+            job["stage"] = "Возобновляю обработку"
+            job["detail"] = "AutoBot перезапускался — повторно запускаю OCR исходного файла"
+            job["error"] = ""
+            job["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _estimate_upload_log_append(job, "Обработка возобновлена после перезапуска AutoBot")
+            _estimate_upload_persist_locked(job)
+
+        estimate_upload_workers.add(job_id)
+        worker_kwargs = {
+            "job_id": job_id,
+            "estimate_id": estimate_id,
+            "title_raw": str(job.get("title_raw") or ""),
+            "original_name": str(job.get("original_name") or resolved_source.name),
+            "src_path": resolved_source,
+        }
+
+    try:
+        threading.Thread(
+            target=_run_estimate_upload_worker,
+            kwargs=worker_kwargs,
+            daemon=True,
+        ).start()
+    except Exception:
+        with estimate_upload_lock:
+            estimate_upload_workers.discard(job_id)
+        raise
+    return True
 
 
 def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str], selected_types: list[str] | None = None) -> None:
@@ -5769,6 +5942,8 @@ ESTIMATES_TEMPLATE = """
     .upload-progress-pct { font-size:13px; color:#2e80e8; font-variant-numeric:tabular-nums; }
     .upload-progress-bar { height:12px; border-radius:999px; overflow:hidden; background:#edf3fa; border:1px solid #d6e0ee; }
     .upload-progress-fill { height:100%; width:0%; background:linear-gradient(90deg, #4f8cff, #5ecf8a); transition:width .28s ease; }
+    .upload-progress.is-running .upload-progress-fill { background-size:200% 100%; animation:upload-progress-live 1.4s linear infinite; }
+    @keyframes upload-progress-live { from { background-position:100% 0; } to { background-position:-100% 0; } }
     .upload-progress-stage { margin-top:10px; color:#1f3957; font-size:13px; font-weight:700; }
     .upload-progress-detail { margin-top:5px; color:#9fb0d6; font-size:12px; line-height:1.45; }
     .upload-progress-steps { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
@@ -5784,7 +5959,7 @@ ESTIMATES_TEMPLATE = """
 <body>
   <div class="page">
     <h1>Сметы</h1>
-    <div class="sub">Загрузите Excel-смету, сохраните её карточкой и смотрите все найденные позиции в таблице.</div>
+    <div class="sub">Загрузите Excel- или PDF-смету, сохраните её карточкой и смотрите все найденные позиции в таблице.</div>
     <nav class="tabs">
       <a class="tab" href="/tenders">📋 Тендеры</a>
       <a class="tab is-active" href="/estimates">📊 Сметы</a>
@@ -5792,7 +5967,7 @@ ESTIMATES_TEMPLATE = """
     </nav>
 
     <section class="panel">
-      <h2 style="margin:0 0 10px;font-size:18px;">Загрузить Excel-смету</h2>
+      <h2 style="margin:0 0 10px;font-size:18px;">Загрузить смету</h2>
       <form id="estimateUploadForm" class="upload-row">
         <input type="file" name="file" accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" required />
         <input type="text" name="title" placeholder="Название сметы (необязательно)" />
@@ -5809,7 +5984,7 @@ ESTIMATES_TEMPLATE = """
         <div class="upload-progress-steps" id="estimateUploadSteps">
           <span class="upload-step" data-step="upload">Отправка файла</span>
           <span class="upload-step" data-step="received">Файл получен</span>
-          <span class="upload-step" data-step="parse">Разбор Excel</span>
+          <span class="upload-step" data-step="parse">Разбор файла</span>
           <span class="upload-step" data-step="catalogue">Каталог позиций</span>
           <span class="upload-step" data-step="save">Сохранение</span>
           <span class="upload-step" data-step="done">Готово</span>
@@ -5855,6 +6030,20 @@ ESTIMATES_TEMPLATE = """
       const stepNodes = Array.from(document.querySelectorAll("#estimateUploadSteps .upload-step"));
       let activePoll = 0;
 
+      const uploadJobStorageKey = "autobot:estimate-upload-job";
+
+      function rememberUploadJob(jobId) {
+        try { window.sessionStorage.setItem(uploadJobStorageKey, String(jobId || "")); } catch (e) {}
+      }
+
+      function forgetUploadJob() {
+        try { window.sessionStorage.removeItem(uploadJobStorageKey); } catch (e) {}
+      }
+
+      function rememberedUploadJob() {
+        try { return window.sessionStorage.getItem(uploadJobStorageKey) || ""; } catch (e) { return ""; }
+      }
+
       function showProgress() {
         panel.hidden = false;
         logs.hidden = false;
@@ -5884,8 +6073,11 @@ ESTIMATES_TEMPLATE = """
         const value = Math.max(0, Math.min(100, Number(data.progress || 0)));
         fill.style.width = value + "%";
         pct.textContent = value + "%";
+        panel.classList.toggle("is-running", !!data.running);
         stage.textContent = data.stage || "Подготовка…";
-        detail.textContent = data.detail || "";
+        const elapsed = Math.max(0, Number(data.elapsed_seconds || 0));
+        const alive = data.running && elapsed ? "Идёт обработка · прошло " + elapsed + " с" : "";
+        detail.textContent = [data.detail || "", alive].filter(Boolean).join(" · ");
         const resultOk = !!data.result_ok;
         status.textContent = data.running ? "Смета обрабатывается…" : (resultOk ? "Смета готова." : (data.error ? "Во время обработки возникла ошибка." : ""));
         if (Array.isArray(data.log_tail) && data.log_tail.length) {
@@ -5907,6 +6099,7 @@ ESTIMATES_TEMPLATE = """
 
       async function pollJob(jobId) {
         const pollId = ++activePoll;
+        let failures = 0;
         for (;;) {
           if (pollId !== activePoll) return;
           let resp, data;
@@ -5914,22 +6107,33 @@ ESTIMATES_TEMPLATE = """
             resp = await fetch("/api/estimates/upload-status/" + encodeURIComponent(jobId), { cache: "no-store" });
             data = await resp.json();
           } catch (e) {
-            status.textContent = "Не удалось обновить статус обработки.";
-            return;
+            failures += 1;
+            status.textContent = "AutoBot переподключается, обработка продолжится автоматически…";
+            if (failures >= 20) {
+              status.textContent = "Долго не удаётся получить статус обработки. Нажмите «Обновить» — задача сохранена.";
+              return;
+            }
+            await new Promise(function(resolve) { setTimeout(resolve, Math.min(5000, 700 + failures * 350)); });
+            continue;
           }
           if (!resp.ok || !data.ok) {
-            status.textContent = (data && data.message) || "Статус обработки недоступен.";
-            return;
+            failures += 1;
+            status.textContent = (data && data.message) || "Жду восстановления AutoBot…";
+            if (failures >= 20) return;
+            await new Promise(function(resolve) { setTimeout(resolve, Math.min(5000, 700 + failures * 350)); });
+            continue;
           }
+          failures = 0;
           renderProgress(data);
           if (!data.running) {
+            forgetUploadJob();
             if (data.result_ok && data.estimate_id) {
               status.textContent = "Готово, открываю смету…";
               setTimeout(function() { location.href = "/estimates/" + data.estimate_id; }, 450);
             }
             return;
           }
-          await new Promise(function(resolve) { setTimeout(resolve, 500); });
+          await new Promise(function(resolve) { setTimeout(resolve, 1500); });
         }
       }
 
@@ -5938,6 +6142,7 @@ ESTIMATES_TEMPLATE = """
         const fd = new FormData(form);
         const xhr = new XMLHttpRequest();
         activePoll += 1;
+        forgetUploadJob();
         showProgress();
         errBox.hidden = true;
         errBox.textContent = "";
@@ -5980,10 +6185,18 @@ ESTIMATES_TEMPLATE = """
             log_tail: data.log_tail || []
           });
           status.textContent = "Файл получен, идёт разбор сметы…";
+          rememberUploadJob(data.job_id);
           pollJob(data.job_id);
         };
         xhr.send(fd);
       });
+
+      const restoredJobId = rememberedUploadJob();
+      if (restoredJobId) {
+        showProgress();
+        status.textContent = "Возвращаюсь к обработке загруженной сметы…";
+        pollJob(restoredJobId);
+      }
 
       document.addEventListener("click", async function(e) {
         const btn = e.target.closest("[data-estimate-delete]");
@@ -6539,6 +6752,8 @@ ESTIMATES_TEMPLATE_V2 = """
     .upload-progress-pct { font-size:13px; color:#2e80e8; font-variant-numeric:tabular-nums; }
     .upload-progress-bar { height:12px; border-radius:999px; overflow:hidden; background:#edf3fa; border:1px solid #d6e0ee; }
     .upload-progress-fill { height:100%; width:0%; background:linear-gradient(90deg, #4f8cff, #5ecf8a); transition:width .28s ease; }
+    .upload-progress.is-running .upload-progress-fill { background-size:200% 100%; animation:upload-progress-live 1.4s linear infinite; }
+    @keyframes upload-progress-live { from { background-position:100% 0; } to { background-position:-100% 0; } }
     .upload-progress-detail { margin-top:5px; color:#7389a9; font-size:12px; line-height:1.45; }
     .upload-progress-steps { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
     .upload-step { border:1px solid #cfd9e8; background:#f4f8fd; color:#6d7f96; border-radius:999px; padding:4px 9px; font-size:11px; }
@@ -6726,6 +6941,19 @@ ESTIMATES_TEMPLATE_V2 = """
       const logs = document.getElementById("estimateUploadLogs");
       const stepNodes = Array.from(document.querySelectorAll("#estimateUploadSteps .upload-step"));
       let activePoll = 0;
+      const uploadJobStorageKey = "autobot:estimate-upload-job";
+
+      function rememberUploadJob(jobId) {
+        try { window.sessionStorage.setItem(uploadJobStorageKey, String(jobId || "")); } catch (e) {}
+      }
+
+      function forgetUploadJob() {
+        try { window.sessionStorage.removeItem(uploadJobStorageKey); } catch (e) {}
+      }
+
+      function rememberedUploadJob() {
+        try { return window.sessionStorage.getItem(uploadJobStorageKey) || ""; } catch (e) { return ""; }
+      }
 
       function syncChosenFile() {
         if (!fileInput || !fileName) return;
@@ -6767,8 +6995,11 @@ ESTIMATES_TEMPLATE_V2 = """
         const value = Math.max(0, Math.min(100, Number(data.progress || 0)));
         fill.style.width = value + "%";
         pct.textContent = value + "%";
+        panel.classList.toggle("is-running", !!data.running);
         stage.textContent = data.stage || "Подготовка…";
-        detail.textContent = data.detail || "";
+        const elapsed = Math.max(0, Number(data.elapsed_seconds || 0));
+        const alive = data.running && elapsed ? "Идёт обработка · прошло " + elapsed + " с" : "";
+        detail.textContent = [data.detail || "", alive].filter(Boolean).join(" · ");
         const resultOk = !!data.result_ok;
         status.textContent = data.running ? "Смета обрабатывается…" : (resultOk ? "Смета готова." : (data.error ? "Во время обработки возникла ошибка." : ""));
         if (Array.isArray(data.log_tail) && data.log_tail.length) {
@@ -6790,6 +7021,7 @@ ESTIMATES_TEMPLATE_V2 = """
 
       async function pollJob(jobId) {
         const pollId = ++activePoll;
+        let failures = 0;
         for (;;) {
           if (pollId !== activePoll) return;
           let resp, data;
@@ -6797,41 +7029,53 @@ ESTIMATES_TEMPLATE_V2 = """
             resp = await fetch("/api/estimates/upload-status/" + encodeURIComponent(jobId), { cache: "no-store" });
             data = await resp.json();
           } catch (e) {
-            status.textContent = "Не удалось обновить статус обработки.";
-            return;
+            failures += 1;
+            status.textContent = "AutoBot переподключается, обработка продолжится автоматически…";
+            if (failures >= 20) {
+              status.textContent = "Долго не удаётся получить статус обработки. Нажмите «Обновить» — задача сохранена.";
+              return;
+            }
+            await new Promise(function(resolve) { setTimeout(resolve, Math.min(5000, 700 + failures * 350)); });
+            continue;
           }
           if (!resp.ok || !data.ok) {
-            status.textContent = (data && data.message) || "Статус обработки недоступен.";
-            return;
+            failures += 1;
+            status.textContent = (data && data.message) || "Жду восстановления AutoBot…";
+            if (failures >= 20) return;
+            await new Promise(function(resolve) { setTimeout(resolve, Math.min(5000, 700 + failures * 350)); });
+            continue;
           }
+          failures = 0;
           renderProgress(data);
           if (!data.running) {
+            forgetUploadJob();
             if (data.result_ok && data.estimate_id) {
               status.textContent = "Готово, открываю смету…";
               setTimeout(function() { location.href = "/estimates/" + data.estimate_id; }, 450);
             }
             return;
           }
-          await new Promise(function(resolve) { setTimeout(resolve, 500); });
+          await new Promise(function(resolve) { setTimeout(resolve, 1500); });
         }
       }
 
       form.addEventListener("submit", function(e) {
         e.preventDefault();
         if (!fileInput || !fileInput.files || !fileInput.files.length) {
-          status.textContent = "Сначала прикрепите Excel-файл.";
+          status.textContent = "Сначала прикрепите файл сметы.";
           return;
         }
         const fd = new FormData(form);
         const xhr = new XMLHttpRequest();
         activePoll += 1;
+        forgetUploadJob();
         showProgress();
         errBox.hidden = true;
         errBox.textContent = "";
         logs.textContent = "";
         logs.hidden = true;
         status.textContent = "Начинаю загрузку файла…";
-        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю Excel на сервер", running: true, result_ok: false, log_tail: [] });
+        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю смету на сервер", running: true, result_ok: false, log_tail: [] });
         xhr.open("POST", "/api/estimates/upload");
         xhr.upload.addEventListener("progress", function(ev) {
           if (!ev.lengthComputable) return;
@@ -6867,10 +7111,18 @@ ESTIMATES_TEMPLATE_V2 = """
             log_tail: data.log_tail || []
           });
           status.textContent = "Файл получен, идёт разбор сметы…";
+          rememberUploadJob(data.job_id);
           pollJob(data.job_id);
         };
         xhr.send(fd);
       });
+
+      const restoredJobId = rememberedUploadJob();
+      if (restoredJobId) {
+        showProgress();
+        status.textContent = "Возвращаюсь к обработке загруженной сметы…";
+        pollJob(restoredJobId);
+      }
 
       window.deleteEstimateCard = async function(event, btn) {
         if (event) {
@@ -8808,7 +9060,7 @@ def api_estimate_market_stop(estimate_id: str):
 def api_estimates_upload():
     f = request.files.get("file")
     if not f or not getattr(f, "filename", None):
-        return jsonify({"ok": False, "message": "Выберите Excel-файл со сметой."}), 400
+        return jsonify({"ok": False, "message": "Выберите файл сметы."}), 400
     if not _estimate_upload_allowed(f.filename):
         return jsonify({"ok": False, "message": "Нужен файл сметы: .xlsx, .xls, .xlsm или .pdf."}), 400
     estimate_id = uuid.uuid4().hex[:16]
@@ -8823,28 +9075,25 @@ def api_estimates_upload():
         estimate_upload_jobs[job_id] = {
             "job_id": job_id,
             "estimate_id": None,
+            "target_estimate_id": estimate_id,
             "running": True,
             "ok": False,
             "progress": 26,
+            "progress_estimated": False,
             "stage": "Файл получен",
-            "detail": "Сохраняю Excel и запускаю разбор",
+            "detail": "Сохраняю файл и запускаю разбор",
             "error": "",
+            "title_raw": title_raw,
+            "original_name": original_name,
+            "source_path": str(src_path.relative_to(REPO_ROOT)),
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "ended_at": None,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "elapsed_seconds": 0,
             "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Файл получен: {original_name}"],
         }
-    threading.Thread(
-        target=_run_estimate_upload_worker,
-        kwargs={
-            "job_id": job_id,
-            "estimate_id": estimate_id,
-            "title_raw": title_raw,
-            "original_name": original_name,
-            "src_path": src_path,
-        },
-        daemon=True,
-    ).start()
+        _estimate_upload_persist_locked(estimate_upload_jobs[job_id])
+    _start_estimate_upload_worker(job_id)
     return jsonify(
         {
             "ok": True,
@@ -8860,9 +9109,15 @@ def api_estimates_upload():
 @app.route("/api/estimates/upload-status/<job_id>")
 def api_estimates_upload_status(job_id: str):
     with estimate_upload_lock:
-        job = dict(estimate_upload_jobs.get(job_id) or {})
+        stored_job = estimate_upload_jobs.get(job_id) or _estimate_upload_load_locked(job_id)
+        job = dict(stored_job or {})
+        worker_active = job_id in estimate_upload_workers
     if not job:
         return jsonify({"ok": False, "message": "Статус загрузки не найден."}), 404
+    if job.get("running") and not worker_active:
+        _start_estimate_upload_worker(job_id, recovering=True)
+        with estimate_upload_lock:
+            job = dict(estimate_upload_jobs.get(job_id) or job)
     return jsonify(
         {
             "ok": True,
@@ -8871,11 +9126,14 @@ def api_estimates_upload_status(job_id: str):
             "running": bool(job.get("running")),
             "result_ok": bool(job.get("ok")),
             "progress": int(job.get("progress") or 0),
+            "progress_estimated": bool(job.get("progress_estimated")),
             "stage": job.get("stage") or "",
             "detail": job.get("detail") or "",
             "error": job.get("error") or "",
             "started_at": job.get("started_at"),
             "ended_at": job.get("ended_at"),
+            "updated_at": job.get("updated_at"),
+            "elapsed_seconds": int(job.get("elapsed_seconds") or 0),
             "log_tail": list(job.get("log_lines") or [])[-12:],
         }
     )

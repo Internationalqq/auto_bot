@@ -5,7 +5,10 @@ from __future__ import annotations
 import io
 import re
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
+
+
+PdfProgressCallback = Callable[[int, str, str], None]
 
 
 class PdfEstimateAdapterError(RuntimeError):
@@ -220,7 +223,12 @@ class PdfEstimateAdapter:
             )
         return rows
 
-    def to_position_records(self, source: Path | str | bytes) -> list[dict[str, object]]:
+    def to_position_records(
+        self,
+        source: Path | str | bytes,
+        *,
+        progress_cb: PdfProgressCallback | None = None,
+    ) -> list[dict[str, object]]:
         """Read primary estimate rows from a scan by OCR word coordinates.
 
         This deliberately does not rely on horizontal table borders: LSR PDFs
@@ -241,12 +249,31 @@ class PdfEstimateAdapter:
         all_words: list[dict[str, float | str | int]] = []
         section_words: list[dict[str, float | str | int]] = []
         page_y_offset = 0.0
+        page_count = max(1, len(document))
+        total_ocr_units = page_count * 3
+        page_width = 0
+        if progress_cb is not None:
+            progress_cb(0, "Подготавливаю OCR PDF", f"Страниц в документе: {len(document)}")
         try:
             for page_number, page in enumerate(document, start=1):
+                if progress_cb is not None:
+                    completed_units = (page_number - 1) * 3
+                    progress_cb(
+                        round(completed_units / total_ocr_units * 90),
+                        f"OCR PDF: страница {page_number} из {page_count}",
+                        "Рендерю страницу и подготавливаю изображение",
+                    )
                 zoom = self.dpi / 72
                 pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
                 image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                page_width = int(image.shape[1])
+                if progress_cb is not None:
+                    progress_cb(
+                        round(((page_number - 1) * 3 + 1) / total_ocr_units * 90),
+                        f"OCR PDF: страница {page_number} из {page_count}",
+                        "Распознаю строки, числа и координаты · проход 1 из 2",
+                    )
                 data = pytesseract.image_to_data(
                     image, lang=self.languages, config="--psm 11", output_type=pytesseract.Output.DICT
                 )
@@ -276,6 +303,12 @@ class PdfEstimateAdapter:
                             "page": page_number,
                         }
                     )
+                if progress_cb is not None:
+                    progress_cb(
+                        round(((page_number - 1) * 3 + 2) / total_ocr_units * 90),
+                        f"OCR PDF: страница {page_number} из {page_count}",
+                        "Основная таблица распознана · проход 1 из 2 завершён",
+                    )
                 # Sparse PSM 11 is best at estimate rows, but it often loses
                 # full-width headings.  A direct 150 DPI PSM 3 render is used
                 # only for section boundaries and mapped back to the primary
@@ -286,6 +319,12 @@ class PdfEstimateAdapter:
                     section_pix.height, section_pix.width, section_pix.n
                 )
                 section_image = cv2.cvtColor(section_image, cv2.COLOR_RGB2BGR)
+                if progress_cb is not None:
+                    progress_cb(
+                        round(((page_number - 1) * 3 + 2) / total_ocr_units * 90),
+                        f"OCR PDF: страница {page_number} из {page_count}",
+                        "Определяю разделы сметы · проход 2 из 2",
+                    )
                 section_data = pytesseract.image_to_data(
                     section_image, lang=self.languages, config="--psm 3", output_type=pytesseract.Output.DICT
                 )
@@ -311,7 +350,17 @@ class PdfEstimateAdapter:
                         }
                     )
                 page_y_offset += float(image.shape[0]) + 120.0
-            records = self._position_records_from_words(all_words, image.shape[1], section_words=section_words)
+                if progress_cb is not None:
+                    progress_cb(
+                        round((page_number * 3) / total_ocr_units * 90),
+                        f"OCR PDF: страница {page_number} из {page_count}",
+                        f"Страница {page_number} из {page_count} распознана",
+                    )
+            if progress_cb is not None:
+                progress_cb(94, "Собираю строки PDF", "Связываю коды, названия, объёмы и суммы")
+            records = self._position_records_from_words(all_words, page_width, section_words=section_words)
+            if progress_cb is not None:
+                progress_cb(100, "Строки PDF собраны", f"Найдено позиций: {len(records)}")
         except Exception as error:
             raise PdfEstimateAdapterError("Не удалось выделить позиции сметы из OCR PDF") from error
         finally:
@@ -619,5 +668,9 @@ def pdf_to_dataframe(path: Path | str):
     return pd.DataFrame(PdfEstimateAdapter().to_rows(path))
 
 
-def pdf_to_position_records(path: Path | str) -> list[dict[str, object]]:
-    return PdfEstimateAdapter().to_position_records(path)
+def pdf_to_position_records(
+    path: Path | str,
+    *,
+    progress_cb: PdfProgressCallback | None = None,
+) -> list[dict[str, object]]:
+    return PdfEstimateAdapter().to_position_records(path, progress_cb=progress_cb)

@@ -391,12 +391,21 @@ def _read_pdf_position_rows(sheets: dict[str, pd.DataFrame]) -> list[EstimateRow
     return _dedupe_rows(rows)
 
 
-def _read_pdf_sparse_position_rows(path: Path) -> list[EstimateRow]:
+def _read_pdf_sparse_position_rows(
+    path: Path,
+    *,
+    progress_cb: ProgressCallback | None = None,
+) -> list[EstimateRow]:
     """Extract LSR rows by OCR coordinates when the table grid is fragmented."""
     from autobot.pdf_estimate_adapter import pdf_to_position_records
 
+    def _pdf_progress(percent: int, stage: str, detail: str = "") -> None:
+        # The OCR adapter owns the 38-77% segment of the full upload pipeline.
+        mapped = 38 + round(max(0, min(100, int(percent))) * 39 / 100)
+        _progress(progress_cb, mapped, stage, detail)
+
     rows: list[EstimateRow] = []
-    for record in pdf_to_position_records(path):
+    for record in pdf_to_position_records(path, progress_cb=_pdf_progress):
         name = _clean_text(record.get("name"))
         qty = _num(record.get("qty"))
         if len(name) < 4 or qty is None or qty <= 0:
@@ -500,8 +509,9 @@ def load_estimate_session(path: Path, *, progress_cb: ProgressCallback | None = 
     if path.suffix.lower() == ".pdf":
         _progress(progress_cb, 8, "Распознаю PDF", f"Файл: {Path(path).name}")
         _progress(progress_cb, 38, "Распознаю таблицу", "Выравниваю скан, определяю сетку и ячейки")
-        rows = _read_pdf_sparse_position_rows(path)
+        rows = _read_pdf_sparse_position_rows(path, progress_cb=progress_cb)
         if not rows:
+            _progress(progress_cb, 79, "Пробую резервный разбор PDF", "Основной OCR не нашёл строки, проверяю сетку таблицы")
             sheets = _raw_sheets(path)
             rows = _read_generic_sheets(sheets)
             if not rows:
