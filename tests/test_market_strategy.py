@@ -222,11 +222,24 @@ class MarketStrategyTests(unittest.TestCase):
             page_checked=True,
             source_unit="шт",
         )
+        steel_strip = check_offer(
+            name="Прокат стальной горячекатаный полосовой, марки стали СтЗсп, СтЗпс",
+            unit="т",
+            basis_code="ФСБЦ",
+            section="Материалы",
+            title="Полоса стальная",
+            snippet="60 ₽ за килограмм; марки Ст3, Ст3пс, Ст3сп/пс5; ГОСТ",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/polosa_stalnaya_123456789",
+            price=60000,
+            page_checked=True,
+            source_unit="т",
+        )
 
         self.assertEqual(earth.status, "verified")
         self.assertEqual(generic_tape.status, "candidate")
         self.assertIn("марку", generic_tape.reason)
         self.assertEqual(exact_tape.status, "verified")
+        self.assertEqual(steel_strip.status, "verified")
 
     def test_search_queries_use_exact_price_marker_then_regional_fallback(self) -> None:
         plan = build_search_plan("Плитка керамическая", "кв. м", "ФСБЦ", "Материалы")

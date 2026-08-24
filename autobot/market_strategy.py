@@ -701,6 +701,15 @@ def check_offer(
         ("растител" in evidence_folded and ("земл" in evidence_folded or "грунт" in evidence_folded))
         or ("плодород" in evidence_folded and "грунт" in evidence_folded)
     )
+    steel_strip_required = "прокат" in name_folded and "полос" in name_folded and "стал" in name_folded
+    steel_strip_seen = "полос" in evidence_folded and "стал" in evidence_folded
+    if steel_strip_required and steel_strip_seen:
+        canonical_name = name_folded.replace("стз", "ст3")
+        canonical_evidence = evidence_folded.replace("стз", "ст3")
+        required_steel_grades = set(re.findall(r"\bст3(?:сп|пс)\d*\b", canonical_name))
+        offered_steel_grades = set(re.findall(r"\bст3(?:сп|пс)\d*\b", canonical_evidence))
+        if required_steel_grades and not required_steel_grades.intersection(offered_steel_grades):
+            return OfferCheck("candidate", 0.43, "Источник не подтверждает ту же марку полосовой стали", "", observed_at)
     signal_tape_required = "лент" in name_folded and "сигнал" in name_folded
     if signal_tape_required:
         required_model = re.search(r"\bлс[эе]-?\s*\d+\b", name_folded)
@@ -715,6 +724,7 @@ def check_offer(
         or fine_natural_sand
         or geotextile_identity_match
         or (plant_earth_required and plant_earth_seen)
+        or (steel_strip_required and steel_strip_seen)
     )
     if semantic_identity_match:
         overlap = max(overlap, 0.55)
