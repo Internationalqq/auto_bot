@@ -2753,6 +2753,20 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     if frame.empty or bundle_column not in frame.columns:
         return frame, 0
     result = frame.copy()
+    text_columns = [bundle_column, "Ошибка / статус"]
+    for item_number in range(1, 6):
+        text_columns.extend(
+            (
+                f"Проверка источника {item_number}",
+                f"Причина проверки {item_number}",
+                f"Аудиторская запись {item_number}",
+            )
+        )
+    for column in text_columns:
+        if column in result.columns:
+            # Excel commonly restores an entirely empty text column as float64.
+            # Revalidation writes labels and paths there, so make the intent explicit.
+            result[column] = result[column].astype(object)
     changed_rows = 0
     for index, row in result.iterrows():
         raw = row.get(bundle_column, "")

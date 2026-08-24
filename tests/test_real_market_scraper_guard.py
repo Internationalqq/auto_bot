@@ -349,6 +349,7 @@ def test_saved_checked_fine_sand_candidate_with_exact_module_is_promoted() -> No
                 "Цена-сайт-телефон (json)": json.dumps(bundle, ensure_ascii=False),
                 "Проверенных источников": 0,
                 "Непроверенных кандидатов": 1,
+                "Аудиторская запись 1": float("nan"),
             }
         ]
     )
@@ -361,6 +362,7 @@ def test_saved_checked_fine_sand_candidate_with_exact_module_is_promoted() -> No
     assert saved["identity_verified"] is True
     assert saved["matched_unit"] == "м3"
     assert checked.iloc[0]["Проверенных источников"] == 1
+    assert checked.iloc[0]["Аудиторская запись 1"] == ""
 
 
 def test_avito_guard_status_is_read_only_and_reports_remaining(tmp_path: Path, monkeypatch) -> None:
