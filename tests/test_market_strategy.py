@@ -92,6 +92,31 @@ class MarketStrategyTests(unittest.TestCase):
         self.assertEqual(granite.matched_unit, "м3")
         self.assertEqual(gravel.status, "candidate")
 
+    def test_fine_sand_accepts_specific_module_but_not_mixed_assortment(self) -> None:
+        common = {
+            "name": "Песок природный для строительных работ | класс, мелкий",
+            "unit": "м3",
+            "price": 492,
+            "page_checked": True,
+            "source_unit": "м3",
+        }
+        specific = check_offer(
+            **common,
+            title="Песок с быстрой доставкой",
+            snippet="Ярославль; песок; модуль крупности (мм): 1-1,5; 492 ₽ за м³",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/pesok_8353321678",
+        )
+        mixed = check_offer(
+            **common,
+            title="Песок, ПГС с доставкой",
+            snippet="Песок мелко- и крупнозернистый; ПГС; 550 ₽ за м³",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/pesok_pgs_2603045420",
+        )
+
+        self.assertEqual(specific.status, "verified")
+        self.assertEqual(specific.matched_unit, "м3")
+        self.assertEqual(mixed.status, "candidate")
+
     def test_linear_and_running_metre_are_compatible(self) -> None:
         self.assertTrue(units_compatible("м", "пог. м"))
         self.assertFalse(units_compatible("м2", "пог. м"))

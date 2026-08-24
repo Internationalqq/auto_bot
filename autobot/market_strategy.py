@@ -588,9 +588,32 @@ def check_offer(
         and "щебен" in evidence_folded
         and any(rock in evidence_folded for rock in ("гранит", "базальт", "диабаз", "габбро"))
     )
-    if dense_rock_crushed_stone:
+    fine_sand_module = False
+    for module_match in re.finditer(
+        r"модул\w*\s+крупност\w*[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)",
+        evidence_folded,
+    ):
+        try:
+            module_max = max(float(value.replace(",", ".")) for value in module_match.groups())
+        except ValueError:
+            continue
+        if module_max <= 2.0:
+            fine_sand_module = True
+            break
+    fine_natural_sand = (
+        position.bucket == "materials"
+        and "песок" in name_folded
+        and "песок" in evidence_folded
+        and "мелк" in name_folded
+        and (
+            fine_sand_module
+            or ("мелк" in evidence_folded and "круп" not in evidence_folded and "пгс" not in evidence_folded)
+        )
+    )
+    semantic_identity_match = dense_rock_crushed_stone or fine_natural_sand
+    if semantic_identity_match:
         overlap = max(overlap, 0.55)
-    if not dense_rock_crushed_stone and (
+    if not semantic_identity_match and (
         len(common) < min(2, max(1, len(wanted))) or overlap < 0.28
     ):
         return OfferCheck("candidate", 0.30, "Слабое совпадение с названием позиции", "", observed_at)
