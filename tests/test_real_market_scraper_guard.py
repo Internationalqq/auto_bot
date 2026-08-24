@@ -566,6 +566,26 @@ def test_verified_offer_replaces_old_candidate_for_same_url() -> None:
     assert offers[0].price == 2400
 
 
+def test_offer_dedupe_prefers_richer_checked_evidence_at_same_price() -> None:
+    stale = _offer("https://supplier.example/item")
+    stale.price = 300
+    stale.verification = "candidate"
+    stale.snippet = "Карьерный песок 300 ₽/м³"
+    fresh = _offer("https://supplier.example/item")
+    fresh.price = 300
+    fresh.verification = "candidate"
+    fresh.page_checked = True
+    fresh.matched_unit = "м3"
+    fresh.evidence = "Карьерный песок; модуль крупности 1,5–2,0; 300 ₽/м³"
+
+    offers = market._dedupe_and_sort([stale, fresh], max_results=5)
+
+    assert len(offers) == 1
+    assert offers[0].page_checked is True
+    assert offers[0].matched_unit == "м3"
+    assert "1,5–2,0" in offers[0].evidence
+
+
 def test_agent_result_is_verified_by_autobot_before_market_import(tmp_path: Path, monkeypatch) -> None:
     tender_id = "0171200001926000664"
     estimate_path = tmp_path / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"

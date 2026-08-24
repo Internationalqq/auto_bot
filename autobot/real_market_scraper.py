@@ -1626,6 +1626,15 @@ def _relevant_search_offers(
 
 
 def _dedupe_and_sort(offers: list[MarketOffer], *, max_results: int) -> list[MarketOffer]:
+    def evidence_rank(item: MarketOffer) -> tuple[int, int, int, int, float]:
+        return (
+            int(bool(item.identity_verified)),
+            int(bool(item.page_checked)),
+            int(bool(normalize_unit(item.matched_unit))),
+            len(str(item.evidence or "")) + len(str(item.snippet or "")),
+            float(item.confidence or 0),
+        )
+
     by_url: dict[str, MarketOffer] = {}
     for offer in offers:
         if not offer.url:
@@ -1658,6 +1667,9 @@ def _dedupe_and_sort(offers: list[MarketOffer], *, max_results: int) -> list[Mar
             offer.url = canonical_url
             by_url[canonical_url] = offer
         elif offer.price > 0 and prev.price > 0 and offer.price < prev.price:
+            offer.url = canonical_url
+            by_url[canonical_url] = offer
+        elif offer.price == prev.price and evidence_rank(offer) > evidence_rank(prev):
             offer.url = canonical_url
             by_url[canonical_url] = offer
         selected = by_url[canonical_url]
