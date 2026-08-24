@@ -36,6 +36,18 @@ class AgentMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(density_only[0], 1)
         self.assertNotEqual(density_only[1], "м2")
 
+        mass = market._agent_offer_unit_conversion("килограмм", target_unit="т")
+        self.assertEqual(mass[:2], (0.001, "т"))
+        self.assertEqual(60 / mass[0], 60000)
+
+        incompatible_block = market._agent_offer_unit_conversion(
+            "100 м",
+            target_unit="шт",
+            title="Лента сигнальная ЛСЭ-300 100 м",
+        )
+        self.assertEqual(incompatible_block[0], 1)
+        self.assertEqual(incompatible_block[1], "м")
+
     def test_agent_evidence_price_is_not_replaced_by_another_page_row(self) -> None:
         page = """
         <h1>Песок в Ярославле</h1>

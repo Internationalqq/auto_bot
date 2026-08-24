@@ -166,10 +166,16 @@ def normalize_unit(unit: object) -> str:
     exact = _UNIT_EXACT_ALIASES.get(raw)
     if exact:
         return exact
-    padded = f" {raw} "
     for canonical, aliases in UNIT_ALIASES.items():
-        if any(alias in raw if len(alias) > 2 else alias in padded for alias in aliases):
-            return canonical
+        for alias in aliases:
+            marker = alias.strip()
+            if not marker:
+                continue
+            if len(marker) <= 2:
+                if re.search(rf"(?<![0-9a-zа-я]){re.escape(marker)}(?![0-9a-zа-я])", raw):
+                    return canonical
+            elif marker in raw:
+                return canonical
     return raw[:32] if raw else ""
 
 
@@ -441,6 +447,13 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
         if length:
             suffix += f" {length.group(1)} м"
         return "лента сигнальная" + suffix
+    if "щитс монтаж" in folded or ("щит" in folded and "монтажн" in folded and "панел" in folded):
+        dimensions = re.search(r"\b(\d{2,4})\s*[xх×]\s*(\d{2,4})\s*[xх×]\s*(\d{2,4})\b", folded)
+        protection = re.search(r"\bip\s*\d{2}\b", folded)
+        suffix = f" {dimensions.group(1)}х{dimensions.group(2)}х{dimensions.group(3)}" if dimensions else ""
+        if protection:
+            suffix += " " + protection.group(0).upper().replace(" ", "")
+        return "щит с монтажной панелью" + suffix
     if "цементно-песчан" in folded and ("смес" in folded or "cmecu" in folded):
         return "смесь цементно-песчаная"
     if "эмульси" in folded and "битум" in folded:
@@ -683,7 +696,26 @@ def check_offer(
                 observed_at,
             )
     geotextile_identity_match = geotextile_required and geotextile_seen
-    semantic_identity_match = dense_rock_crushed_stone or fine_natural_sand or geotextile_identity_match
+    plant_earth_required = "земл" in name_folded and "растител" in name_folded
+    plant_earth_seen = (
+        ("растител" in evidence_folded and ("земл" in evidence_folded or "грунт" in evidence_folded))
+        or ("плодород" in evidence_folded and "грунт" in evidence_folded)
+    )
+    signal_tape_required = "лент" in name_folded and "сигнал" in name_folded
+    if signal_tape_required:
+        required_model = re.search(r"\bлс[эе]-?\s*\d+\b", name_folded)
+        required_length = re.search(r"\b(\d{2,4})\s*м\b", name_folded)
+        compact_evidence = re.sub(r"\s+", "", evidence_folded)
+        if required_model and re.sub(r"\s+", "", required_model.group(0)) not in compact_evidence:
+            return OfferCheck("candidate", 0.43, "Источник не подтверждает ту же марку сигнальной ленты", "", observed_at)
+        if required_length and not re.search(rf"\b{re.escape(required_length.group(1))}\s*м", evidence_folded):
+            return OfferCheck("candidate", 0.43, "Источник не подтверждает ту же длину рулона", "", observed_at)
+    semantic_identity_match = (
+        dense_rock_crushed_stone
+        or fine_natural_sand
+        or geotextile_identity_match
+        or (plant_earth_required and plant_earth_seen)
+    )
     if semantic_identity_match:
         overlap = max(overlap, 0.55)
     if not semantic_identity_match and (

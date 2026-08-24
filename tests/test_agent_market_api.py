@@ -97,6 +97,9 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertIn("browser_exec", job["payload"]["task"])
         self.assertIn("autobot-avito", job["payload"]["task"])
         self.assertIn("не обходи captcha", job["payload"]["task"].casefold())
+        self.assertEqual(job["payload"]["max_offers"], 2)
+        self.assertEqual(job["payload"]["max_sources"], 2)
+        self.assertIn("не теряй их", job["payload"]["task"].casefold())
 
     @patch("autobot.real_market_scraper.import_agent_market_result")
     def test_claim_and_complete_normalizes_agent_result(self, import_result) -> None:

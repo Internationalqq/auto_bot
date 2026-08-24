@@ -178,10 +178,55 @@ class MarketStrategyTests(unittest.TestCase):
             "ФСБЦ-01.6",
         )
         earth = build_search_plan("Земля растительная", "м3", "ФСБЦ-02.3")
+        enclosure = build_search_plan(
+            "Щитс монтажной панелью, размеры 800х600х250 мм, степень защиты IP54",
+            "шт",
+            "ФСБЦ",
+        )
 
         self.assertIn("бетон В20 М250", concrete_v20.queries[0])
         self.assertIn("камень бортовой бетонный БР", border.queries[0])
         self.assertIn("земля растительная", earth.queries[0])
+        self.assertIn("щит с монтажной панелью 800х600х250 IP54", enclosure.queries[0])
+
+    def test_agent_material_synonyms_and_required_tape_model_are_checked(self) -> None:
+        earth = check_offer(
+            name="Земля растительная",
+            unit="м3",
+            basis_code="ФСБЦ-02.3",
+            section="Материалы",
+            title="Грунт растительный с доставкой",
+            snippet="Растительный плодородный грунт — 800 ₽ за м³",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/grunt_rastitelnyy_123456789",
+            price=800,
+            page_checked=True,
+            source_unit="м3",
+        )
+        generic_tape = check_offer(
+            name="Лента сигнальная полиэтиленовая ЛСЭ-300, длина 100 м",
+            unit="шт",
+            title="Лента сигнальная",
+            snippet="Рулон сигнальной ленты — 500 ₽",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/lenta_signalnaya_123456789",
+            price=500,
+            page_checked=True,
+            source_unit="шт",
+        )
+        exact_tape = check_offer(
+            name="Лента сигнальная полиэтиленовая ЛСЭ-300, длина 100 м",
+            unit="шт",
+            title="Лента сигнальная ЛСЭ-300",
+            snippet="ЛСЭ-300, длина 100 м — 700 ₽ за рулон",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/lenta_lse_123456789",
+            price=700,
+            page_checked=True,
+            source_unit="шт",
+        )
+
+        self.assertEqual(earth.status, "verified")
+        self.assertEqual(generic_tape.status, "candidate")
+        self.assertIn("марку", generic_tape.reason)
+        self.assertEqual(exact_tape.status, "verified")
 
     def test_search_queries_use_exact_price_marker_then_regional_fallback(self) -> None:
         plan = build_search_plan("Плитка керамическая", "кв. м", "ФСБЦ", "Материалы")
@@ -200,6 +245,7 @@ class MarketStrategyTests(unittest.TestCase):
             "погонный метр": "пог.м",
             "m2": "м2",
             "MTK": "м2",
+            "шт (карточка товара)": "шт",
             "m3": "м3",
             "MTQ": "м3",
             "MTR": "м",

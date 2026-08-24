@@ -56,6 +56,7 @@ from autobot.market_strategy import (
     is_direct_source_url,
     market_query_name,
     normalize_unit,
+    units_compatible,
 )
 from autobot.merge_estimate_market import _norm_key
 from autobot.paths import REPO_ROOT
@@ -2249,9 +2250,14 @@ def _agent_offer_unit_conversion(
 
     multiplier = _agent_unit_multiplier(unit)
     normalized_unit = normalize_unit(unit)
-    if multiplier > 1:
-        return multiplier, normalized_unit, ""
-    if normalize_unit(target_unit) != "м2":
+    normalized_target = normalize_unit(target_unit)
+    if normalized_target == "т" and normalized_unit == "кг":
+        return 0.001, "т", "AutoBot: цена за килограмм пересчитана в цену за тонну"
+    if normalized_target == "кг" and normalized_unit == "т":
+        return 1000.0, "кг", "AutoBot: цена за тонну пересчитана в цену за килограмм"
+    if multiplier > 1 and units_compatible(normalized_unit, normalized_target):
+        return multiplier, normalized_target, ""
+    if normalized_target != "м2":
         return 1.0, normalized_unit, ""
     unit_text = re.sub(r"\s+", " ", str(unit or "")).strip().casefold().replace("ё", "е")
     if not any(marker in unit_text for marker in ("упак", "рулон")):
@@ -3318,9 +3324,10 @@ def import_agent_market_result(
         parsed_url = urlparse(url)
         evidence = raw_evidence
         if conversion_note:
+            comparable_unit = matched_unit or normalize_unit(source_row.get("Ед. изм.", "")) or "ед."
             evidence = (
                 f"{raw_evidence} · {conversion_note}; "
-                f"{raw_price:g} ₽ / {unit_multiplier:g} = {price:g} ₽/м²"
+                f"{raw_price:g} ₽ / {unit_multiplier:g} = {price:g} ₽/{comparable_unit}"
             ).strip(" ·")[:1600]
         if avito_agent_mode:
             is_avito_host = host == "avito.ru" or host.endswith(".avito.ru")
