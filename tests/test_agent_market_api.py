@@ -94,6 +94,8 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertIn("https://www.avito.ru/yaroslavl?", job["payload"]["start_urls"][0])
         self.assertIn("%d1%89%d0%b5%d0%b1%d0%b5%d0%bd%d1%8c", job["payload"]["start_urls"][0].casefold())
         self.assertNotIn("%d1%86%d0%b5%d0%bd%d0%b0", job["payload"]["start_urls"][0].casefold())
+        self.assertIn("browser_exec", job["payload"]["task"])
+        self.assertIn("autobot-avito", job["payload"]["task"])
         self.assertIn("не обходи captcha", job["payload"]["task"].casefold())
 
     @patch("autobot.real_market_scraper.import_agent_market_result")
