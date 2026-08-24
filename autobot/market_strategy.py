@@ -594,10 +594,12 @@ def check_offer(
         evidence_folded,
     ):
         try:
-            module_max = max(float(value.replace(",", ".")) for value in module_match.groups())
+            module_min, module_max = sorted(float(value.replace(",", ".")) for value in module_match.groups())
         except ValueError:
             continue
-        if module_max <= 2.0:
+        # ГОСТ 8736: «мелкий» — свыше 1,5 до 2,0. Диапазон
+        # 1,0–1,5 относится к «очень мелкому» и не является точной заменой.
+        if module_min >= 1.5 and module_max <= 2.0:
             fine_sand_module = True
             break
     fine_natural_sand = (

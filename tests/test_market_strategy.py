@@ -92,7 +92,7 @@ class MarketStrategyTests(unittest.TestCase):
         self.assertEqual(granite.matched_unit, "м3")
         self.assertEqual(gravel.status, "candidate")
 
-    def test_fine_sand_accepts_specific_module_but_not_mixed_assortment(self) -> None:
+    def test_fine_sand_requires_the_correct_fineness_module(self) -> None:
         common = {
             "name": "Песок природный для строительных работ | класс, мелкий",
             "unit": "м3",
@@ -101,6 +101,12 @@ class MarketStrategyTests(unittest.TestCase):
             "source_unit": "м3",
         }
         specific = check_offer(
+            **common,
+            title="Песок с быстрой доставкой",
+            snippet="Ярославль; песок; модуль крупности (мм): 1,5-2; 492 ₽ за м³",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/pesok_8353321678",
+        )
+        too_fine = check_offer(
             **common,
             title="Песок с быстрой доставкой",
             snippet="Ярославль; песок; модуль крупности (мм): 1-1,5; 492 ₽ за м³",
@@ -115,6 +121,7 @@ class MarketStrategyTests(unittest.TestCase):
 
         self.assertEqual(specific.status, "verified")
         self.assertEqual(specific.matched_unit, "м3")
+        self.assertEqual(too_fine.status, "candidate")
         self.assertEqual(mixed.status, "candidate")
 
     def test_linear_and_running_metre_are_compatible(self) -> None:
