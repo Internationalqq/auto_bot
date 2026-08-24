@@ -629,6 +629,14 @@ def check_offer(
             or ("мелк" in evidence_folded and "круп" not in evidence_folded and "пгс" not in evidence_folded)
         )
     )
+    if fine_sand_required and not fine_natural_sand:
+        return OfferCheck(
+            "candidate",
+            0.40,
+            "Источник не подтверждает группу «мелкий песок» или модуль крупности 1,5–2,0",
+            "",
+            observed_at,
+        )
     semantic_identity_match = dense_rock_crushed_stone or fine_natural_sand
     if semantic_identity_match:
         overlap = max(overlap, 0.55)

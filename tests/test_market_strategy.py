@@ -118,6 +118,12 @@ class MarketStrategyTests(unittest.TestCase):
             snippet="Песок мелко- и крупнозернистый; ПГС; 550 ₽ за м³",
             url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/pesok_pgs_2603045420",
         )
+        generic = check_offer(
+            **common,
+            title="Речной песок Карьерный песок 30т самосвал",
+            snippet="Речной, карьерный, строительный, мытый и сеяный песок; 682 ₽ за м³",
+            url="https://www.avito.ru/yaroslavl/remont_i_stroitelstvo/pesok_8325227750",
+        )
         contradictory = check_offer(
             **common,
             title="Песок мелкий I класса",
@@ -130,6 +136,8 @@ class MarketStrategyTests(unittest.TestCase):
         self.assertEqual(too_fine.status, "candidate")
         self.assertIn("модуль крупности", too_fine.reason.casefold())
         self.assertEqual(mixed.status, "candidate")
+        self.assertEqual(generic.status, "candidate")
+        self.assertIn("не подтверждает", generic.reason.casefold())
         self.assertEqual(contradictory.status, "candidate")
         self.assertIn("модуль крупности", contradictory.reason.casefold())
 
