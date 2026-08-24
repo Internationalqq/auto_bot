@@ -10323,8 +10323,11 @@ def _agent_market_research_key(
 
     query = re.sub(r"\s+", " ", market_query_name(name, str(position_type or ""))).strip().casefold().replace("ё", "е")
     canonical_unit = normalize_unit(unit)
-    canonical_basis = re.sub(r"[^0-9a-zа-я]+", "", str(basis_code or "").casefold().replace("ё", "е"))
-    return "|".join((str(position_type or "").strip().casefold(), query, canonical_unit, canonical_basis))
+    # Different estimate catalogue codes can still describe the same market
+    # product (the Volga estimate contains exactly that case for concrete B20).
+    # The compact query already retains grade/fraction/density where specified,
+    # so the external lookup identity is product + comparable unit, not code.
+    return "|".join((str(position_type or "").strip().casefold(), query, canonical_unit))
 
 
 def _agent_market_offer_display_values(raw_offer: dict, outcome: dict) -> tuple[object, str]:

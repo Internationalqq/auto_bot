@@ -232,7 +232,7 @@ class AgentMarketApiTests(unittest.TestCase):
                 },
                 {
                     "position_key": "v15-2", "name": "Смеси бетонные тяжелого бетона, класс В15", "unit": "м3",
-                    "basis_code": "ФСБЦ-04.1.02.05-0002", "type_slug": "material", "can_auto_price": True,
+                    "basis_code": "ФСБЦ-ДРУГОЙ-КОД", "type_slug": "material", "can_auto_price": True,
                     "queries": ["бетон В15 цена м3"],
                 },
                 {
