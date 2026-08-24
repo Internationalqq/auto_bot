@@ -16,6 +16,26 @@ class AgentMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(market._agent_unit_multiplier("1000 м²"), 1000)
         self.assertEqual(65000 / market._agent_unit_multiplier("100 м"), 650)
 
+    def test_agent_roll_price_is_converted_only_from_explicit_dimensions(self) -> None:
+        multiplier, unit, note = market._agent_offer_unit_conversion(
+            "упаковка",
+            target_unit="м2",
+            title="Геотекстиль иглопробивной Неотекс 2x25м",
+            evidence="Цена 3 050 ₽ за упаковку",
+        )
+        self.assertEqual(multiplier, 50)
+        self.assertEqual(unit, "м2")
+        self.assertIn("50 м²", note)
+
+        density_only = market._agent_offer_unit_conversion(
+            "упаковка",
+            target_unit="м2",
+            title="Геотекстиль 200 г/м²",
+            evidence="Цена 6 500 ₽ за упаковку",
+        )
+        self.assertEqual(density_only[0], 1)
+        self.assertNotEqual(density_only[1], "м2")
+
     def test_agent_evidence_price_is_not_replaced_by_another_page_row(self) -> None:
         page = """
         <h1>Песок в Ярославле</h1>
@@ -78,6 +98,14 @@ class AgentMarketEvidenceTests(unittest.TestCase):
                     market.COL_SUM: 220751.97,
                     "basis_code": "ГЭСН27",
                     "Раздел": "Бордюры",
+                }, {
+                    market.COL_NAME: name + ",",
+                    "Ед. изм.": "м",
+                    market.COL_QTY: 100,
+                    market.COL_UNIT_PRICE: 29238.67,
+                    market.COL_SUM: 2923867,
+                    "basis_code": "ГЭСН27",
+                    "Раздел": "Бордюры",
                 }]
             ).to_excel(estimate_path, index=False)
 
@@ -97,7 +125,11 @@ class AgentMarketEvidenceTests(unittest.TestCase):
             ):
                 imported = market.import_agent_market_result(
                     tender_id,
-                    {"name": name, "queries": ["установка бордюра цена"]},
+                    {
+                        "name": name,
+                        "queries": ["установка бордюра цена"],
+                        "equivalent_positions": [{"position_key": "border-2", "name": name + ","}],
+                    },
                     {"offers": [{
                         "title": "Установка бетонного бордюра",
                         "price": 65000,
@@ -106,11 +138,14 @@ class AgentMarketEvidenceTests(unittest.TestCase):
                         "evidence": "Установка бордюра — 650 руб. за погонный метр",
                     }]},
                 )
+                output_row_count = len(pd.read_excel(output_path))
 
         self.assertEqual(captured["offer"].price, 650)
         self.assertEqual(captured["offer"].agent_price, 65000)
         self.assertEqual(imported["offer_outcomes"][0]["price"], 650)
         self.assertEqual(imported["offer_outcomes"][0]["raw_price"], 65000)
+        self.assertEqual(imported["equivalent_positions_updated"], 1)
+        self.assertEqual(output_row_count, 2)
 
     def test_direct_source_probe_requires_page_price_and_matching_unit(self) -> None:
         tender_id = "12345678"

@@ -162,9 +162,26 @@ class MarketStrategyTests(unittest.TestCase):
             "ФСБЦ-01.7.06.01-1000",
         )
 
-        self.assertIn("щебень строительный", crushed_stone.queries[0])
+        self.assertIn("щебень гранитный", crushed_stone.queries[0])
         self.assertIn("бетон В15 М200", concrete.queries[0])
         self.assertIn("геотекстиль нетканый иглопробивной", geotextile.queries[0])
+
+    def test_material_queries_keep_concrete_grade_and_product_identity(self) -> None:
+        concrete_v20 = build_search_plan(
+            "Смеси бетонные тяжелого бетона на щебне, класс В20",
+            "м3",
+            "ФСБЦ-04.1.02.05-0003",
+        )
+        border = build_search_plan(
+            "Камни бортовые бетонные марки БР, БВ, бетон В22,5 (М300)",
+            "м3",
+            "ФСБЦ-01.6",
+        )
+        earth = build_search_plan("Земля растительная", "м3", "ФСБЦ-02.3")
+
+        self.assertIn("бетон В20 М250", concrete_v20.queries[0])
+        self.assertIn("камень бортовой бетонный БР", border.queries[0])
+        self.assertIn("земля растительная", earth.queries[0])
 
     def test_search_queries_use_exact_price_marker_then_regional_fallback(self) -> None:
         plan = build_search_plan("Плитка керамическая", "кв. м", "ФСБЦ", "Материалы")

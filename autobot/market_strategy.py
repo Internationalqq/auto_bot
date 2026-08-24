@@ -380,6 +380,8 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
         return "укладка тротуарной плитки"
     if "бортов" in folded and "кам" in folded and ("установ" in folded or "устройств" in folded):
         return "установка бетонного бордюра"
+    if "бортов" in folded and "кам" in folded:
+        return "камень бортовой бетонный БР"
     if (
         position_slug in {"work", "service"}
         and "размет" in folded
@@ -395,20 +397,50 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
     if "подстилающ" in folded and "пес" in folded:
         return "устройство песчаного основания"
     if "щебень" in folded and "плотн" in folded:
-        return "щебень строительный"
+        # Granite is a valid, common dense-rock subtype and gives Avito a much
+        # cleaner product result than the catalogue wording "из плотных пород".
+        return "щебень гранитный"
     if "щебень" in folded:
         fraction = re.search(r"\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b", folded)
         if fraction:
             return f"щебень фракции {fraction.group(1)}-{fraction.group(2)}"
         return "щебень строительный"
-    if "смес" in folded and "бетон" in folded and ("в15" in folded or "м200" in folded):
-        return "бетон В15 М200"
+    concrete_class = re.search(r"\b(?:в|b)\s*(\d{1,2}(?:[.,]\d+)?)\b", folded)
+    if "бетон" in folded and concrete_class:
+        class_value = concrete_class.group(1).replace(",", ".")
+        concrete_grades = {
+            "7.5": "М100",
+            "10": "М150",
+            "12.5": "М150",
+            "15": "М200",
+            "20": "М250",
+            "22.5": "М300",
+            "25": "М350",
+            "30": "М400",
+            "35": "М450",
+            "40": "М500",
+        }
+        display_class = class_value.replace(".", ",")
+        grade = concrete_grades.get(class_value, "")
+        return f"бетон В{display_class}" + (f" {grade}" if grade else "")
     if "песок" in folded and "строитель" in folded:
         return "песок строительный мелкий" if "мелк" in folded else "песок строительный"
     if "геополотно" in folded or "геотекст" in folded:
-        return "геотекстиль нетканый иглопробивной"
+        density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", folded)
+        return "геотекстиль нетканый иглопробивной" + (f" {density.group(1)} г/м²" if density else "")
     if "георешет" in folded:
         return "георешетка композитная"
+    if "земл" in folded and "растител" in folded:
+        return "земля растительная"
+    if "лент" in folded and "сигнал" in folded:
+        model = re.search(r"\bлс[эе]-?\s*\d+\b", folded)
+        length = re.search(r"\b(\d{2,4})\s*м\b", folded)
+        suffix = ""
+        if model:
+            suffix += " " + model.group(0).upper().replace(" ", "")
+        if length:
+            suffix += f" {length.group(1)} м"
+        return "лента сигнальная" + suffix
     if "цементно-песчан" in folded and ("смес" in folded or "cmecu" in folded):
         return "смесь цементно-песчаная"
     if "эмульси" in folded and "битум" in folded:
@@ -637,7 +669,21 @@ def check_offer(
             "",
             observed_at,
         )
-    semantic_identity_match = dense_rock_crushed_stone or fine_natural_sand
+    geotextile_required = "геополотно" in name_folded or "геотекст" in name_folded
+    geotextile_seen = "геополотно" in evidence_folded or "геотекст" in evidence_folded
+    required_density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", name_folded)
+    if geotextile_required and required_density:
+        offered_density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", evidence_folded)
+        if not offered_density or offered_density.group(1) != required_density.group(1):
+            return OfferCheck(
+                "candidate",
+                0.42,
+                "Источник не подтверждает ту же поверхностную плотность геотекстиля",
+                "",
+                observed_at,
+            )
+    geotextile_identity_match = geotextile_required and geotextile_seen
+    semantic_identity_match = dense_rock_crushed_stone or fine_natural_sand or geotextile_identity_match
     if semantic_identity_match:
         overlap = max(overlap, 0.55)
     if not semantic_identity_match and (

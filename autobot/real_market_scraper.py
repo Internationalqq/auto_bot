@@ -2231,6 +2231,52 @@ def _agent_unit_multiplier(unit: object) -> float:
     return float(match.group(1)) if match else 1.0
 
 
+def _agent_offer_unit_conversion(
+    unit: object,
+    *,
+    target_unit: object = "",
+    title: object = "",
+    evidence: object = "",
+) -> tuple[float, str, str]:
+    """Return a safe divisor and comparable unit for an agent-reported price.
+
+    Besides explicit denominators such as ``100 м``, Avito frequently exposes
+    geotextile as one roll/package.  It is safe to compare that price with an
+    estimate in square metres only when the listing itself contains two clear
+    roll dimensions (for example ``2×25 м``).  Density values such as
+    ``200 г/м²`` cannot match this expression and are never used as dimensions.
+    """
+
+    multiplier = _agent_unit_multiplier(unit)
+    normalized_unit = normalize_unit(unit)
+    if multiplier > 1:
+        return multiplier, normalized_unit, ""
+    if normalize_unit(target_unit) != "м2":
+        return 1.0, normalized_unit, ""
+    unit_text = re.sub(r"\s+", " ", str(unit or "")).strip().casefold().replace("ё", "е")
+    if not any(marker in unit_text for marker in ("упак", "рулон")):
+        return 1.0, normalized_unit, ""
+    source_text = re.sub(
+        r"\s+",
+        " ",
+        f"{title or ''} {evidence or ''}".replace("\xa0", " "),
+    ).strip().casefold().replace("ё", "е")
+    dimension = re.search(
+        r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(?:м|m)?\s*[xх×*]\s*"
+        r"(\d+(?:[.,]\d+)?)\s*(?:м|m)(?![a-zа-я0-9])",
+        source_text,
+    )
+    if not dimension:
+        return 1.0, normalized_unit, ""
+    first, second = (float(value.replace(",", ".")) for value in dimension.groups())
+    area = first * second
+    if not (0.3 <= first <= 500 and 0.3 <= second <= 500 and 2 <= area <= 5000):
+        return 1.0, normalized_unit, ""
+    shown_dimensions = f"{first:g}×{second:g} м"
+    note = f"AutoBot: упаковка/рулон {shown_dimensions} = {area:g} м²"
+    return area, "м2", note
+
+
 def _page_confirms_agent_evidence(page_html: str, offer: MarketOffer) -> bool:
     """Confirm the price Hermes saw without replacing it by another page price.
 
@@ -3256,14 +3302,26 @@ def import_agent_market_result(
             continue
         raw_price = float(item.get("price") or 0)
         raw_unit = str(item.get("unit") or "").strip()
-        unit_multiplier = _agent_unit_multiplier(raw_unit)
+        title = str(item.get("title") or name).strip()[:500]
+        raw_evidence = str(item.get("evidence") or item.get("snippet") or "").strip()[:1600]
+        unit_multiplier, matched_unit, conversion_note = _agent_offer_unit_conversion(
+            raw_unit,
+            target_unit=source_row.get("Ед. изм.", ""),
+            title=title,
+            evidence=raw_evidence,
+        )
         price = raw_price / unit_multiplier
         url = str(item.get("url") or "").strip()
         if price <= 0 or not url:
             continue
         host = urlparse(url).netloc.casefold().removeprefix("www.")
         parsed_url = urlparse(url)
-        evidence = str(item.get("evidence") or item.get("snippet") or "").strip()[:1600]
+        evidence = raw_evidence
+        if conversion_note:
+            evidence = (
+                f"{raw_evidence} · {conversion_note}; "
+                f"{raw_price:g} ₽ / {unit_multiplier:g} = {price:g} ₽/м²"
+            ).strip(" ·")[:1600]
         if avito_agent_mode:
             is_avito_host = host == "avito.ru" or host.endswith(".avito.ru")
             is_direct_listing = bool(re.search(r"_\d{6,}(?:/)?$", parsed_url.path or ""))
@@ -3296,14 +3354,14 @@ def import_agent_market_result(
         imported.append(
             MarketOffer(
                 source=("Hermes · Авито" if avito_agent_mode else f"AutoBot · {host or 'прямой источник'}" if direct_probe_mode else f"Hermes Agent · {host or 'веб'}"),
-                title=str(item.get("title") or name).strip()[:500],
+                title=title,
                 price=price,
                 url=url,
                 snippet=evidence[:500],
                 verification="candidate",
                 confidence=max(0.05, min(0.58, float(item.get("confidence") or 0.45))),
                 verification_reason=reason,
-                matched_unit=str(item.get("unit") or "").strip(),
+                matched_unit=matched_unit,
                 observed_at=observed_at,
                 position_type=plan.position.slug,
                 page_checked=avito_agent_mode,
@@ -3328,7 +3386,7 @@ def import_agent_market_result(
                 extractor="browser-agent",
                 agent_price=raw_price,
                 agent_unit=raw_unit,
-                agent_evidence=evidence,
+                agent_evidence=raw_evidence,
             )
         )
     if not imported:
@@ -3350,7 +3408,29 @@ def import_agent_market_result(
         queries = position_payload.get("queries") or plan.queries
         query = str(next(iter(queries), "") if queries else market_query_name(name))
     row = _build_output_row(source_row, offers=offers, query=query, err="", plan=plan)
-    merged = _merge_rows(previous, [row])
+    output_rows = [row]
+    output_keys = {key}
+    for equivalent in list(position_payload.get("equivalent_positions") or []):
+        if not isinstance(equivalent, dict):
+            continue
+        equivalent_name = str(equivalent.get("name") or "").strip()
+        equivalent_key = _norm_key(equivalent_name)
+        if not equivalent_key or equivalent_key in output_keys:
+            continue
+        equivalent_matches = estimate[estimate[COL_NAME].fillna("").astype(str).map(_norm_key) == equivalent_key]
+        if equivalent_matches.empty:
+            continue
+        equivalent_row = equivalent_matches.iloc[0]
+        equivalent_plan = build_search_plan(
+            equivalent_row.get(COL_NAME, ""),
+            equivalent_row.get("Ед. изм.", ""),
+            equivalent_row.get("basis_code", ""),
+            equivalent_row.get("Раздел", ""),
+            str(metadata.get("region") or ""),
+        )
+        output_rows.append(_build_output_row(equivalent_row, offers=offers, query=query, err="", plan=equivalent_plan))
+        output_keys.add(equivalent_key)
+    merged = _merge_rows(previous, output_rows)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.tmp.xlsx")
     try:
@@ -3382,6 +3462,7 @@ def import_agent_market_result(
         "total_candidates": sum(1 for offer in offers if offer.verification == "candidate"),
         "preserved_verified": sum(1 for offer in offers if offer.verification == "verified"),
         "indexed": stored_verified,
+        "equivalent_positions_updated": max(0, len(output_rows) - 1),
         "report": str(output_path),
         "offer_outcomes": offer_outcomes,
     }

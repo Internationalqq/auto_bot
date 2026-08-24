@@ -73,8 +73,31 @@ except ModuleNotFoundError as e:
         sys.stderr.write("Не удалось загрузить autobot.report_prompt (проверьте установку пакета autobot/).\n")
     raise
 
+DEFAULT_MAX_UPLOAD_MB = 100
+
+
+def _configured_max_upload_mb() -> int:
+    raw_value = (os.environ.get("WEB_UI_MAX_UPLOAD_MB") or str(DEFAULT_MAX_UPLOAD_MB)).strip()
+    try:
+        return max(1, int(raw_value))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_UPLOAD_MB
+
+
+MAX_UPLOAD_MB = _configured_max_upload_mb()
+
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 26 * 1024 * 1024  # загрузка Excel обоснования НМЦК
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+
+
+@app.errorhandler(413)
+def request_entity_too_large(_error):
+    return jsonify(
+        {
+            "ok": False,
+            "message": f"Файл слишком большой. Максимальный размер загрузки — {MAX_UPLOAD_MB} МБ.",
+        }
+    ), 413
 
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <defs>
@@ -10288,6 +10311,22 @@ def _agent_avito_search(name: object, position_type: object, region: object) -> 
     return query, f"https://www.avito.ru/{location}?" + urlencode({"q": query})
 
 
+def _agent_market_research_key(
+    name: object,
+    unit: object,
+    basis_code: object,
+    position_type: object,
+) -> str:
+    """Collapse duplicate estimate rows into one external market lookup."""
+
+    from autobot.market_strategy import market_query_name, normalize_unit
+
+    query = re.sub(r"\s+", " ", market_query_name(name, str(position_type or ""))).strip().casefold().replace("ё", "е")
+    canonical_unit = normalize_unit(unit)
+    canonical_basis = re.sub(r"[^0-9a-zа-я]+", "", str(basis_code or "").casefold().replace("ё", "е"))
+    return "|".join((str(position_type or "").strip().casefold(), query, canonical_unit, canonical_basis))
+
+
 def _agent_market_offer_display_values(raw_offer: dict, outcome: dict) -> tuple[object, str]:
     """Present historical block-unit offers as a comparable base-unit price."""
 
@@ -10454,11 +10493,36 @@ def api_tender_agent_market_jobs(tender_id: str):
         eligible_positions.append((type_priority.get(position_type, 2), row_index, position, queries))
 
     selected: list[dict] = []
+    selected_research_keys: dict[str, dict] = {}
     for search_rank, (_, row_index, position, queries) in enumerate(sorted(eligible_positions, key=lambda item: (item[0], item[1]))):
         key = str(position.get("position_key") or "")
         primary_query = queries[0]
         region = str(tender.get("region") or "").strip()
         position_type = str(position.get("type_slug") or "").strip().casefold()
+        research_key = _agent_market_research_key(
+            position.get("name"),
+            position.get("unit"),
+            position.get("basis_code"),
+            position_type,
+        )
+        duplicate_of = selected_research_keys.get(research_key)
+        if duplicate_of is not None:
+            duplicate_of.setdefault("equivalent_positions", []).append(
+                {
+                    "position_key": key,
+                    "name": str(position.get("name") or ""),
+                    "item_no": position.get("item_no"),
+                }
+            )
+            skipped_ineligible.append(
+                {
+                    "position_key": key,
+                    "name": str(position.get("name") or ""),
+                    "reason": "Дубликат уже выбранной рыночной позиции",
+                    "duplicate_of": str(duplicate_of.get("position_key") or ""),
+                }
+            )
+            continue
         start_urls = _agent_market_start_urls(position.get("name"), queries, region)
         payload = {
             "schema_version": 2,
@@ -10509,6 +10573,8 @@ def api_tender_agent_market_jobs(tender_id: str):
             payload.update(
                 {
                     "search_mode": "avito_agent",
+                    "market_query": avito_query,
+                    "comparison_unit": position.get("unit"),
                     "max_offers": 3,
                     "max_sources": 3,
                     "max_turns": 24,
@@ -10521,9 +10587,11 @@ def api_tender_agent_market_jobs(tender_id: str):
                         f"Короткий запрос Авито: {avito_query}. Дождись появления карточек выдачи. "
                         "Если доступен browser_exec, используй его с постоянной сессией autobot-avito; "
                         "иначе используй browser_navigate, browser_snapshot и browser_click. Не используй web_search. "
+                        "До открытия сравни заголовок карточки с коротким запросом и пропускай другой материал, марку или класс. "
                         "Открой не более 3 подходящих объявлений и верни только прямые ссылки вида avito.ru/..._123456789. "
                         "Для каждого предложения запиши точное название, цену, единицу, город и короткий видимый фрагмент страницы в evidence. "
                         "В price пиши число ровно как на странице, а в unit — его знаменатель (например, 650 и м или 65000 и 100 м); не пересчитывай сам. "
+                        "Если цена указана за упаковку или рулон, обязательно перепиши в evidence видимые размеры рулона; размеры не выдумывай. "
                         "Не используй сниппеты поисковиков, другие домены, цену доставки, кредита или похожего товара. "
                         "Не обходи CAPTCHA и ограничения доступа, не перезагружай заблокированную страницу многократно. "
                         "Если Авито показал CAPTCHA или ограничение IP, сразу верни пустой offers и укажи причину в notes. "
@@ -10553,6 +10621,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                 ),
                 }
             )
+        selected_research_keys[research_key] = payload
         selected.append(payload)
         if len(selected) >= limit:
             break

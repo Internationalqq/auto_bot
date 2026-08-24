@@ -218,6 +218,51 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual(claimed["payload"]["max_attempts"], 1)
         self.assertIn("scheben", " ".join(claimed["payload"]["start_urls"]))
 
+    def test_post_collapses_duplicate_estimate_rows_before_queueing(self) -> None:
+        reports_dir = Path(self.tempdir.name) / "reports"
+        reports_dir.mkdir(exist_ok=True)
+        (reports_dir / "ОТЧЕТ_ПО_СМЕТАМ_12345678.xlsx").touch()
+        tender = {
+            "region": "Ярославская область",
+            "positions": [
+                {
+                    "position_key": "v15-1", "name": "Смеси бетонные тяжелого бетона, класс В15,", "unit": "м3",
+                    "basis_code": "ФСБЦ-04.1.02.05-0002", "type_slug": "material", "can_auto_price": True,
+                    "queries": ["бетон В15 цена м3"],
+                },
+                {
+                    "position_key": "v15-2", "name": "Смеси бетонные тяжелого бетона, класс В15", "unit": "м3",
+                    "basis_code": "ФСБЦ-04.1.02.05-0002", "type_slug": "material", "can_auto_price": True,
+                    "queries": ["бетон В15 цена м3"],
+                },
+                {
+                    "position_key": "v20-1", "name": "Смеси бетонные тяжелого бетона, класс В20", "unit": "м3",
+                    "basis_code": "ФСБЦ-04.1.02.05-0003", "type_slug": "material", "can_auto_price": True,
+                    "queries": ["бетон В20 цена м3"],
+                },
+            ],
+        }
+        with (
+            patch.object(web_ui, "REPORTS_DIR", reports_dir),
+            patch.object(web_ui, "load_tender_metadata", return_value={"12345678": {}}),
+            patch.object(web_ui, "_tenders_items", return_value=([], {})),
+            patch.object(web_ui, "build_tender_detail", return_value=tender),
+        ):
+            response = self.client.post(
+                "/api/tenders/12345678/agent-market/jobs",
+                json={"mode": "avito", "limit": 10},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["created"], 2)
+        duplicate = next(item for item in payload["skipped_ineligible"] if item["position_key"] == "v15-2")
+        self.assertEqual(duplicate["duplicate_of"], "v15-1")
+        self.assertIn("Дубликат", duplicate["reason"])
+        jobs = queue.list_jobs("12345678", mode="avito")
+        v15_job = next(job for job in jobs if job["position_key"] == "v15-1")
+        self.assertEqual(v15_job["payload"]["equivalent_positions"][0]["position_key"], "v15-2")
+
     def test_regional_supplier_hints_cover_concrete_and_sand(self) -> None:
         concrete = web_ui._agent_market_start_urls(
             "Бетон В15 М200", ["бетон В15 цена м3"], "Ярославская область"
