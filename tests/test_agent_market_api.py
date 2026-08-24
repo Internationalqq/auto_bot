@@ -143,19 +143,23 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual([item["position_name"] for item in run["positions"]], ["Геотекстиль", "Бетон В20"])
 
     def test_compact_reason_does_not_mistake_no_captcha_for_a_block(self) -> None:
-        reason = web_ui._agent_market_compact_reason(
-            {
-                "status": "completed",
-                "result": {
-                    "offers": [],
-                    "notes": "Авито открылся без CAPTCHA/ограничения IP, но точная марка не найдена",
-                    "import": {"message": "Агент не вернул пригодных цен"},
-                },
-            },
-            [],
-        )
-
-        self.assertEqual(reason, "Подтверждённая цена не найдена")
+        for notes in (
+            "Авито открылся без CAPTCHA/ограничения IP, но точная марка не найдена",
+            "CAPTCHA или ограничение доступа не показаны; валидных цен нет",
+        ):
+            with self.subTest(notes=notes):
+                reason = web_ui._agent_market_compact_reason(
+                    {
+                        "status": "completed",
+                        "result": {
+                            "offers": [],
+                            "notes": notes,
+                            "import": {"message": "Агент не вернул пригодных цен"},
+                        },
+                    },
+                    [],
+                )
+                self.assertEqual(reason, "Подтверждённая цена не найдена")
 
     @patch("autobot.real_market_scraper.import_agent_market_result")
     def test_claim_and_complete_normalizes_agent_result(self, import_result) -> None:

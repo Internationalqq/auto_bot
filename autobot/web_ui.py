@@ -10683,7 +10683,17 @@ def _agent_market_compact_reason(job: dict, offers: list[dict]) -> str:
         "captcha появилась",
         "проблема с ip",
     )
-    if any(marker in detail for marker in restriction_markers):
+    no_restriction_markers = (
+        "без captcha/огранич",
+        "без captcha и огранич",
+        "ограничение доступа не показ",
+        "ограничения доступа не показ",
+        "captcha не показ",
+        "captcha или ограничение доступа не показ",
+    )
+    if any(marker in detail for marker in restriction_markers) and not any(
+        marker in detail for marker in no_restriction_markers
+    ):
         return "Авито ограничил доступ до подтверждения цены"
     if any(marker in detail for marker in ("нерелевант", "неподходящ", "не подход", "другой класс", "другая марка")):
         return "Подходящее объявление не удалось подтвердить"
