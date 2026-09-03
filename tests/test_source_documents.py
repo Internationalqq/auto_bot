@@ -8,6 +8,7 @@ import zipfile
 import pandas as pd
 import pytest
 
+import autobot.tender_detail as tender_detail
 from autobot import source_documents, web_ui
 
 
@@ -107,6 +108,7 @@ def test_tender_files_tab_and_safe_text_preview(monkeypatch, tmp_path):
     path.write_text("<script>alert('x')</script>Текст документа", encoding="utf-8")
     token = source_documents.make_file_token(path.name)
     monkeypatch.setattr(source_documents, "DOWNLOADS_DIR", tmp_path)
+    monkeypatch.setattr(tender_detail, "latest_parser_health", lambda _tender_id: {})
     monkeypatch.setattr(web_ui, "load_tender_metadata", lambda: {tender_id: {"title": "Тестовая закупка"}})
     monkeypatch.setattr(
         web_ui,

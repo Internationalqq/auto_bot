@@ -19,6 +19,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 LOG_DIR="$REPO_ROOT/data/logs"
 LOG_FILE="$LOG_DIR/scheduled_pipeline.log"
+LOCK_FILE="$REPO_ROOT/data/scheduled_pipeline.lock"
 ENV_FILE="$REPO_ROOT/.env"
 
 if [[ ! -f "$REPO_ROOT/autobot/scheduled_pipeline.py" ]]; then
@@ -53,6 +54,12 @@ else
   exit 1
 fi
 
+if ! command -v flock >/dev/null 2>&1; then
+  echo "Не найден flock (util-linux): без него cron-задача могла бы запускаться параллельно." >&2
+  exit 1
+fi
+FLOCK_CMD="$(command -v flock)"
+
 START_MARK="# >>> AUTO_BOT_EIS_PIPELINE >>>"
 END_MARK="# <<< AUTO_BOT_EIS_PIPELINE <<<"
 TZ_VALUE="${PIPELINE_SCHEDULE_TZ:-Asia/Yekaterinburg}"
@@ -67,7 +74,7 @@ for t in "${TIMES[@]}"; do
   fi
   hh="${BASH_REMATCH[1]}"
   mm="${BASH_REMATCH[2]}"
-  CRON_LINES+=("$((10#$mm)) $((10#$hh)) * * * cd \"$REPO_ROOT\" && \"$PY_CMD\" \"$REPO_ROOT/tools/launch_scheduled_pipeline.py\" >> \"$LOG_FILE\" 2>&1")
+  CRON_LINES+=("$((10#$mm)) $((10#$hh)) * * * cd \"$REPO_ROOT\" && \"$FLOCK_CMD\" -n -E 0 \"$LOCK_FILE\" \"$PY_CMD\" \"$REPO_ROOT/tools/launch_scheduled_pipeline.py\" >> \"$LOG_FILE\" 2>&1")
 done
 
 if [[ "${#CRON_LINES[@]}" -eq 0 ]]; then

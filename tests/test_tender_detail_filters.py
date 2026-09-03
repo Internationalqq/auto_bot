@@ -10,6 +10,7 @@ from autobot.market_analytics import COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_U
 def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypatch):
     tender_id = "0171200001926000664"
     monkeypatch.setattr(tender_detail, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(tender_detail, "latest_parser_health", lambda _tender_id: {})
 
     estimate = pd.DataFrame(
         [

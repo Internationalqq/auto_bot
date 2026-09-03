@@ -3,6 +3,7 @@ from __future__ import annotations
 from autobot.paths import REPO_ROOT
 import io
 import gzip
+import hashlib
 import hmac
 import json
 import math
@@ -88,6 +89,110 @@ MAX_UPLOAD_MB = _configured_max_upload_mb()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+_estimate_capability_secret_raw = str(os.environ.get("AUTOBOT_BRIDGE_SIGNING_SECRET") or "")
+_ESTIMATE_IMPORT_CAPABILITY_SECRET = (
+    hashlib.sha256(_estimate_capability_secret_raw.encode("utf-8")).digest()
+    if _estimate_capability_secret_raw
+    else os.urandom(32)
+)
+del _estimate_capability_secret_raw
+
+
+@app.before_request
+def reject_cross_site_mutation():
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return None
+    if str(request.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+        return jsonify({"ok": False, "error": "cross_site_request_blocked"}), 403
+    origin = str(request.headers.get("Origin") or "").strip()
+    if not origin:
+        return None
+    try:
+        origin_url = urlparse(origin)
+        request_url = urlparse(request.host_url)
+        origin_port = origin_url.port or (443 if origin_url.scheme == "https" else 80)
+        request_port = request_url.port or (443 if request_url.scheme == "https" else 80)
+    except ValueError:
+        return jsonify({"ok": False, "error": "cross_site_request_blocked"}), 403
+    if (
+        origin_url.scheme.lower() != request_url.scheme.lower()
+        or (origin_url.hostname or "").lower() != (request_url.hostname or "").lower()
+        or origin_port != request_port
+    ):
+        return jsonify({"ok": False, "error": "cross_site_request_blocked"}), 403
+    return None
+
+
+def _request_accepts_gzip() -> bool:
+    qualities: dict[str, float] = {}
+    for item in str(request.headers.get("Accept-Encoding") or "").split(","):
+        parts = [part.strip() for part in item.split(";")]
+        encoding = parts[0].lower()
+        if not encoding:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            name, separator, value = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    quality = max(0.0, min(1.0, float(value.strip())))
+                except ValueError:
+                    quality = 0.0
+        qualities[encoding] = quality
+    return qualities.get("gzip", qualities.get("*", 0.0)) > 0
+
+
+@app.after_request
+def secure_and_compress_response(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), geolocation=(), microphone=(self)",
+    )
+    parent_origin = _configured_crm_parent_origin()
+    if parent_origin:
+        frame_ancestors = f"frame-ancestors 'self' {parent_origin}"
+        current_csp = str(response.headers.get("Content-Security-Policy") or "").strip()
+        if "frame-ancestors" not in current_csp.lower():
+            response.headers["Content-Security-Policy"] = (
+                f"{current_csp.rstrip(';')}; {frame_ancestors}" if current_csp else frame_ancestors
+            )
+
+    content_type = str(response.content_type or "").split(";", 1)[0].lower()
+    compressible = (
+        content_type.startswith("text/")
+        or content_type
+        in {
+            "application/javascript",
+            "application/json",
+            "application/manifest+json",
+            "application/xml",
+            "image/svg+xml",
+        }
+    )
+    if (
+        request.method == "HEAD"
+        or response.status_code < 200
+        or response.status_code in {204, 206, 304}
+        or response.direct_passthrough
+        or response.headers.get("Content-Encoding")
+        or not compressible
+        or not _request_accepts_gzip()
+    ):
+        return response
+
+    body = response.get_data()
+    if len(body) < 1024:
+        return response
+    compressed = gzip.compress(body, compresslevel=6, mtime=0)
+    if len(compressed) >= len(body):
+        return response
+    response.set_data(compressed)
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(compressed))
+    response.vary.add("Accept-Encoding")
+    return response
 
 
 @app.errorhandler(413)
@@ -2382,7 +2487,7 @@ INDEX_TEMPLATE = """
         if (line.startsWith("- ") && line.includes(" найдено")) searchChecks += 1;
         if (line.startsWith("Итого после фильтров:")) filtersDone = true;
         if (line.startsWith("Готово. Общий отчет по сметам:")) finalReport = true;
-        const match = line.match(/^\[([0-9]+)\/([0-9]+)\] ([0-9]+):/);
+        const match = line.match(/^\\[([0-9]+)\\/([0-9]+)\\] ([0-9]+):/);
         if (match) tenderStep = { current: Number(match[1]), total: Number(match[2]), id: match[3] };
       }
 
@@ -2416,8 +2521,8 @@ INDEX_TEMPLATE = """
     function parseOutcomeSummary(pr, parsePending) {
       const lines = Array.isArray(pr.log_tail) ? pr.log_tail : [];
       const joined = lines.join("\\n");
-      const foundMatch = joined.match(/Итого после фильтров:\s*([0-9]+)/);
-      const addedMatch = joined.match(/Добавлено в систему:\s*([0-9]+)/);
+      const foundMatch = joined.match(/Итого после фильтров:\\s*([0-9]+)/);
+      const addedMatch = joined.match(/Добавлено в систему:\\s*([0-9]+)/);
       const resultEl = { text: "Поиск ещё не завершён", cls: "" };
       const issueEl = { text: "Идёт выполнение", cls: "" };
       const nextEl = { text: "Дождаться окончания", cls: "" };
@@ -3114,6 +3219,84 @@ def _crm_public_base_url() -> str:
     ).strip().rstrip("/")
 
 
+def _configured_crm_parent_origin() -> str:
+    """Return only an explicitly configured browser origin for the PM.bi parent."""
+    raw_value = (
+        os.environ.get("PMBI_CRM_PARENT_ORIGIN")
+        or os.environ.get("PMBI_CRM_PUBLIC_URL")
+        or os.environ.get("PMBI_PUBLIC_BASE_URL")
+        or ""
+    ).strip()
+    if not raw_value:
+        return ""
+    try:
+        parsed = urlparse(raw_value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            return ""
+        hostname = parsed.hostname.lower()
+        if ":" in hostname:
+            hostname = f"[{hostname}]"
+        parsed_port = parsed.port
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        port = f":{parsed_port}" if parsed_port and parsed_port != default_port else ""
+    except ValueError:
+        return ""
+    return f"{parsed.scheme.lower()}://{hostname}{port}"
+
+
+def _legacy_browser_crm_export_allowed() -> bool:
+    """Service-account CRM calls are opt-in and must not back an embedded browser flow."""
+    return str(os.environ.get("PMBI_ALLOW_LEGACY_BROWSER_CRM_EXPORT") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _legacy_browser_crm_export_denied():
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "error": "legacy_browser_crm_export_disabled",
+                "message": "Добавление в CRM доступно через AutoBot внутри PM.bi.",
+            }
+        ),
+        403,
+    )
+
+
+def _issue_estimate_import_capability(estimate_id: str, *, ttl_seconds: int = 1200) -> str:
+    clean_estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    expires_at = int(time.time()) + max(60, min(int(ttl_seconds), 3600))
+    unsigned = f"{clean_estimate_id}.{expires_at}"
+    signature = hmac.new(
+        _ESTIMATE_IMPORT_CAPABILITY_SECRET,
+        unsigned.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{unsigned}.{signature}"
+
+
+def _verify_estimate_import_capability(estimate_id: str, token: str) -> bool:
+    clean_estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    try:
+        token_estimate_id, expires_raw, signature = str(token or "").rsplit(".", 2)
+        expires_at = int(expires_raw)
+    except (TypeError, ValueError):
+        return False
+    if token_estimate_id != clean_estimate_id or expires_at < int(time.time()):
+        return False
+    unsigned = f"{token_estimate_id}.{expires_at}"
+    expected = hmac.new(
+        _ESTIMATE_IMPORT_CAPABILITY_SECRET,
+        unsigned.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
 def _crm_project_url(project_id: int, tab: str | None = None) -> str:
     query = f"openProject={int(project_id)}"
     if tab:
@@ -3136,9 +3319,60 @@ def _float_or_none(value) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
-    if out != out:
+    if not math.isfinite(out):
         return None
     return out
+
+
+class EstimateImportTooLargeError(ValueError):
+    """Raised instead of silently truncating an estimate sent to CRM."""
+
+
+def _crm_estimate_source_item_key(
+    *,
+    source_scope: object,
+    sheet: object,
+    excel_row: object,
+    item_no: object,
+    row_index: int,
+    basis_code: object,
+    title: object,
+) -> str:
+    """Return a stable row identity that remains unique across workbook sheets."""
+
+    normalized_sheet = re.sub(r"\s+", " ", str(sheet or "").strip()).casefold()
+    normalized_excel_row = str(excel_row or "").strip()
+    normalized_item_no = re.sub(r"\s+", " ", str(item_no or "").strip()).casefold()
+    location = normalized_excel_row or normalized_item_no or str(row_index)
+    if normalized_excel_row:
+        row_identity = {"kind": "excel_row", "value": normalized_excel_row}
+    elif normalized_item_no:
+        row_identity = {
+            "kind": "item_no",
+            "value": normalized_item_no,
+            "basis_code": re.sub(r"\s+", " ", str(basis_code or "").strip()).casefold(),
+        }
+    else:
+        row_identity = {
+            "kind": "sequence",
+            "value": int(row_index),
+            "basis_code": re.sub(r"\s+", " ", str(basis_code or "").strip()).casefold(),
+            "title": re.sub(r"\s+", " ", str(title or "").strip()).casefold(),
+        }
+    identity = json.dumps(
+        {
+            "source": str(source_scope or "").strip().casefold(),
+            "sheet": normalized_sheet,
+            "row": row_identity,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    sheet_label = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._-]+", "-", str(sheet or "").strip())[:48] or "sheet"
+    location_label = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._-]+", "-", location)[:64] or str(row_index)
+    return f"{sheet_label}:{location_label}:{digest}"
 
 
 def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
@@ -3159,9 +3393,9 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
         return []
 
     try:
-        max_rows = int(os.environ.get("PMBI_CRM_MAX_MATERIALS", "2000") or "2000")
+        max_rows = int(os.environ.get("PMBI_CRM_MAX_MATERIALS", "10000") or "10000")
     except ValueError:
-        max_rows = 2000
+        max_rows = 10000
     max_rows = max(1, min(max_rows, 10000))
 
     meta = load_tender_metadata().get(tid, {}) or {}
@@ -3179,7 +3413,8 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
         if qty is None or qty <= 0:
             qty = 1.0
         if unit_price is None or (unit_price <= 0 and total is not None and total > 0):
-            unit_price = (total / qty) if total is not None and qty > 0 else 0.0
+            unit_price = _float_or_none(total / qty) if total is not None and qty > 0 else 0.0
+            unit_price = unit_price or 0.0
         source_file = str(row.get("Файл ЛСР", "") or "").strip()
         if source_file.casefold() in {"nan", "none"}:
             source_file = ""
@@ -3202,6 +3437,14 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
             notes.append(f"Позиция: {item_no}")
         if total is not None and total > 0:
             notes.append(f"Сумма по смете: {total:.2f} руб.")
+        if len(materials) >= max_rows:
+            raise EstimateImportTooLargeError(
+                f"В смете больше {max_rows} подходящих позиций. "
+                "Импорт остановлен без изменений: увеличьте PMBI_CRM_MAX_MATERIALS "
+                "или разделите смету."
+            )
+        sheet = str(row.get("Лист", "") or "").strip()
+        excel_row = row.get("Строка Excel")
         materials.append(
             {
                 "title": title[:500],
@@ -3219,12 +3462,18 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
                 "section": section or "",
                 "estimate_file_name": file_name,
                 "estimate_title": estimate_title,
-                "source_item_key": f"{item_no or row_index}:{basis_code}:{title[:160]}",
+                "source_item_key": _crm_estimate_source_item_key(
+                    source_scope=file_name,
+                    sheet=sheet,
+                    excel_row=excel_row,
+                    item_no=item_no,
+                    row_index=row_index,
+                    basis_code=basis_code,
+                    title=title,
+                ),
                 "notes": "; ".join(notes),
             }
         )
-        if len(materials) >= max_rows:
-            break
     return materials
 
 
@@ -3237,9 +3486,9 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         return []
 
     try:
-        max_rows = int(os.environ.get("PMBI_CRM_MAX_MATERIALS", "2000") or "2000")
+        max_rows = int(os.environ.get("PMBI_CRM_MAX_MATERIALS", "10000") or "10000")
     except ValueError:
-        max_rows = 2000
+        max_rows = 10000
     max_rows = max(1, min(max_rows, 10000))
 
     meta = _load_estimate_meta(estimate_id) or {}
@@ -3258,7 +3507,8 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         if qty is None or qty <= 0:
             qty = 1.0
         if unit_price is None or (unit_price <= 0 and total is not None and total > 0):
-            unit_price = (total / qty) if total is not None and qty > 0 else 0.0
+            unit_price = _float_or_none(total / qty) if total is not None and qty > 0 else 0.0
+            unit_price = unit_price or 0.0
         notes = [f"Смета: {estimate_id}"]
         item_no = str(row.get("item_no") or "").strip()
         if item_no:
@@ -3285,13 +3535,20 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         if total is not None and total > 0:
             notes.append(f"Сумма по смете: {total:.2f} руб.")
         item_kind = type_key if type_key in {"work", "material", "service", "product", "other"} else (type_label or "")
+        planned_total = _float_or_none(total if total is not None and total > 0 else qty * (unit_price or 0.0)) or 0.0
+        if len(materials) >= max_rows:
+            raise EstimateImportTooLargeError(
+                f"В смете «{estimate_title}» больше {max_rows} подходящих позиций. "
+                "Импорт остановлен без изменений: разделите смету или увеличьте "
+                "PMBI_CRM_MAX_MATERIALS."
+            )
         materials.append(
             {
                 "title": title[:500],
                 "unit": str(row.get("unit") or "").strip() or "шт",
                 "planned_qty": max(0.000001, float(qty)),
                 "planned_price": max(0.0, float(unit_price or 0.0)),
-                "planned_total": max(0.0, float(total or (qty * (unit_price or 0.0)))),
+                "planned_total": max(0.0, float(planned_total)),
                 "article": basis_code,
                 "code": basis_code,
                 "basis_code": basis_code,
@@ -3303,12 +3560,18 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
                 "estimate_file_name": file_name,
                 "estimate_title": estimate_title,
                 "source_external_id": estimate_id,
-                "source_item_key": f"{excel_row or item_no or row_index}:{basis_code}:{title[:160]}",
+                "source_item_key": _crm_estimate_source_item_key(
+                    source_scope=estimate_id,
+                    sheet=sheet,
+                    excel_row=excel_row,
+                    item_no=item_no,
+                    row_index=row_index,
+                    basis_code=basis_code,
+                    title=title,
+                ),
                 "notes": "; ".join(notes),
             }
         )
-        if len(materials) >= max_rows:
-            break
     return materials
 
 
@@ -3394,6 +3657,44 @@ def _build_estimate_crm_project_payload(estimate_id: str, overrides: dict | None
     return project, materials, prefill
 
 
+def _build_estimate_crm_import_payload(estimate_id: str) -> dict:
+    """Build the normalized, read-only payload that PM.bi imports as the signed-in user."""
+    clean_estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    prefill = _estimate_crm_prefill(clean_estimate_id)
+    items = _estimate_materials_for_crm(clean_estimate_id)
+    label = str(prefill.get("estimate_title") or f"Смета {clean_estimate_id}").strip()
+    reference = f"/estimates/{clean_estimate_id}"
+    source = {
+        "sourceType": "estimate",
+        "sourceKey": clean_estimate_id,
+        "externalId": clean_estimate_id,
+        "title": label,
+        "fileName": str(prefill.get("original_filename") or ""),
+        "sourceReference": reference,
+    }
+    # Repeat the source identity on every row. A single CRM request can then
+    # contain several estimates while preserving each one as an independently
+    # replaceable source under the project.
+    for item in items:
+        item["estimate_source_type"] = "estimate"
+        item["estimate_source_key"] = clean_estimate_id
+        item["estimate_title"] = label
+        item["estimate_file_name"] = source["fileName"]
+        item["source_external_id"] = clean_estimate_id
+        item["source_reference"] = reference
+    return {
+        "items": items,
+        "source": source,
+        "label": label,
+        "reference": reference,
+        # CRM's existing estimate-import field names are included so the parent
+        # can forward this object without copying or reinterpreting estimate data.
+        "sourceLabel": label,
+        "sourceReference": reference,
+        "replace_source": True,
+    }
+
+
 def _build_crm_project_payload(tender_id: str) -> tuple[dict, list[dict]]:
     meta = load_tender_metadata().get(tender_id, {}) or {}
     title = str(meta.get("title") or f"Тендер {tender_id}").strip()
@@ -3442,6 +3743,7 @@ def export_tender_to_crm(tender_id: str, project_id: int | None = None) -> dict:
             target = next((row for row in projects if row["contract_no"] == tid), None)
 
         created_new = target is None
+        ensure_starter_task = created_new or requested_project_id is None
         if created_new:
             create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
             if create_resp.status_code >= 400:
@@ -3471,7 +3773,7 @@ def export_tender_to_crm(tender_id: str, project_id: int | None = None) -> dict:
         )
 
         task_summary = {"tasks": 0, "stages": 0}
-        if created_new:
+        if ensure_starter_task:
             boot_resp = session.post(
                 f"{base}/api/projects/{target_project_id}/bootstrap",
                 json={
@@ -3482,6 +3784,7 @@ def export_tender_to_crm(tender_id: str, project_id: int | None = None) -> dict:
                             "title": "Проверить тендер и решение об участии",
                             "description": f"Проверить условия закупки {tid}, сметы, сроки и риски перед дальнейшей работой.",
                             "priority": "high",
+                            "client_request_id": f"autobot:tender:{tid}:starter",
                         }
                     ],
                 },
@@ -3513,9 +3816,11 @@ def export_estimate_to_crm(
     overrides: dict | None = None,
     project_id: int | None = None,
 ) -> dict:
-    project_payload, materials, prefill = _build_estimate_crm_project_payload(estimate_id, overrides=overrides)
+    project_payload, _, prefill = _build_estimate_crm_project_payload(estimate_id, overrides=overrides)
+    import_payload = _build_estimate_crm_import_payload(estimate_id)
+    materials = import_payload["items"]
     base = _crm_base_url()
-    source_reference = f"/estimates/{estimate_id}"
+    source_reference = str(import_payload["reference"])
 
     import requests
 
@@ -3531,6 +3836,7 @@ def export_estimate_to_crm(
             target = next((row for row in projects if row["contract_no"] == contract_no), None)
 
         created_new = target is None
+        ensure_starter_task = created_new or requested_project_id is None
         if created_new:
             create_resp = session.post(f"{base}/api/projects", json=project_payload, timeout=30)
             if create_resp.status_code >= 400:
@@ -3547,20 +3853,13 @@ def export_estimate_to_crm(
             base,
             target_project_id,
             materials,
-            {
-                "sourceType": "estimate",
-                "sourceKey": str(estimate_id),
-                "externalId": str(estimate_id),
-                "title": str(prefill.get("estimate_title") or f"Смета {estimate_id}"),
-                "fileName": str(prefill.get("original_filename") or ""),
-                "sourceReference": source_reference,
-            },
-            source_label=str(prefill.get("estimate_title") or f"Смета {estimate_id}"),
+            import_payload["source"],
+            source_label=str(import_payload["label"]),
             source_reference=source_reference,
         )
 
         task_summary = {"tasks": 0, "stages": 0}
-        if created_new:
+        if ensure_starter_task:
             boot_resp = session.post(
                 f"{base}/api/projects/{target_project_id}/bootstrap",
                 json={
@@ -3571,6 +3870,7 @@ def export_estimate_to_crm(
                             "title": "Проверить смету и подготовить объект",
                             "description": f"Проверить импортированную смету «{prefill.get('estimate_title') or estimate_id}», уточнить материалы, объёмы и план работ.",
                             "priority": "high",
+                            "client_request_id": f"autobot:estimate:{estimate_id}:starter",
                         }
                     ],
                 },
@@ -3869,7 +4169,7 @@ def _tenders_overview(items: list[dict], counts: dict[str, int]) -> dict:
 
 @app.route("/dashboard")
 def dashboard_redirect():
-    return redirect(url_for("index"))
+    return redirect(url_for("estimates_page"))
 
 
 def _render_tenders_board():
@@ -4140,7 +4440,7 @@ def _render_tenders_index(*, embed_mode: bool = False):
 
 @app.route("/")
 def root_index():
-    return redirect(url_for("index"))
+    return redirect(url_for("estimates_page"))
 
 
 @app.route("/tenders")
@@ -5961,8 +6261,8 @@ ESTIMATES_TEMPLATE = """
     <h1>Сметы</h1>
     <div class="sub">Загрузите Excel- или PDF-смету, сохраните её карточкой и смотрите все найденные позиции в таблице.</div>
     <nav class="tabs">
+      <a class="tab is-active" href="/estimates" aria-current="page">📊 Сметы</a>
       <a class="tab" href="/tenders">📋 Тендеры</a>
-      <a class="tab is-active" href="/estimates">📊 Сметы</a>
       <a class="tab" href="/research">🔎 Поиск по позиции</a>
     </nav>
 
@@ -6267,6 +6567,7 @@ ESTIMATES_TEMPLATE_V2 = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Сметы</title>
   <style>
@@ -6536,12 +6837,59 @@ ESTIMATES_TEMPLATE_V2 = """
       font-size: 13px;
       line-height: 1.45;
     }
+    .catalog-heading { min-width: min(100%, 360px); }
+    .catalog-heading h2 { margin: 0; font-size: 22px; line-height: 1.2; }
+    .catalog-heading p { margin: 6px 0 0; }
+    .catalog-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .catalog-search { min-width: min(100%, 280px); }
+    .bundle-open-btn {
+      min-height: 42px;
+      white-space: nowrap;
+    }
+    .bundle-open-btn:disabled {
+      border-color: #cfdae8;
+      background: #eef3f8;
+      color: #8090a5;
+      cursor: not-allowed;
+    }
+    .bundle-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin: -2px 0 14px;
+      padding: 11px 13px;
+      border: 1px solid #b9d2f2;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #f5f9ff, #edf5ff);
+      color: #35506f;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .bundle-bar[hidden] { display: none; }
+    .bundle-bar strong { color: #17375f; }
+    .bundle-clear-btn {
+      flex: 0 0 auto;
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
       gap: 14px;
     }
     .estimate-card {
+      position: relative;
       padding: 16px;
       color: var(--text);
       transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
@@ -6550,6 +6898,32 @@ ESTIMATES_TEMPLATE_V2 = """
       transform: translateY(-2px);
       border-color: #9ec0ef;
       box-shadow: 0 20px 36px rgba(43, 78, 131, 0.12);
+    }
+    .estimate-card.is-selected {
+      border-color: #4f8fe6;
+      box-shadow: 0 0 0 3px rgba(79, 143, 230, 0.13), 0 20px 36px rgba(43, 78, 131, 0.12);
+    }
+    .estimate-select {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid #cfdae8;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #4d627c;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+    .estimate-select:hover { border-color: #9ec0ef; background: #f7fbff; }
+    .estimate-select input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+    .estimate-card.is-selected .estimate-select {
+      border-color: #77a9e9;
+      background: #edf5ff;
+      color: #174f91;
     }
     .estimate-card-body-link {
       display: block;
@@ -6769,6 +7143,132 @@ ESTIMATES_TEMPLATE_V2 = """
       background: linear-gradient(180deg, #fbfdff, #f5f9fd);
       color: var(--muted);
     }
+    .bundle-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      opacity: 0;
+      transition: opacity .18s ease;
+    }
+    .bundle-modal[hidden] { display: none; }
+    .bundle-modal.is-open { opacity: 1; }
+    .bundle-modal-backdrop {
+      position: absolute;
+      inset: 0;
+      border: 0;
+      background: rgba(19, 34, 55, 0.48);
+      backdrop-filter: blur(3px);
+      cursor: default;
+    }
+    .bundle-modal-card {
+      position: relative;
+      width: min(100%, 620px);
+      max-height: min(760px, calc(100vh - 40px));
+      overflow: auto;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+      box-shadow: 0 28px 80px rgba(16, 39, 70, 0.28);
+      transform: translateY(8px) scale(.99);
+      transition: transform .18s ease;
+    }
+    .bundle-modal.is-open .bundle-modal-card { transform: none; }
+    .bundle-modal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .bundle-modal-head h2 { margin: 0; font-size: 24px; line-height: 1.2; }
+    .bundle-modal-head p { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .bundle-close-btn {
+      width: 36px;
+      height: 36px;
+      flex: 0 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #ffffff;
+      color: #52667f;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .bundle-selected-list {
+      display: grid;
+      gap: 7px;
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border: 1px solid #dce6f1;
+      border-radius: 14px;
+      background: #f4f8fd;
+      color: #35506f;
+      font-size: 13px;
+    }
+    .bundle-selected-item {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .bundle-selected-item span:first-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bundle-selected-item small { flex: 0 0 auto; color: var(--muted); }
+    .bundle-field { display: grid; gap: 7px; color: #4f627a; font-size: 12px; font-weight: 700; }
+    .bundle-field select {
+      width: 100%;
+      min-height: 46px;
+      padding: 0 12px;
+      border: 1px solid #cfd9e8;
+      border-radius: 12px;
+      background: #ffffff;
+      color: var(--text);
+      font: inherit;
+    }
+    .bundle-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .bundle-status {
+      min-height: 22px;
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #f2f6fb;
+      color: #52667f;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .bundle-status.is-success { background: var(--ok-soft); color: var(--ok); }
+    .bundle-status.is-error { background: #fff1f1; color: #a63f3f; }
+    .bundle-progress {
+      height: 7px;
+      margin-top: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e3ebf5;
+    }
+    .bundle-progress[hidden] { display: none; }
+    .bundle-progress-fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2e80e8, #5ecf8a);
+      transition: width .25s ease;
+    }
+    .bundle-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .btn.secondary { border-color: #cfd9e8; background: #ffffff; color: #35506f; }
+    .btn[disabled] { opacity: .6; cursor: wait; }
     @media (max-width: 1080px) {
       .hero-grid { grid-template-columns: 1fr; }
     }
@@ -6783,19 +7283,26 @@ ESTIMATES_TEMPLATE_V2 = """
       .estimate-card-top,
       .estimate-progress-head { flex-direction: column; align-items: flex-start; }
       .estimate-card-meta { justify-content: flex-start; }
+      .catalog-tools { width: 100%; justify-content: stretch; }
+      .catalog-search { flex: 1 1 100%; }
+      .bundle-open-btn { width: 100%; }
+      .bundle-bar { align-items: flex-start; }
+      .bundle-modal { padding: 10px; }
+      .bundle-modal-card { max-height: calc(100vh - 20px); padding: 18px; border-radius: 16px; }
+      .bundle-modal-actions .btn { width: 100%; }
     }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
 </head>
 <body class="autobot-page estimates-index-page">
   <header class="topbar autobot-section-bar">
-    <a class="brand" href="/tenders">
+    <a class="brand" href="/estimates">
       <span class="brand-mark" aria-hidden="true"><i></i></span>
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы AutoBot">
-      <a href="/tenders">Тендеры</a>
-      <a class="is-active" href="/estimates">Сметы</a>
+      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
+      <a class="topnav-primary" href="/tenders">Тендеры</a>
       <a href="/research">Поиск позиции</a>
     </nav>
   </header>
@@ -6854,15 +7361,39 @@ ESTIMATES_TEMPLATE_V2 = """
 
     <section class="catalog-panel">
       <div class="panel-head">
-        <label class="catalog-search"><span aria-hidden="true"></span><input type="search" id="estimateCatalogSearch" placeholder="Найти смету" autocomplete="off" /></label>
+        <div class="catalog-heading">
+          <h2>Сметы объекта</h2>
+          <p class="panel-note">Отметьте несколько смет и добавьте их в один объект PM.bi. В объекте они сохранятся отдельно — каждую можно будет обновлять без дублей.</p>
+        </div>
+        <div class="catalog-tools">
+          <label class="catalog-search"><span aria-hidden="true"></span><input type="search" id="estimateCatalogSearch" placeholder="Найти смету" autocomplete="off" /></label>
+          <button class="btn bundle-open-btn" id="estimateBundleOpenBtn" type="button" disabled>Добавить выбранные в объект</button>
+        </div>
       </div>
       {% if estimates %}
+      <div class="bundle-bar" id="estimateBundleBar" hidden aria-live="polite">
+        <span id="estimateBundleSummary"><strong>Ничего не выбрано</strong></span>
+        <button class="bundle-clear-btn" id="estimateBundleClearBtn" type="button">Сбросить</button>
+      </div>
       <div class="grid">
         {% for e in estimates %}
         <article class="estimate-card" data-estimate-card="{{ e.id }}" data-estimate-search="{{ (e.title ~ ' ' ~ e.original_filename ~ ' ' ~ e.types_short)|lower }}">
           <div class="estimate-card-top">
-            <span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span>
+            <label class="estimate-select" title="Добавить смету в общий пакет">
+              <input
+                type="checkbox"
+                data-estimate-select
+                value="{{ e.id }}"
+                data-estimate-title="{{ e.title }}"
+                data-estimate-rows="{{ e.row_count }}"
+                data-estimate-total="{{ e.total_sum_value }}"
+                data-estimate-capability="{{ e.crm_import_capability }}"
+                aria-label="Выбрать смету {{ e.title }}"
+              />
+              <span>В пакет</span>
+            </label>
             <div class="estimate-card-meta">
+              <span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span>
               <span class="date-pill">{{ e.created_at }}</span>
               <button class="card-delete-btn" type="button" data-estimate-delete="{{ e.id }}" data-estimate-title="{{ e.title }}" onclick="deleteEstimateCard(event, this)" title="Удалить смету" aria-label="Удалить смету">
                 <svg class="icon-trash" viewBox="0 0 24 24" aria-hidden="true">
@@ -6926,6 +7457,34 @@ ESTIMATES_TEMPLATE_V2 = """
       {% endif %}
     </section>
   </div>
+  <div class="bundle-modal" id="estimateBundleModal" hidden role="dialog" aria-modal="true" aria-labelledby="estimateBundleTitle">
+    <button class="bundle-modal-backdrop" id="estimateBundleBackdrop" type="button" tabindex="-1" aria-label="Закрыть окно"></button>
+    <section class="bundle-modal-card">
+      <div class="bundle-modal-head">
+        <div>
+          <h2 id="estimateBundleTitle">Добавить пакет смет в объект</h2>
+          <p>Все выбранные сметы попадут в один объект, но сохранят собственные названия и позиции.</p>
+        </div>
+        <button class="bundle-close-btn" id="estimateBundleCloseBtn" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <div class="bundle-selected-list" id="estimateBundleList"></div>
+      <label class="bundle-field" for="estimateBundleProject">
+        Объект PM.bi
+        <select id="estimateBundleProject" required>
+          <option value="">Загружаю доступные объекты…</option>
+        </select>
+      </label>
+      <p class="bundle-hint" id="estimateBundleProjectHint">Вы увидите только те объекты, к которым у вас есть доступ.</p>
+      <div class="bundle-status" id="estimateBundleStatus" role="status" aria-live="polite">Выберите объект и подтвердите добавление.</div>
+      <div class="bundle-progress" id="estimateBundleProgress" hidden><div class="bundle-progress-fill" id="estimateBundleProgressFill"></div></div>
+      <div class="bundle-modal-actions">
+        <button class="btn secondary" id="estimateBundleCancelBtn" type="button">Отмена</button>
+        <button class="btn secondary" id="estimateBundleProjectBtn" type="button" hidden>Открыть объект</button>
+        <button class="btn" id="estimateBundleSubmitBtn" type="button">Добавить сметы</button>
+      </div>
+    </section>
+  </div>
+  <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
   <script>
     (function() {
       const form = document.getElementById("estimateUploadForm");
@@ -6942,6 +7501,323 @@ ESTIMATES_TEMPLATE_V2 = """
       const stepNodes = Array.from(document.querySelectorAll("#estimateUploadSteps .upload-step"));
       let activePoll = 0;
       const uploadJobStorageKey = "autobot:estimate-upload-job";
+      const bundleBridge = window.AutoBotCrmBridge || { embedded: false, available: false };
+      const bundleInputs = Array.from(document.querySelectorAll("[data-estimate-select]"));
+      const bundleOpenBtn = document.getElementById("estimateBundleOpenBtn");
+      const bundleBar = document.getElementById("estimateBundleBar");
+      const bundleSummary = document.getElementById("estimateBundleSummary");
+      const bundleClearBtn = document.getElementById("estimateBundleClearBtn");
+      const bundleModal = document.getElementById("estimateBundleModal");
+      const bundleList = document.getElementById("estimateBundleList");
+      const bundleProject = document.getElementById("estimateBundleProject");
+      const bundleProjectHint = document.getElementById("estimateBundleProjectHint");
+      const bundleStatus = document.getElementById("estimateBundleStatus");
+      const bundleProgress = document.getElementById("estimateBundleProgress");
+      const bundleProgressFill = document.getElementById("estimateBundleProgressFill");
+      const bundleSubmitBtn = document.getElementById("estimateBundleSubmitBtn");
+      const bundleProjectBtn = document.getElementById("estimateBundleProjectBtn");
+      const maxBundleEstimates = 10;
+      const maxBundleItems = 12000;
+      const maxBundleBytes = 11 * 1024 * 1024;
+      let bundleProjectsLoaded = false;
+      let bundleBusy = false;
+      let bundleLastProjectUrl = "";
+      let bundleLastFocused = null;
+
+      function selectedBundleEstimates() {
+        const seen = new Set();
+        return bundleInputs.filter(function(input) {
+          if (!input.checked) return false;
+          const id = String(input.value || "");
+          if (!/^[0-9a-fA-F-]{1,40}$/.test(id) || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        }).map(function(input) {
+          return {
+            id: String(input.value || ""),
+            title: String(input.getAttribute("data-estimate-title") || "Смета"),
+            rows: Math.max(0, Number(input.getAttribute("data-estimate-rows") || 0)),
+            total: Math.max(0, Number(input.getAttribute("data-estimate-total") || 0)),
+            capability: String(input.getAttribute("data-estimate-capability") || ""),
+          };
+        });
+      }
+
+      function formatBundleMoney(value) {
+        try {
+          return new Intl.NumberFormat("ru-RU", {
+            style: "currency",
+            currency: "RUB",
+            maximumFractionDigits: 0,
+          }).format(Number(value || 0));
+        } catch (error) {
+          return Math.round(Number(value || 0)).toLocaleString("ru-RU") + " ₽";
+        }
+      }
+
+      function syncBundleSelection() {
+        const selected = selectedBundleEstimates();
+        const count = selected.length;
+        const rows = selected.reduce(function(sum, item) { return sum + item.rows; }, 0);
+        const total = selected.reduce(function(sum, item) { return sum + item.total; }, 0);
+        bundleInputs.forEach(function(input) {
+          const card = input.closest("[data-estimate-card]");
+          if (card) card.classList.toggle("is-selected", input.checked);
+        });
+        if (bundleOpenBtn) {
+          bundleOpenBtn.disabled = count === 0 || bundleBusy;
+          bundleOpenBtn.textContent = count
+            ? "Добавить " + count + " " + (count === 1 ? "смету" : count < 5 ? "сметы" : "смет") + " в объект"
+            : "Добавить выбранные в объект";
+        }
+        if (bundleBar) bundleBar.hidden = count === 0;
+        if (bundleSummary && count) {
+          bundleSummary.textContent = "";
+          const countNode = document.createElement("strong");
+          countNode.textContent = "Выбрано: " + count;
+          bundleSummary.appendChild(countNode);
+          bundleSummary.appendChild(document.createTextNode(" · строк: " + rows + (total > 0 ? " · сумма: " + formatBundleMoney(total) : "")));
+        }
+      }
+
+      function setBundleStatus(message, tone) {
+        if (!bundleStatus) return;
+        bundleStatus.textContent = String(message || "");
+        bundleStatus.classList.toggle("is-success", tone === "success");
+        bundleStatus.classList.toggle("is-error", tone === "error");
+      }
+
+      function setBundleProgress(value, visible) {
+        if (bundleProgress) bundleProgress.hidden = !visible;
+        if (bundleProgressFill) bundleProgressFill.style.width = Math.max(0, Math.min(100, Number(value || 0))) + "%";
+      }
+
+      function renderBundleList(selected) {
+        if (!bundleList) return;
+        bundleList.textContent = "";
+        selected.forEach(function(item) {
+          const row = document.createElement("div");
+          row.className = "bundle-selected-item";
+          const title = document.createElement("span");
+          title.textContent = item.title;
+          const meta = document.createElement("small");
+          meta.textContent = item.rows + " строк";
+          row.appendChild(title);
+          row.appendChild(meta);
+          bundleList.appendChild(row);
+        });
+      }
+
+      async function loadBundleProjects() {
+        if (!bundleProject || bundleProjectsLoaded) return;
+        bundleProject.disabled = true;
+        bundleProject.innerHTML = '<option value="">Загружаю доступные объекты…</option>';
+        try {
+          if (!bundleBridge.embedded || !bundleBridge.available) {
+            throw new Error(bundleBridge.originMismatch
+              ? "Адрес PM.bi не совпадает с настройкой AutoBot."
+              : "Откройте AutoBot внутри PM.bi, чтобы выбрать объект.");
+          }
+          const data = await bundleBridge.requestProjects();
+          const projects = Array.isArray(data.projects) ? data.projects : [];
+          bundleProject.innerHTML = '<option value="">Выберите объект</option>';
+          projects.forEach(function(project) {
+            const projectId = Number(project && project.id);
+            if (!Number.isInteger(projectId) || projectId <= 0) return;
+            const option = document.createElement("option");
+            option.value = String(projectId);
+            const place = String(project.city || project.address || "").trim();
+            option.textContent = "#" + projectId + " · " + String(project.title || "Без названия") + (place ? " · " + place : "");
+            bundleProject.appendChild(option);
+          });
+          bundleProject.disabled = projects.length === 0;
+          bundleProjectsLoaded = true;
+          if (bundleProjectHint) {
+            bundleProjectHint.textContent = projects.length
+              ? "Выберите объект. Пакет будет записан с вашими правами PM.bi."
+              : "У вас пока нет доступных объектов для добавления смет.";
+          }
+          if (projects.length) bundleProject.focus();
+        } catch (error) {
+          bundleProject.innerHTML = '<option value="">Объекты недоступны</option>';
+          bundleProject.disabled = true;
+          setBundleStatus(error.message || error, "error");
+        }
+      }
+
+      function openBundleModal() {
+        const selected = selectedBundleEstimates();
+        if (!selected.length || !bundleModal) return;
+        bundleLastFocused = document.activeElement;
+        renderBundleList(selected);
+        bundleLastProjectUrl = "";
+        if (bundleProjectBtn) bundleProjectBtn.hidden = true;
+        if (bundleSubmitBtn) {
+          bundleSubmitBtn.hidden = false;
+          bundleSubmitBtn.disabled = false;
+          bundleSubmitBtn.textContent = "Добавить " + selected.length + " " + (selected.length === 1 ? "смету" : "сметы");
+        }
+        setBundleProgress(0, false);
+        setBundleStatus("Выберите объект и подтвердите добавление.", "");
+        bundleModal.hidden = false;
+        document.body.style.overflow = "hidden";
+        if (typeof bundleBridge.setModalOpen === "function") bundleBridge.setModalOpen(true);
+        requestAnimationFrame(function() { bundleModal.classList.add("is-open"); });
+        loadBundleProjects();
+      }
+
+      function closeBundleModal() {
+        if (!bundleModal || bundleBusy) return;
+        bundleModal.classList.remove("is-open");
+        document.body.style.overflow = "";
+        if (typeof bundleBridge.setModalOpen === "function") bundleBridge.setModalOpen(false);
+        window.setTimeout(function() {
+          bundleModal.hidden = true;
+          if (bundleLastFocused && typeof bundleLastFocused.focus === "function") bundleLastFocused.focus();
+        }, 180);
+      }
+
+      async function prepareBundle(selected) {
+        const estimates = [];
+        let itemCount = 0;
+        for (let index = 0; index < selected.length; index += 1) {
+          const item = selected[index];
+          setBundleStatus("Подготавливаю сметы: " + (index + 1) + " из " + selected.length + " — " + item.title, "");
+          setBundleProgress(Math.round((index / Math.max(1, selected.length)) * 45), true);
+          const response = await fetch("/api/estimates/" + encodeURIComponent(item.id) + "/crm-import-payload", {
+            method: "GET",
+            headers: {
+              "Accept": "application/json",
+              "X-AutoBot-Estimate-Capability": item.capability,
+            },
+            cache: "no-store",
+            credentials: "same-origin",
+          });
+          const prepared = await response.json().catch(function() { return {}; });
+          if (!response.ok || !prepared.ok) {
+            throw new Error(prepared.message || "Не удалось подготовить смету «" + item.title + "».");
+          }
+          const rows = Array.isArray(prepared.items) ? prepared.items : [];
+          if (!rows.length) throw new Error("В смете «" + item.title + "» нет подходящих позиций.");
+          itemCount += rows.length;
+          if (itemCount > maxBundleItems) {
+            throw new Error("В пакете больше " + maxBundleItems + " позиций. Разделите его на две загрузки.");
+          }
+          estimates.push({
+            source: prepared.source || {},
+            sourceLabel: prepared.sourceLabel || prepared.label || item.title,
+            sourceReference: prepared.sourceReference || prepared.reference || ("/estimates/" + item.id),
+            items: rows,
+          });
+        }
+        return { estimates: estimates, itemCount: itemCount };
+      }
+
+      async function submitBundle() {
+        if (bundleBusy) return;
+        const selected = selectedBundleEstimates();
+        const projectId = Number(bundleProject && bundleProject.value);
+        if (!selected.length) {
+          setBundleStatus("Сметы не выбраны.", "error");
+          return;
+        }
+        if (!Number.isInteger(projectId) || projectId <= 0) {
+          setBundleStatus("Выберите объект PM.bi.", "error");
+          if (bundleProject) bundleProject.focus();
+          return;
+        }
+        if (!bundleBridge.embedded || !bundleBridge.available) {
+          setBundleStatus("Откройте AutoBot внутри PM.bi — пакет записывается с правами текущего пользователя.", "error");
+          return;
+        }
+
+        bundleBusy = true;
+        if (bundleSubmitBtn) bundleSubmitBtn.disabled = true;
+        if (bundleProject) bundleProject.disabled = true;
+        syncBundleSelection();
+        try {
+          const prepared = await prepareBundle(selected);
+          const estimateIds = selected.map(function(item) { return item.id; });
+          const importPayload = {
+            estimates: prepared.estimates,
+            source: {
+              sourceType: "estimate",
+              sourceKey: "bundle:" + estimateIds.join(":"),
+              title: "Пакет из " + selected.length + " смет",
+              sourceReference: "/estimates",
+              metadata: {
+                bundleEstimateIds: estimateIds,
+                bundleCount: selected.length,
+                importedFrom: "autobot_estimate_bundle",
+              },
+            },
+            sourceLabel: "Пакет из " + selected.length + " смет",
+            sourceReference: "/estimates",
+            replace: false,
+            replace_source: true,
+          };
+          const payloadBytes = new Blob([JSON.stringify(importPayload)]).size;
+          if (payloadBytes > maxBundleBytes) {
+            throw new Error("Пакет получился слишком большим. Выберите меньше смет и повторите.");
+          }
+          setBundleStatus("Записываю " + selected.length + " смет и " + prepared.itemCount + " позиций в объект…", "");
+          setBundleProgress(60, true);
+          const bridgeResponse = typeof bundleBridge.importEstimates === "function"
+            ? await bundleBridge.importEstimates(projectId, importPayload)
+            : await bundleBridge.importEstimate(projectId, importPayload);
+          const result = bridgeResponse.result && typeof bridgeResponse.result === "object"
+            ? bridgeResponse.result
+            : bridgeResponse;
+          const imported = Number(result.imported || prepared.itemCount);
+          const sourceCount = Number(result.estimateSources || result.estimate_sources || selected.length);
+          bundleLastProjectUrl = result.projectUrl || result.project_url || ("/app/projects?openProject=" + projectId + "&tab=schedule");
+          setBundleProgress(100, true);
+          setBundleStatus("Готово: в объект добавлено смет — " + sourceCount + ", позиций обработано — " + imported + ".", "success");
+          selected.forEach(function(item) {
+            const input = bundleInputs.find(function(candidate) { return candidate.value === item.id; });
+            if (input) input.checked = false;
+          });
+          if (bundleSubmitBtn) bundleSubmitBtn.hidden = true;
+          if (bundleProjectBtn) bundleProjectBtn.hidden = false;
+        } catch (error) {
+          setBundleProgress(0, false);
+          setBundleStatus("Не удалось подтвердить пакет: " + (error.message || error), "error");
+        } finally {
+          bundleBusy = false;
+          if (bundleSubmitBtn) bundleSubmitBtn.disabled = false;
+          if (bundleProject) bundleProject.disabled = !bundleProjectsLoaded || bundleProject.options.length <= 1;
+          syncBundleSelection();
+        }
+      }
+
+      bundleInputs.forEach(function(input) {
+        input.addEventListener("change", function() {
+          if (selectedBundleEstimates().length > maxBundleEstimates) {
+            input.checked = false;
+            window.alert("За один раз можно выбрать до " + maxBundleEstimates + " смет. Остальные добавьте следующим пакетом.");
+          }
+          syncBundleSelection();
+        });
+      });
+      if (bundleOpenBtn) bundleOpenBtn.addEventListener("click", openBundleModal);
+      if (bundleClearBtn) bundleClearBtn.addEventListener("click", function() {
+        bundleInputs.forEach(function(input) { input.checked = false; });
+        syncBundleSelection();
+      });
+      ["estimateBundleBackdrop", "estimateBundleCloseBtn", "estimateBundleCancelBtn"].forEach(function(id) {
+        const node = document.getElementById(id);
+        if (node) node.addEventListener("click", closeBundleModal);
+      });
+      if (bundleSubmitBtn) bundleSubmitBtn.addEventListener("click", submitBundle);
+      if (bundleProjectBtn) bundleProjectBtn.addEventListener("click", function() {
+        if (bundleLastProjectUrl && !bundleBridge.navigate(bundleLastProjectUrl)) {
+          setBundleStatus("Сметы добавлены. Откройте объект в PM.bi.", "success");
+        }
+      });
+      document.addEventListener("keydown", function(event) {
+        if (event.key === "Escape" && bundleModal && !bundleModal.hidden) closeBundleModal();
+      });
+      syncBundleSelection();
 
       function rememberUploadJob(jobId) {
         try { window.sessionStorage.setItem(uploadJobStorageKey, String(jobId || "")); } catch (e) {}
@@ -7174,6 +8050,22 @@ ESTIMATES_TEMPLATE_V2 = """
         if (!href) return;
         window.location.href = href;
       });
+
+      const catalogSearch = document.getElementById("estimateCatalogSearch");
+      const catalogEmpty = document.getElementById("estimateCatalogEmpty");
+      if (catalogSearch) {
+        catalogSearch.addEventListener("input", function() {
+          const query = String(catalogSearch.value || "").trim().toLocaleLowerCase("ru");
+          const cards = Array.from(document.querySelectorAll("[data-estimate-search]"));
+          let visible = 0;
+          cards.forEach(function(card) {
+            const matches = !query || String(card.getAttribute("data-estimate-search") || "").includes(query);
+            card.hidden = !matches;
+            if (matches) visible += 1;
+          });
+          if (catalogEmpty) catalogEmpty.hidden = visible > 0 || !cards.length;
+        });
+      }
     })();
   </script>
 </body>
@@ -7229,17 +8121,17 @@ RESEARCH_TEMPLATE = """
     .empty { padding:16px; text-align:center; color:#62748b; }
     @media (max-width:760px){ .form-grid{grid-template-columns:1fr} .btn-row{flex-direction:column} .btn{width:100%;box-sizing:border-box} }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
 </head>
 <body class="autobot-page research-page">
   <header class="topbar autobot-section-bar">
-    <a class="brand" href="/tenders">
+    <a class="brand" href="/estimates">
       <span class="brand-mark" aria-hidden="true"><i></i></span>
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы AutoBot">
-      <a href="/tenders">Тендеры</a>
-      <a href="/estimates">Сметы</a>
+      <a class="topnav-primary" href="/estimates">Сметы</a>
+      <a class="topnav-primary" href="/tenders">Тендеры</a>
       <a class="is-active" href="/research">Поиск позиции</a>
     </nav>
   </header>
@@ -7434,8 +8326,10 @@ ESTIMATE_DETAIL_TEMPLATE = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>{{ meta.title }} · Смета</title>
+  <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
   <style>
     :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --border:#d9e3ef; --muted:#62748b; --text:#172235; --accent:#1f72dc; }
     body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:var(--text); }
@@ -7583,6 +8477,8 @@ ESTIMATE_DETAIL_TEMPLATE = """
     .crm-source-card strong { display:block; color:#1b2a41; font-size:14px; }
     .crm-source-card span { display:block; margin-top:4px; color:#62748b; font-size:12px; line-height:1.45; }
     .crm-form-grid { display:grid; gap:10px; }
+    .crm-new-project-fields { display:grid; gap:10px; }
+    .crm-new-project-fields[hidden] { display:none; }
     .crm-form-grid label { font-size:12px; }
     .crm-form-grid label small { display:block; margin-top:5px; color:#718198; line-height:1.35; }
     .crm-status { min-height:18px; color:#62748b; font-size:12px; line-height:1.4; }
@@ -7595,17 +8491,17 @@ ESTIMATE_DETAIL_TEMPLATE = """
       .crm-drawer-panel { width:100vw; }
     }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
 </head>
 <body class="autobot-page estimate-detail-page">
   <header class="topbar autobot-section-bar">
-    <a class="brand" href="/tenders">
+    <a class="brand" href="/estimates">
       <span class="brand-mark" aria-hidden="true"><i></i></span>
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы AutoBot">
-      <a href="/tenders">Тендеры</a>
-      <a class="is-active" href="/estimates">Сметы</a>
+      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
+      <a class="topnav-primary" href="/tenders">Тендеры</a>
       <a href="/research">Поиск позиции</a>
     </nav>
   </header>
@@ -7904,7 +8800,7 @@ ESTIMATE_DETAIL_TEMPLATE = """
       <div class="crm-drawer-head">
         <div>
           <h2 class="crm-drawer-title" id="estimateCrmDrawerTitle">Добавить смету в объект</h2>
-          <div class="crm-drawer-sub">Выберите существующий объект или оставьте создание нового. Одна и та же смета при повторном импорте обновится без дублей.</div>
+          <div class="crm-drawer-sub">Выберите доступный объект PM.bi. Смета импортируется с вашими текущими правами, а повторная отправка обновит позиции без дублей.</div>
         </div>
         <button class="crm-drawer-close" id="estimateCrmCloseBtn" type="button">Закрыть</button>
       </div>
@@ -7916,10 +8812,11 @@ ESTIMATE_DETAIL_TEMPLATE = """
         <form id="estimateCrmForm" class="crm-form-grid">
           <label>Объект CRM
             <select id="estimateCrmProject" name="project_id">
-              <option value="">Создать новый объект</option>
+              <option value="">{% if legacy_crm_export_allowed %}Создать новый объект{% else %}Выберите объект{% endif %}</option>
             </select>
             <small id="estimateCrmProjectHint">Загружаю доступные объекты…</small>
           </label>
+          <div class="crm-new-project-fields" id="estimateCrmNewProjectFields">
           <label>Название объекта
             <input type="text" id="estimateCrmTitle" name="title" required />
           </label>
@@ -7941,6 +8838,7 @@ ESTIMATE_DETAIL_TEMPLATE = """
           <label>Описание
             <textarea id="estimateCrmDescription" name="description"></textarea>
           </label>
+          </div>
           <div class="crm-status" id="estimateCrmStatus"></div>
           <div class="crm-drawer-foot">
             <button class="btn secondary" id="estimateCrmCancelBtn" type="button">Отмена</button>
@@ -7956,6 +8854,10 @@ ESTIMATE_DETAIL_TEMPLATE = """
     let estimateCrmDrawerTimer = null;
     let estimateCrmProjectsLoaded = false;
     const estimateCrmPrefill = {{ crm_prefill|tojson }};
+    const estimateCrmBridge = window.AutoBotCrmBridge || { embedded: false, available: false };
+    const estimateCrmEmbedded = Boolean(estimateCrmBridge.embedded);
+    const estimateCrmLegacyAllowed = {{ 'true' if legacy_crm_export_allowed else 'false' }};
+    const estimateImportCapability = {{ estimate_import_capability|tojson }};
 
     function setEstimateCrmStatus(message, tone) {
       const box = document.getElementById("estimateCrmStatus");
@@ -7992,12 +8894,23 @@ ESTIMATE_DETAIL_TEMPLATE = """
       const select = document.getElementById("estimateCrmProject");
       const submit = document.getElementById("estimateCrmSubmitBtn");
       const hint = document.getElementById("estimateCrmProjectHint");
+      const newProjectFields = document.getElementById("estimateCrmNewProjectFields");
+      const titleInput = document.getElementById("estimateCrmTitle");
       const adding = Boolean(select && select.value);
-      if (submit) submit.textContent = adding ? "Добавить смету" : "Создать объект";
+      if (newProjectFields) newProjectFields.hidden = estimateCrmEmbedded;
+      if (titleInput) titleInput.required = !estimateCrmEmbedded;
+      if (estimateCrmEmbedded && select && select.options.length) select.options[0].textContent = "Выберите объект";
+      if (submit) submit.textContent = estimateCrmEmbedded || adding ? "Добавить смету" : "Создать объект";
       if (hint && estimateCrmProjectsLoaded) {
-        hint.textContent = adding
-          ? "Смета будет добавлена отдельным файлом к выбранному объекту."
-          : "Будет создан новый объект с данными из этой сметы.";
+        if (estimateCrmEmbedded) {
+          hint.textContent = adding
+            ? "Смета будет добавлена к выбранному объекту с вашими правами PM.bi."
+            : "Выберите объект, в который нужно добавить смету.";
+        } else {
+          hint.textContent = adding
+            ? "Смета будет добавлена отдельным файлом к выбранному объекту."
+            : "Будет создан новый объект с данными из этой сметы.";
+        }
       }
     }
 
@@ -8007,17 +8920,38 @@ ESTIMATE_DETAIL_TEMPLATE = """
       const hint = document.getElementById("estimateCrmProjectHint");
       if (!select) return;
       try {
-        const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
-        const data = await response.json().catch(function() { return {}; });
-        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
-        (data.projects || []).forEach(function(project) {
+        let data = {};
+        if (estimateCrmEmbedded) {
+          if (!estimateCrmBridge.available) {
+            throw new Error(estimateCrmBridge.originMismatch
+              ? "Адрес PM.bi не совпадает с настройкой AutoBot."
+              : "На сервере AutoBot не настроен адрес PM.bi.");
+          }
+          data = await estimateCrmBridge.requestProjects();
+        } else {
+          if (!estimateCrmLegacyAllowed) {
+            throw new Error("Откройте AutoBot внутри PM.bi, чтобы выбрать доступный объект.");
+          }
+          const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+          data = await response.json().catch(function() { return {}; });
+          if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        }
+        const projects = Array.isArray(data.projects) ? data.projects : [];
+        projects.forEach(function(project) {
+          const projectId = Number(project && project.id);
+          if (!Number.isInteger(projectId) || projectId <= 0) return;
           const option = document.createElement("option");
-          option.value = String(project.id);
-          option.textContent = "#" + project.id + " · " + (project.title || "Без названия") + (project.contract_no ? " · " + project.contract_no : "");
+          option.value = String(projectId);
+          const contractNo = project.contract_no || project.contractNo || "";
+          option.textContent = "#" + projectId + " · " + (project.title || "Без названия") + (contractNo ? " · " + contractNo : "");
           select.appendChild(option);
         });
         estimateCrmProjectsLoaded = true;
-        if (hint) hint.textContent = (data.projects || []).length ? "Выберите объект или создайте новый." : "Доступных объектов пока нет — будет создан новый.";
+        if (hint) {
+          hint.textContent = projects.length
+            ? (estimateCrmEmbedded ? "Выберите доступный вам объект." : "Выберите объект или создайте новый.")
+            : (estimateCrmEmbedded ? "У вас пока нет доступных объектов." : "Доступных объектов пока нет — будет создан новый.");
+        }
         syncEstimateCrmMode();
       } catch (error) {
         if (hint) hint.textContent = "Не удалось загрузить объекты: " + (error.message || error);
@@ -8026,12 +8960,12 @@ ESTIMATE_DETAIL_TEMPLATE = """
 
     function navigateEstimateCrmProject(url) {
       if (!url) return;
-      try {
-        if (window.parent && window.parent !== window) {
-          window.parent.postMessage({ type: "pmbi:navigate", href: url }, "*");
-          return;
+      if (estimateCrmEmbedded) {
+        if (!estimateCrmBridge.navigate(url)) {
+          setEstimateCrmStatus("Смета добавлена. Откройте объект в PM.bi.", "success");
         }
-      } catch (e) {}
+        return;
+      }
       window.location.href = url;
     }
 
@@ -8043,10 +8977,18 @@ ESTIMATE_DETAIL_TEMPLATE = """
         estimateCrmDrawerTimer = null;
       }
       fillEstimateCrmForm(estimateCrmPrefill);
-      setEstimateCrmStatus("На основе сметы «" + (estimateCrmPrefill.estimate_title || "") + "».", "");
+      setEstimateCrmStatus(
+        estimateCrmEmbedded
+          ? "Выберите объект PM.bi для сметы «" + (estimateCrmPrefill.estimate_title || "") + "»."
+          : (estimateCrmLegacyAllowed
+            ? "На основе сметы «" + (estimateCrmPrefill.estimate_title || "") + "»."
+            : "Для добавления сметы откройте AutoBot внутри PM.bi."),
+        estimateCrmEmbedded || estimateCrmLegacyAllowed ? "" : "error"
+      );
       drawer.hidden = false;
       requestAnimationFrame(() => drawer.classList.add("is-open"));
       document.body.style.overflow = "hidden";
+      syncEstimateCrmMode();
       loadEstimateCrmProjects();
     };
 
@@ -8065,7 +9007,6 @@ ESTIMATE_DETAIL_TEMPLATE = """
     window.submitEstimateCrmForm = async function(event) {
       event.preventDefault();
       const submitBtn = document.getElementById("estimateCrmSubmitBtn");
-      if (submitBtn) submitBtn.disabled = true;
       const payload = {
         project_id: getEstimateCrmFieldValue("estimateCrmProject") || null,
         title: getEstimateCrmFieldValue("estimateCrmTitle"),
@@ -8077,8 +9018,51 @@ ESTIMATE_DETAIL_TEMPLATE = """
         description: getEstimateCrmFieldValue("estimateCrmDescription"),
       };
       const addingToExisting = Boolean(payload.project_id);
+      if (estimateCrmEmbedded && !addingToExisting) {
+        setEstimateCrmStatus("Выберите объект PM.bi.", "error");
+        return;
+      }
+      if (!estimateCrmEmbedded && !estimateCrmLegacyAllowed) {
+        setEstimateCrmStatus("Откройте AutoBot внутри PM.bi — так импорт выполнится с вашими правами.", "error");
+        return;
+      }
+      if (submitBtn) submitBtn.disabled = true;
       setEstimateCrmStatus(addingToExisting ? "Добавляю смету в выбранный объект…" : "Создаю объект в CRM…", "");
       try {
+        if (estimateCrmEmbedded) {
+          setEstimateCrmStatus("Подготавливаю позиции сметы…", "");
+          const payloadResponse = await fetch("/api/estimates/{{ meta.id }}/crm-import-payload", {
+            method: "GET",
+            headers: {
+              "Accept": "application/json",
+              "X-AutoBot-Estimate-Capability": estimateImportCapability,
+            },
+            cache: "no-store",
+            credentials: "same-origin",
+          });
+          const prepared = await payloadResponse.json().catch(function() { return {}; });
+          if (!payloadResponse.ok || !prepared.ok) {
+            throw new Error(prepared.message || ("Не удалось подготовить смету (HTTP " + payloadResponse.status + ")."));
+          }
+          const importPayload = {
+            items: Array.isArray(prepared.items) ? prepared.items : [],
+            source: prepared.source || {},
+            sourceLabel: prepared.sourceLabel || prepared.label || "Смета",
+            sourceReference: prepared.sourceReference || prepared.reference || "",
+            replace_source: prepared.replace_source !== false,
+          };
+          setEstimateCrmStatus("Передаю смету в PM.bi с вашими правами…", "");
+          const bridgeResponse = await estimateCrmBridge.importEstimate(payload.project_id, importPayload);
+          const data = bridgeResponse.result && typeof bridgeResponse.result === "object"
+            ? bridgeResponse.result
+            : bridgeResponse;
+          const projectId = Number(data.project_id || data.projectId || payload.project_id);
+          const materialsSent = Number(data.materials_sent || data.materialsSent || data.imported || importPayload.items.length);
+          const projectUrl = data.project_url || data.projectUrl || (projectId > 0 ? "/app/projects?openProject=" + projectId + "&tab=schedule" : "");
+          setEstimateCrmStatus("Готово: смета добавлена в объект #" + projectId + ". Строк обработано: " + materialsSent + ".", "success");
+          if (projectUrl) window.setTimeout(function() { navigateEstimateCrmProject(projectUrl); }, 350);
+          return;
+        }
         const resp = await fetch("/api/estimates/{{ meta.id }}/export-to-crm", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Accept": "application/json" },
@@ -8336,17 +9320,17 @@ ESTIMATE_MARKET_VIEW_TEMPLATE = """
     .status-note { color:#a06b18; font-size:10px; margin-top:5px; }
     .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260821" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
 </head>
 <body class="autobot-page market-view-page">
   <header class="topbar autobot-section-bar">
-    <a class="brand" href="/tenders">
+    <a class="brand" href="/estimates">
       <span class="brand-mark" aria-hidden="true"><i></i></span>
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы AutoBot">
-      <a href="/tenders">Тендеры</a>
-      <a class="is-active" href="/estimates">Сметы</a>
+      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
+      <a class="topnav-primary" href="/tenders">Тендеры</a>
       <a href="/research">Поиск позиции</a>
     </nav>
   </header>
@@ -8497,6 +9481,9 @@ def _render_estimates_page_v2():
         item["market_progress_total"] = market_total
         item["market_progress_percent"] = market_pct
         item["market_progress_note"] = market_progress_note
+        item["row_count"] = int(summary.get("row_count") or 0)
+        item["total_sum_value"] = float(summary.get("total_sum") or 0.0)
+        item["crm_import_capability"] = _issue_estimate_import_capability(estimate_id, ttl_seconds=3600)
         cards.append(item)
 
         total_rows += int(summary.get("row_count") or 0)
@@ -8512,7 +9499,17 @@ def _render_estimates_page_v2():
         "with_compare": with_compare,
         "total_sum_fmt": _fmt_money(total_sum) if total_sum_known else "—",
     }
-    return render_template_string(ESTIMATES_TEMPLATE_V2, estimates=cards, overview=overview, crm_prefill={})
+    response = make_response(
+        render_template_string(
+            ESTIMATES_TEMPLATE_V2,
+            estimates=cards,
+            overview=overview,
+            crm_prefill={},
+            crm_parent_origin=_configured_crm_parent_origin(),
+        )
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/estimates")
@@ -8733,6 +9730,9 @@ def estimate_detail_page(estimate_id: str):
         type_options=type_options,
         summary=summary,
         crm_prefill=crm_prefill,
+        crm_parent_origin=_configured_crm_parent_origin(),
+        estimate_import_capability=_issue_estimate_import_capability(estimate_id),
+        legacy_crm_export_allowed=_legacy_browser_crm_export_allowed(),
     )
 
 
@@ -10354,6 +11354,31 @@ def api_delete_tender(tender_id: str):
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/estimates/<estimate_id>/crm-import-payload")
+def api_estimate_crm_import_payload(estimate_id: str):
+    """Return estimate data only; the authenticated PM.bi parent performs the write."""
+    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
+    fetch_site = str(request.headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if fetch_site and fetch_site != "same-origin":
+        return jsonify({"ok": False, "message": "Запрос данных сметы отклонён."}), 403
+    capability = str(request.headers.get("X-AutoBot-Estimate-Capability") or "")
+    if not _verify_estimate_import_capability(estimate_id, capability):
+        return jsonify({"ok": False, "message": "Ссылка на смету устарела. Обновите страницу."}), 403
+    if not estimate_id or not _load_estimate_meta(estimate_id):
+        return jsonify({"ok": False, "message": "Смета не найдена."}), 404
+    try:
+        payload = _build_estimate_crm_import_payload(estimate_id)
+    except EstimateImportTooLargeError as exc:
+        response = jsonify({"ok": False, "message": str(exc)})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 413
+    if not payload["items"]:
+        return jsonify({"ok": False, "message": "В смете нет подходящих строк для добавления в объект."}), 400
+    response = jsonify({"ok": True, "estimate_id": estimate_id, **payload})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.route("/api/crm/projects")
 def api_crm_projects():
     try:
@@ -11132,6 +12157,15 @@ def api_agent_market_worker_status():
     return jsonify({"ok": True, "schema_version": 1, "service": "autobot-agent-market"})
 
 
+def _agent_market_lease_seconds(data: dict, *, default: int = 600) -> int:
+    raw_value = data.get("lease_seconds", default)
+    if raw_value is None:
+        return default
+    if type(raw_value) is not int:
+        raise ValueError("lease_seconds должен быть целым числом")
+    return raw_value
+
+
 @app.route("/api/agent-market/v1/claim", methods=["POST"])
 def api_agent_market_claim():
     auth_error = _require_agent_market_token()
@@ -11139,12 +12173,16 @@ def api_agent_market_claim():
         return auth_error
     from autobot.agent_market_queue import claim_job
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "message": "Тело запроса должно быть JSON-объектом"}), 400
     worker_id = str(data.get("worker_id") or "").strip()
     if not worker_id:
         return jsonify({"ok": False, "message": "Нужен worker_id"}), 400
     try:
-        lease_seconds = int(data.get("lease_seconds") or 600)
+        lease_seconds = _agent_market_lease_seconds(data)
         job = claim_job(worker_id, lease_seconds=lease_seconds)
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -11160,9 +12198,15 @@ def api_agent_market_heartbeat(job_id: str):
         return auth_error
     from autobot.agent_market_queue import heartbeat_job
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "message": "Тело запроса должно быть JSON-объектом"}), 400
     worker_id = str(data.get("worker_id") or "").strip()
-    if not heartbeat_job(job_id, worker_id, lease_seconds=int(data.get("lease_seconds") or 600)):
+    try:
+        lease_seconds = _agent_market_lease_seconds(data)
+    except ValueError:
+        return jsonify({"ok": False, "message": "lease_seconds должен быть целым числом"}), 400
+    if not heartbeat_job(job_id, worker_id, lease_seconds=lease_seconds):
         return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
     return jsonify({"ok": True})
 

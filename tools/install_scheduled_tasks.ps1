@@ -41,7 +41,7 @@ foreach ($t in $times) {
 }
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 try {
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName "AutoBotEISPipeline" -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
 } catch {
     Register-ScheduledTask -TaskName "AutoBotEISPipeline" -Action $action -Trigger $triggers -Principal $principal -Force | Out-Null

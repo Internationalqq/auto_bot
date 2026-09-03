@@ -195,6 +195,28 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual(imported_result["offers"][0]["price"], 1890.0)
         self.assertEqual(imported_result["offers"][0]["url"], "https://example.ru/scheben/20-40/")
 
+    def test_heartbeat_rejects_invalid_lease_without_mutating_job(self) -> None:
+        job = self.client.post(
+            "/api/agent-market/v1/claim",
+            headers=self.auth(),
+            json={"worker_id": "mac-mini", "lease_seconds": 600},
+        ).get_json()["job"]
+
+        for invalid_value in ("not-a-number", "600", "", [], {}, False, 1.5):
+            with self.subTest(lease_seconds=invalid_value):
+                response = self.client.post(
+                    f"/api/agent-market/v1/jobs/{job['id']}/heartbeat",
+                    headers=self.auth(),
+                    json={"worker_id": "mac-mini", "lease_seconds": invalid_value},
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(response.get_json()["ok"])
+
+        unchanged = queue.get_job(job["id"])
+        self.assertEqual(unchanged["status"], "leased")
+        self.assertEqual(unchanged["worker_id"], "mac-mini")
+        self.assertEqual(unchanged["lease_until"], job["lease_until"])
+
     def test_complete_rejects_result_for_other_position(self) -> None:
         job = self.client.post(
             "/api/agent-market/v1/claim", headers=self.auth(), json={"worker_id": "mac-mini"}

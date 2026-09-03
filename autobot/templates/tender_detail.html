@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260824-5" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260902-tabs-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
@@ -15,8 +15,8 @@
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы">
-      <a class="is-active" href="/tenders">Тендеры</a>
-      <a href="/estimates">Сметы</a>
+      <a class="topnav-primary" href="/estimates">Сметы</a>
+      <a class="topnav-primary is-active" href="/tenders" aria-current="page">Тендеры</a>
       <a href="/research">Поиск позиции</a>
     </nav>
   </header>

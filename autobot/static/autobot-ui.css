@@ -165,6 +165,29 @@ body.autobot-page {
   box-shadow: 0 2px 8px rgba(28, 48, 77, .08), inset 0 0 0 1px rgba(203, 215, 229, .72);
 }
 
+.autobot-page .topnav a.topnav-primary {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid rgba(37, 99, 235, .18);
+  color: #2458a6;
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 2px 7px rgba(28, 48, 77, .045);
+  font-weight: 800;
+}
+
+.autobot-page .topnav a.topnav-primary:hover {
+  border-color: rgba(37, 99, 235, .34);
+  color: var(--ab-blue-hover);
+  background: #fff;
+}
+
+.autobot-page .topnav a.topnav-primary.is-active {
+  border-color: var(--ab-blue);
+  color: #fff;
+  background: linear-gradient(145deg, #3478f6, #235fd8);
+  box-shadow: 0 7px 16px rgba(37, 99, 235, .2);
+}
+
 .autobot-page *,
 .autobot-page *::before,
 .autobot-page *::after {

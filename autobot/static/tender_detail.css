@@ -40,6 +40,10 @@ button { color: inherit; }
 .topnav { display: flex; align-items: center; gap: 7px; }
 .topnav a { padding: 10px 14px; border-radius: 10px; color: #52617b; font-size: 14px; font-weight: 700; text-decoration: none; }
 .topnav a:hover, .topnav a.is-active { color: var(--blue); background: #eef5ff; }
+.topnav a.topnav-primary { min-height:38px; padding:0 16px; display:inline-flex; align-items:center; border:1px solid rgba(37,99,235,.18); color:#2458a6; background:rgba(255,255,255,.88); box-shadow:0 2px 7px rgba(28,48,77,.045); font-weight:800; }
+.topnav a.topnav-primary:hover { border-color:rgba(37,99,235,.34); color:var(--blue); background:#fff; }
+.topnav a.topnav-primary.is-active { border-color:var(--blue); color:#fff; background:linear-gradient(145deg,#3478f6,#235fd8); box-shadow:0 7px 16px rgba(37,99,235,.2); }
+.topnav a:focus-visible { outline:3px solid rgba(20,116,232,.22); outline-offset:2px; }
 
 .page { width: min(1500px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 64px; }
 .breadcrumbs { display: flex; align-items: center; gap: 9px; margin: 0 0 17px; color: var(--muted); font-size: 13px; }

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from autobot.agent_market_queue import (
@@ -156,6 +158,40 @@ class AgentMarketQueueTests(unittest.TestCase):
         second = claim_job("mac-mini", path=self.db_path)
         self.assertTrue(fail_job(second["id"], "mac-mini", "browser crash: DevToolsActivePort", path=self.db_path, retry=True))
         self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "failed")
+
+    def test_expired_lease_stops_at_payload_retry_limit(self) -> None:
+        enqueue_jobs(
+            "12345678",
+            [{**self.position, "max_attempts": 2}],
+            path=self.db_path,
+        )
+        first = claim_job("worker-1", path=self.db_path)
+        self.assertEqual(first["attempts"], 1)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE agent_market_jobs SET lease_until = 0 WHERE id = ?",
+                (first["id"],),
+            )
+            connection.commit()
+
+        second = claim_job("worker-2", path=self.db_path)
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(second["attempts"], 2)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE agent_market_jobs SET lease_until = 0 WHERE id = ?",
+                (first["id"],),
+            )
+            connection.commit()
+
+        self.assertIsNone(claim_job("worker-3", path=self.db_path))
+        exhausted = list_jobs("12345678", path=self.db_path)[0]
+        self.assertEqual(exhausted["status"], "failed")
+        self.assertEqual(exhausted["attempts"], 2)
+        self.assertEqual(exhausted["worker_id"], "")
+        self.assertIsNone(exhausted["lease_until"])
+        self.assertIsNotNone(exhausted["completed_at"])
+        self.assertIn("лимит повторов исчерпан", exhausted["error"])
 
 
 if __name__ == "__main__":

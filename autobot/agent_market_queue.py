@@ -21,6 +21,13 @@ FINAL_STATUSES = ("completed", "failed", "canceled")
 _INIT_LOCK = threading.Lock()
 
 
+def _max_attempts(payload: dict[str, Any] | None) -> int:
+    try:
+        return max(1, min(3, int((payload or {}).get("max_attempts") or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def get_or_create_worker_token(path: Path | str | None = None) -> str:
     configured = str(os.environ.get("MARKET_AGENT_TOKEN") or "").strip()
     if configured:
@@ -183,14 +190,38 @@ def claim_job(
     with closing(_connect(path)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
-            connection.execute(
-                """UPDATE agent_market_jobs
-                   SET status = 'queued', worker_id = '', lease_until = NULL,
-                       error = 'Предыдущий агент не продлил аренду; задание возвращено в очередь',
-                       updated_at = ?
+            expired = connection.execute(
+                """SELECT id, attempts, payload_json
+                   FROM agent_market_jobs
                    WHERE status = 'leased' AND lease_until IS NOT NULL AND lease_until <= ?""",
-                (now, now),
-            )
+                (now,),
+            ).fetchall()
+            for expired_job in expired:
+                try:
+                    payload = json.loads(str(expired_job["payload_json"] or "{}"))
+                except (TypeError, ValueError):
+                    payload = {}
+                attempts = int(expired_job["attempts"] or 0)
+                exhausted = attempts >= _max_attempts(payload if isinstance(payload, dict) else {})
+                connection.execute(
+                    """UPDATE agent_market_jobs
+                       SET status = ?, worker_id = '', lease_until = NULL,
+                           error = ?, updated_at = ?, completed_at = ?
+                       WHERE id = ? AND status = 'leased'
+                         AND lease_until IS NOT NULL AND lease_until <= ?""",
+                    (
+                        "failed" if exhausted else "queued",
+                        (
+                            f"Аренда задания истекла после {attempts} попыток; лимит повторов исчерпан"
+                            if exhausted
+                            else "Предыдущий агент не продлил аренду; задание возвращено в очередь"
+                        ),
+                        now,
+                        now if exhausted else None,
+                        expired_job["id"],
+                        now,
+                    ),
+                )
             row = connection.execute(
                 """SELECT * FROM agent_market_jobs
                    WHERE status = 'queued'
@@ -299,10 +330,7 @@ def fail_job(
             "временно недоступ",
             "сбой браузера",
         )
-        try:
-            max_attempts = max(1, min(3, int(payload.get("max_attempts") or 1)))
-        except (TypeError, ValueError):
-            max_attempts = 1
+        max_attempts = _max_attempts(payload)
         attempts = int(row["attempts"] or 0)
         effective_retry = bool(
             retry

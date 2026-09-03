@@ -4,19 +4,30 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260902-tabs-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендеры</title>
 </head>
 <body>
+  <div class="tender-navigation-loader" id="tenderNavigationLoader" hidden role="status" aria-live="polite" aria-label="Открываем тендер">
+    <div class="tender-navigation-loader-card">
+      <span class="tender-navigation-loader-mark" aria-hidden="true"><i></i></span>
+      <div class="tender-navigation-loader-copy">
+        <small>AutoBot</small>
+        <strong>Открываем тендер</strong>
+        <span>Собираем карточку, смету и найденные цены…</span>
+      </div>
+      <div class="tender-navigation-loader-track" aria-hidden="true"><i></i></div>
+    </div>
+  </div>
   <header class="topbar autobot-section-bar">
-    <a class="brand" href="/tenders">
+    <a class="brand" href="/estimates">
       <span class="brand-mark" aria-hidden="true"><i></i></span>
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы">
-      <a class="is-active" href="/tenders">Тендеры</a>
-      <a href="/estimates">Сметы</a>
+      <a class="topnav-primary" href="/estimates">Сметы</a>
+      <a class="topnav-primary is-active" href="/tenders" aria-current="page">Тендеры</a>
       <a href="/research">Поиск позиции</a>
     </nav>
   </header>
@@ -419,10 +430,47 @@
     const deleteTenderDescription = document.getElementById("deleteTenderDescription");
     const deleteTenderStatus = document.getElementById("deleteTenderStatus");
     const confirmTenderDeleteButton = document.getElementById("confirmTenderDelete");
+    const tenderNavigationLoader = document.getElementById("tenderNavigationLoader");
     let actionLocked = false;
     let wasRunning = false;
     let reloadScheduled = false;
     let pendingTenderDelete = null;
+    let liveStatusPollTimer = null;
+    let liveStatusPollRunning = false;
+    let liveStatusPollQueued = false;
+    let liveStatusIdlePolls = 0;
+
+    function showTenderNavigationLoader() {
+      if (!tenderNavigationLoader || marketSelectionActive()) return;
+      tenderNavigationLoader.hidden = false;
+      document.body.classList.add("is-opening-tender");
+      tenderNavigationLoader.classList.add("is-visible");
+    }
+
+    function hideTenderNavigationLoader() {
+      if (!tenderNavigationLoader) return;
+      tenderNavigationLoader.classList.remove("is-visible");
+      tenderNavigationLoader.hidden = true;
+      document.body.classList.remove("is-opening-tender");
+    }
+
+    function isTenderDetailHref(href) {
+      if (!href) return false;
+      try {
+        const url = new URL(href, window.location.href);
+        return url.origin === window.location.origin && /^\/tenders\/\d{8,25}\/?$/.test(url.pathname);
+      } catch (error) {
+        return false;
+      }
+    }
+
+    document.addEventListener("click", function(event) {
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const link = event.target.closest("a[href]");
+      if (link && isTenderDetailHref(link.getAttribute("href"))) showTenderNavigationLoader();
+    }, true);
+
+    window.addEventListener("pageshow", hideTenderNavigationLoader);
 
     document.querySelectorAll(".more-menu").forEach(function(menu) {
       menu.addEventListener("toggle", function() {
@@ -664,7 +712,7 @@
         const data = await postJson("/api/generate-merge-site-by-link", { tender_link: raw });
         const startedId = data.tender_id || tenderId;
         setTenderScanStatus("Тендер № " + startedId + " принят в работу", "success");
-        window.setTimeout(refreshLiveStatus, 500);
+        wakeLiveStatusPolling(500);
       } catch (error) {
         setActionsLocked(false);
         setLiveState("is-error");
@@ -711,7 +759,7 @@
             ...(eventTexts.slice(-8)),
             ...((merge.log_tail || []).slice(-8))
           ].join("\\n");
-          return;
+          return true;
         }
 
         if (parse.running) {
@@ -730,7 +778,7 @@
             "Строк лога: " + Number(parse.log_lines_count || 0)
           ]);
           liveLog.textContent = (parse.log_tail || []).slice(-14).join("\\n");
-          return;
+          return true;
         }
 
         const hadActivity = !livePanel.classList.contains("is-idle") || merge.last_summary || parse.exit_code !== null;
@@ -755,12 +803,56 @@
           if (!failed) liveSub.textContent = "Готово. Обновляю карточки и следующие шаги…";
           window.setTimeout(function() { window.location.reload(); }, failed ? 2800 : 1200);
         }
+        return false;
       } catch (e) {
         setActionsLocked(false);
         setLiveState("is-error");
         if (liveKicker) liveKicker.textContent = "Связь прервана";
         liveTitle.textContent = "Не удалось обновить прогресс";
         liveSub.textContent = e.message || String(e);
+        return false;
+      }
+    }
+
+    function clearLiveStatusPoll() {
+      if (liveStatusPollTimer === null) return;
+      window.clearTimeout(liveStatusPollTimer);
+      liveStatusPollTimer = null;
+    }
+
+    function scheduleLiveStatusPoll(delay) {
+      clearLiveStatusPoll();
+      if (document.hidden) return;
+      if (liveStatusPollRunning) {
+        liveStatusPollQueued = true;
+        return;
+      }
+      liveStatusPollTimer = window.setTimeout(pollLiveStatus, Math.max(0, Number(delay) || 0));
+    }
+
+    function wakeLiveStatusPolling(delay) {
+      liveStatusIdlePolls = 0;
+      scheduleLiveStatusPoll(delay);
+    }
+
+    async function pollLiveStatus() {
+      if (document.hidden || liveStatusPollRunning) return;
+      liveStatusPollTimer = null;
+      liveStatusPollRunning = true;
+      let active = false;
+      try {
+        active = await refreshLiveStatus();
+      } finally {
+        liveStatusPollRunning = false;
+        if (document.hidden) return;
+        if (liveStatusPollQueued) {
+          liveStatusPollQueued = false;
+          wakeLiveStatusPolling(0);
+          return;
+        }
+        liveStatusIdlePolls = active ? 0 : Math.min(liveStatusIdlePolls + 1, 4);
+        const idleDelay = Math.min(30000, 5000 * Math.pow(2, Math.max(0, liveStatusIdlePolls - 1)));
+        scheduleLiveStatusPoll(active ? 1800 : idleDelay);
       }
     }
 
@@ -820,7 +912,7 @@
           navigateCrmProject(data.project_url);
           return;
         }
-        refreshLiveStatus();
+        wakeLiveStatusPolling(0);
       } catch (e) {
         setActionsLocked(false);
         setLiveState("is-error");
@@ -853,6 +945,7 @@
         }
         return;
       }
+      showTenderNavigationLoader();
       window.location.href = card.getAttribute("data-href");
     });
 
@@ -869,6 +962,7 @@
         }
         return;
       }
+      showTenderNavigationLoader();
       window.location.href = card.getAttribute("data-href");
     });
 
@@ -878,7 +972,7 @@
       showLive("Ищем до 100 закупок", "Добавляем подходящие карточки в каталог без анализа рынка.");
       try {
         await postJson("/api/start-parse", { max_pages: 10, max_tenders: 100, days_back: 60, catalog_only: true });
-        refreshLiveStatus();
+        wakeLiveStatusPolling(0);
       } catch (e) {
         setActionsLocked(false);
         setLiveState("is-error");
@@ -919,7 +1013,7 @@
       try {
         await postJson("/api/generate-merge-site-selected", { tender_ids: tenderIds });
         setMarketSelectionMode(false, true);
-        window.setTimeout(refreshLiveStatus, 500);
+        wakeLiveStatusPolling(500);
       } catch (e) {
         setActionsLocked(false);
         setLiveState("is-error");
@@ -1099,8 +1193,14 @@
       }
     });
 
-    refreshLiveStatus();
-    setInterval(refreshLiveStatus, 1800);
+    document.addEventListener("visibilitychange", function() {
+      if (document.hidden) {
+        clearLiveStatusPoll();
+        return;
+      }
+      wakeLiveStatusPolling(0);
+    });
+    wakeLiveStatusPolling(0);
   </script>
 </body>
 </html>

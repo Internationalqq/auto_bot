@@ -52,6 +52,55 @@ from autobot.site_public_url import get_report_site_public_base
 
 NEW_IDS_FILE = DATA_DIR / "last_new_tender_ids.txt"
 _RUN_MODULE = REPO_ROOT / "tools" / "run_module.py"
+_TIMEOUT_EXIT_CODE = 124
+
+
+def _timeout_seconds(name: str, default: int) -> int:
+    """Read a bounded step timeout, with an optional common override."""
+    raw = (
+        os.environ.get(name)
+        or os.environ.get("PIPELINE_STEP_TIMEOUT_SEC")
+        or str(default)
+    ).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default
+    return max(60, min(value, 86400))
+
+
+def _timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _run_pipeline_command(
+    cmd: list[str],
+    *,
+    timeout_name: str,
+    default_timeout: int,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    timeout = _timeout_seconds(timeout_name, default_timeout)
+    kwargs: dict[str, object] = {
+        "cwd": str(REPO_ROOT),
+        "timeout": timeout,
+    }
+    if capture_output:
+        kwargs.update(capture_output=True, text=True, errors="replace")
+    try:
+        return subprocess.run(cmd, **kwargs)  # type: ignore[arg-type,return-value]
+    except subprocess.TimeoutExpired as exc:
+        print(f"Команда превысила лимит {timeout} сек. и была остановлена: {' '.join(cmd)}")
+        return subprocess.CompletedProcess(
+            cmd,
+            _TIMEOUT_EXIT_CODE,
+            stdout=_timeout_text(exc.stdout) if capture_output else None,
+            stderr=_timeout_text(exc.stderr) if capture_output else None,
+        )
 
 
 def _tg_send_test() -> None:
@@ -89,7 +138,11 @@ def _run_main(emit_path: Path) -> int:
         str(emit_path),
     ]
     print(">>>", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=str(REPO_ROOT))
+    r = _run_pipeline_command(
+        cmd,
+        timeout_name="PIPELINE_MAIN_TIMEOUT_SEC",
+        default_timeout=7200,
+    )
     return int(r.returncode)
 
 
@@ -102,7 +155,12 @@ def _run_main_from_downloaded(tender_id: str) -> tuple[int, str]:
         (tender_id or "").strip(),
     ]
     print(">>>", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, errors="replace")
+    r = _run_pipeline_command(
+        cmd,
+        timeout_name="PIPELINE_BACKFILL_TIMEOUT_SEC",
+        default_timeout=3600,
+        capture_output=True,
+    )
     out = (r.stdout or "") + ("\n" + r.stderr if r.stderr else "")
     return int(r.returncode), out.strip()
 
@@ -118,7 +176,12 @@ def _run_main_from_tender_url(tender_id: str, tender_url: str) -> tuple[int, str
         (tender_url or "").strip(),
     ]
     print(">>>", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, errors="replace")
+    r = _run_pipeline_command(
+        cmd,
+        timeout_name="PIPELINE_BACKFILL_TIMEOUT_SEC",
+        default_timeout=3600,
+        capture_output=True,
+    )
     out = (r.stdout or "") + ("\n" + r.stderr if r.stderr else "")
     return int(r.returncode), out.strip()
 
@@ -180,7 +243,11 @@ def _run_market(tender_id: str) -> int:
     ):
         cmd.append("--no-resume")
     print(">>>", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=str(REPO_ROOT))
+    r = _run_pipeline_command(
+        cmd,
+        timeout_name="PIPELINE_MARKET_TIMEOUT_SEC",
+        default_timeout=21600,
+    )
     return int(r.returncode)
 
 

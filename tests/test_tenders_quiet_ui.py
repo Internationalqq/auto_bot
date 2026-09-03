@@ -1,7 +1,7 @@
 from autobot import web_ui
 
 
-def test_tenders_is_main_quiet_entry(monkeypatch):
+def test_estimates_are_default_but_tenders_remain_available(monkeypatch):
     monkeypatch.setattr(
         web_ui,
         "build_workflow_payload",
@@ -38,11 +38,11 @@ def test_tenders_is_main_quiet_entry(monkeypatch):
 
     root = client.get("/")
     assert root.status_code == 302
-    assert root.headers["Location"].endswith("/tenders")
+    assert root.headers["Location"].endswith("/estimates")
 
     dash = client.get("/dashboard")
     assert dash.status_code == 302
-    assert dash.headers["Location"].endswith("/tenders")
+    assert dash.headers["Location"].endswith("/estimates")
 
     resp = client.get("/tenders")
     html = resp.get_data(as_text=True)
@@ -52,8 +52,29 @@ def test_tenders_is_main_quiet_entry(monkeypatch):
     assert "Закупка № 1" in html
     assert "Найти цены" in html
     assert "tender-card" in html
-    assert 'data-href="/merge-report/1/"' in html
-    assert 'href="/merge-report/1/"' in html
+    assert 'data-href="/tenders/1"' in html
+    assert 'href="/tenders/1"' in html
     assert "tender-row" not in html
     assert "Сейчас ничего не выполняется" in html
     assert "Старый вид" not in html
+
+
+def test_primary_navigation_puts_estimates_first(monkeypatch):
+    monkeypatch.setattr(web_ui, "_read_estimates_index", lambda: [])
+    client = web_ui.app.test_client()
+
+    estimates_html = client.get("/estimates").get_data(as_text=True)
+    tenders_template = (web_ui.REPO_ROOT / "autobot" / "templates" / "tenders.html").read_text(encoding="utf-8")
+    shared_styles = (web_ui.REPO_ROOT / "autobot" / "static" / "autobot-ui.css").read_text(encoding="utf-8")
+    tender_styles = (web_ui.REPO_ROOT / "autobot" / "static" / "tenders.css").read_text(encoding="utf-8")
+    detail_styles = (web_ui.REPO_ROOT / "autobot" / "static" / "tender_detail.css").read_text(encoding="utf-8")
+
+    for html in (estimates_html, tenders_template):
+        nav = html.split('<nav class="topnav"', 1)[1].split("</nav>", 1)[0]
+        assert nav.index('href="/estimates"') < nav.index('href="/tenders"')
+        assert nav.count("topnav-primary") == 2
+    assert 'href="/estimates" aria-current="page"' in estimates_html
+    assert 'href="/tenders" aria-current="page"' in tenders_template
+    assert ".topnav a.topnav-primary" in shared_styles
+    assert ".topnav a.topnav-primary" in tender_styles
+    assert ".topnav a.topnav-primary" in detail_styles

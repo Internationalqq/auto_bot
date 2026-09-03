@@ -26,4 +26,4 @@ RUN mkdir -p /app/data
 
 EXPOSE 8765
 
-CMD ["python", "tools/launch_web_ui.py"]
+CMD ["gunicorn", "--config", "tools/gunicorn_conf.py", "autobot.web_ui:app"]

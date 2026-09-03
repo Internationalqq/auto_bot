@@ -51,8 +51,16 @@ def test_api_research_items_uses_configured_sources(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_research_item(query: str, *, region: str = "", sources=None, max_results: int = 5):
+    def fake_research_item(
+        query: str,
+        *,
+        unit: str = "",
+        region: str = "",
+        sources=None,
+        max_results: int = 5,
+    ):
         captured["query"] = query
+        captured["unit"] = unit
         captured["region"] = region
         captured["sources"] = list(sources or [])
         captured["max_results"] = max_results
