@@ -1614,6 +1614,106 @@ def detect_lsr_layout(df: pd.DataFrame) -> int | None:
     return None
 
 
+def detect_lsr_columns(
+    df: pd.DataFrame,
+    first_position_row: int,
+) -> tuple[list[int], int, int, int, int]:
+    """Resolve the main LSR columns from the printed multi-row header.
+
+    Older Grand Estimate exports use C:G/H/I/N/P for name, unit, quantity,
+    current unit price and current total.  Current PK RIK exports use the more
+    compact C/D/G/J/L layout.  Both variants repeat or merge header cells, so
+    the reliable signal is the text immediately above the first position, not
+    a fixed column number.
+    """
+
+    default_work_cols = list(range(2, min(7, df.shape[1])))
+    default_unit_col = min(7, max(0, df.shape[1] - 1))
+    default_qty_col = min(8, max(0, df.shape[1] - 1))
+    default_unit_price_col = min(13, max(0, df.shape[1] - 1))
+    default_total_col = min(15, max(0, df.shape[1] - 1))
+    if df.empty or df.shape[1] < 4:
+        return (
+            default_work_cols,
+            default_unit_col,
+            default_qty_col,
+            default_unit_price_col,
+            default_total_col,
+        )
+
+    def normalized(value) -> str:
+        return re.sub(r"\s+", " ", _cell_text(value).casefold().replace("ё", "е")).strip()
+
+    table_header_row = None
+    name_col = None
+    unit_col = None
+    qty_group_col = None
+    cost_group_col = None
+    scan_start = max(0, int(first_position_row) - 18)
+    for row_index in range(int(first_position_row) - 1, scan_start - 1, -1):
+        values = [normalized(value) for value in df.iloc[row_index].tolist()]
+        candidate_name = next(
+            (
+                index
+                for index, value in enumerate(values)
+                if "наименование" in value and ("работ" in value or "затрат" in value)
+            ),
+            None,
+        )
+        candidate_unit = next(
+            (index for index, value in enumerate(values) if "единица измерения" in value),
+            None,
+        )
+        candidate_qty = next(
+            (index for index, value in enumerate(values) if value == "количество" or value.startswith("количество ")),
+            None,
+        )
+        candidate_cost = next(
+            (index for index, value in enumerate(values) if "сметная стоимость" in value),
+            None,
+        )
+        if candidate_name is None or candidate_unit is None or candidate_qty is None:
+            continue
+        if not (candidate_name < candidate_unit <= candidate_qty):
+            continue
+        table_header_row = row_index
+        name_col = candidate_name
+        unit_col = candidate_unit
+        qty_group_col = candidate_qty
+        cost_group_col = candidate_cost
+        break
+
+    if table_header_row is None or name_col is None or unit_col is None or qty_group_col is None:
+        return (
+            default_work_cols,
+            default_unit_col,
+            default_qty_col,
+            default_unit_price_col,
+            default_total_col,
+        )
+
+    work_cols = list(range(name_col, unit_col)) or [name_col]
+    qty_col = qty_group_col
+    unit_price_col = default_unit_price_col
+    total_col = default_total_col
+    qty_end = cost_group_col if cost_group_col is not None and cost_group_col > qty_group_col else df.shape[1]
+    cost_end = df.shape[1]
+
+    for row_index in range(table_header_row + 1, int(first_position_row)):
+        values = [normalized(value) for value in df.iloc[row_index].tolist()]
+        for column, value in enumerate(values):
+            if qty_group_col <= column < qty_end and "всего с учетом коэффициентов" in value:
+                qty_col = column
+            if cost_group_col is None or column < cost_group_col or column >= cost_end:
+                continue
+            if "на единицу измерения" in value and "текущ" in value:
+                unit_price_col = column
+            if "всего" in value and "текущ" in value:
+                total_col = column
+
+    return work_cols, unit_col, qty_col, unit_price_col, total_col
+
+
 # Подписи итога по позиции в ЛСР (снизу блока). Сначала длинные фразы — короткие вроде «итог по поз.»
 # входят в «итог по позиции» как подстрока, порядок важен только для одной строки.
 LSR_POSITION_TOTAL_HINTS = (
@@ -1646,9 +1746,9 @@ def _rightmost_money_in_row(df: pd.DataFrame, rr: int, col_start: int = 8) -> fl
     """Для строки «Всего по позиции» / итога — самое правое число в строке (как в ЛСР)."""
     for c in range(df.shape[1] - 1, col_start - 1, -1):
         num = to_float(df.iat[rr, c])
-        if num is None or num <= 0:
+        if num is None or abs(num) <= 1e-12:
             continue
-        if num > 5_000_000_000:
+        if abs(num) > 5_000_000_000:
             continue
         return num
     return None
@@ -1678,7 +1778,8 @@ def _lsr_total_column_probe_order(ncols: int, total_col: int) -> list[int]:
 def pick_lsr_position_total(df: pd.DataFrame, row_idx: int, next_row_idx: int, total_col: int) -> float | None:
     """
     Сумма по позиции:
-    1) Строка внизу блока с текстом «Всего по позиции» / «итог по позиции» и т.п. — берём самое правое число в этой строке.
+    1) Строка внизу блока с текстом «Всего по позиции» / «итог по позиции» и т.п. —
+       сначала берём значение из обнаруженной колонки итога, затем самое правое число как fallback.
     2) Иначе — «нижнее» значение по колонкам (типичная колонка «Всего» и соседи).
     3) В крайнем случае — max по строкам ресурсов блока.
     """
@@ -1689,6 +1790,14 @@ def pick_lsr_position_total(df: pd.DataFrame, row_idx: int, next_row_idx: int, t
         name_blob = " ".join(_cell_text(df.iat[rr, c]) for c in range(2, text_cols_end)).lower()
         for hint in LSR_POSITION_TOTAL_HINTS:
             if hint in name_blob:
+                if 0 <= total_col < df.shape[1]:
+                    preferred = to_float(df.iat[rr, total_col])
+                    if (
+                        preferred is not None
+                        and abs(preferred) > 1e-12
+                        and abs(preferred) <= 5_000_000_000
+                    ):
+                        return preferred
                 val = _rightmost_money_in_row(df, rr, 8)
                 if val is not None:
                     return val
@@ -1847,12 +1956,15 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
     if header_row is None:
         return items
 
-    # Типичные колонки ЛСР: A №, C-G название, H ед.изм, I количество; сумма — в pick_lsr_position_total (часто не P).
-    work_cols = list(range(2, 7))
-    unit_col = 7
-    qty_col = 8
-    total_col = min(15, df.shape[1] - 1)
-    price_per_unit_candidates = [c for c in (9, 10, 11, 12, 13, 14) if c < df.shape[1]]
+    # Типичные Grand Estimate и PK RIK выгрузки используют разные позиции
+    # одних и тех же колонок. Читаем их из шапки, сохраняя старые индексы как
+    # fallback для файлов без печатной шапки.
+    work_cols, unit_col, qty_col, unit_price_col, total_col = detect_lsr_columns(df, header_row)
+    price_per_unit_candidates = [
+        c
+        for c in dict.fromkeys((unit_price_col, 9, 10, 11, 12, 13, 14))
+        if c < df.shape[1]
+    ]
 
     position_rows: list[tuple[int, int, str, str, str, float | None, str]] = []
     def section_title_from_values(values: list) -> str:
@@ -1930,7 +2042,12 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
         # The standard LSR columns are authoritative: I is quantity, N is the
         # current unit price and P is the position total.  For work rows N is
         # usually populated on the following "Всего по позиции" row.
-        explicit_unit_price = pick_lsr_position_unit_price(df, row_idx, next_row_idx)
+        explicit_unit_price = pick_lsr_position_unit_price(
+            df,
+            row_idx,
+            next_row_idx,
+            unit_price_col=unit_price_col,
+        )
         unit_price = None
         if explicit_unit_price is not None and qty is not None and qty > 0:
             expected_total = qty * explicit_unit_price
@@ -1966,6 +2083,17 @@ def extract_lsr_rows(df: pd.DataFrame, tender: Tender, source_file: Path, *, she
                     if maybe is not None and maybe >= 10:
                         unit_price = maybe
                         break
+
+        # CRM stores quantity and unit price, so their product must reproduce
+        # the final position total. PK RIK can add child delivery/resources to
+        # the header price; recover the effective price when that difference is
+        # larger than ordinary cent rounding.
+        if qty is not None and abs(qty) > 1e-9 and last_total is not None:
+            effective_unit_price = last_total / qty
+            if math.isfinite(effective_unit_price) and effective_unit_price > 0:
+                current_total = qty * unit_price if unit_price is not None else None
+                if current_total is None or abs(current_total - last_total) > 0.1:
+                    unit_price = effective_unit_price
 
         items.append(
             {
@@ -2125,10 +2253,19 @@ def extract_rows_from_excel(path: Path, tender: Tender) -> list[dict]:
         if not part and deep_fallback_enabled:
             part = extract_work_rows_fallback(df, tender, path, sheet_name=str(sheet_name))
         rows.extend(part)
-    # Убираем дубли строк в рамках одного файла.
+    # Убираем только повторное чтение одной физической строки. Одинаковые
+    # позиции на разных строках ЛСР являются самостоятельными объёмами и не
+    # должны схлопываться по названию и сумме.
     uniq = {}
     for row in rows:
-        key = (row["source_file"], row["work_name"], round(float(row["price_from_estimate_rub"]), 2))
+        key = (
+            row["source_file"],
+            row.get("sheet_name"),
+            row.get("excel_row"),
+            row.get("item_no"),
+            row["work_name"],
+            round(float(row["price_from_estimate_rub"]), 2),
+        )
         uniq[key] = row
     return list(uniq.values())
 
@@ -2377,18 +2514,15 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
     clean_df = clean_df[clean_df["Название работы/услуги"].str.len() >= 6]
     clean_df = clean_df[~clean_df["Название работы/услуги"].str.lower().str.contains("|".join(SKIP_ROW_HINTS), regex=True)]
     clean_df = clean_df[clean_df["Сумма, руб"] > 0]
-    # Точные дубли (×2 в отчёте): тот же файл, название, сумма и кол-во — часто после двойного чтения одного LSR.
+    # Убираем только точные повторы одной физической строки. Повторяющиеся
+    # работы с теми же названием, количеством и суммой на других строках ЛСР
+    # сохраняем: это реальные самостоятельные позиции.
     clean_df = clean_df.drop_duplicates(
-        subset=["Файл ЛСР", "Название работы/услуги", "Сумма, руб", "Кол-во"],
+        subset=["Файл ЛСР", "Лист", "Строка Excel", "Название работы/услуги", "Сумма, руб"],
         keep="first",
     )
-    # Повтор с тем же названием и суммой, если «Кол-во» отличалось из-за NaN/округления.
-    clean_df = clean_df.drop_duplicates(
-        subset=["Файл ЛСР", "Название работы/услуги", "Сумма, руб"],
-        keep="first",
-    )
-    # Одинаковые позиции в разных ЛСР принадлежат разным сметам и не должны
-    # схлопываться. Повторы внутри одного файла уже удалены двумя проверками выше.
+    # Одинаковые позиции в разных ЛСР или в разных строках одной ЛСР не должны
+    # схлопываться.
     # Сохраняем естественный порядок разделов ЛСР и страниц. Обычная строковая
     # сортировка ставит файл 11 перед 6, а страницу 10 перед 2.
     clean_df["_source_order"] = range(len(clean_df))

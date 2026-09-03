@@ -50,6 +50,7 @@ class EstimateSession:
     file_path: Path
     rows: list[EstimateRow]
     catalogue: list[str]
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     selected_query: str = ""
     candidates: list[EstimateRow] = field(default_factory=list)
     removed_candidate_ids: set[int] = field(default_factory=set)
@@ -208,11 +209,91 @@ def _read_standard_report(path: Path) -> list[EstimateRow]:
     return _dedupe_rows(out)
 
 
-def _read_via_project_parser(path: Path) -> list[EstimateRow]:
+def _read_declared_estimate_total(path: Path) -> float | None:
+    """Read the official total printed in the workbook heading, when present."""
+    if path.suffix.lower() not in {".xlsx", ".xls", ".xlsm"}:
+        return None
+    try:
+        sheets = pd.read_excel(path, sheet_name=None, header=None, nrows=100)
+    except Exception:
+        return None
+
+    markers = ("смета на сумму", "всего по смете")
+    for marker in markers:
+        for df in sheets.values():
+            if df.empty:
+                continue
+            for _, row in df.iterrows():
+                values = list(row)
+                for column, cell in enumerate(values):
+                    if marker not in _clean_text(cell).casefold().replace("ё", "е"):
+                        continue
+                    for candidate in values[column:]:
+                        amount = _num(candidate)
+                        if amount is None:
+                            tokens = re.findall(
+                                r"-?\d[\d\s\u00a0\u202f]*(?:[,.]\d+)?",
+                                _clean_text(candidate),
+                            )
+                            for token in reversed(tokens):
+                                compact = re.sub(r"\s+", "", token).replace(",", ".")
+                                try:
+                                    amount = float(compact)
+                                except ValueError:
+                                    amount = None
+                                if amount is not None:
+                                    break
+                        if amount is not None and amount > 0:
+                            return round(float(amount), 2)
+    return None
+
+
+def _project_parser_reconciliation(
+    path: Path,
+    raw_rows: list[dict],
+    actionable_rows: list[EstimateRow],
+) -> dict[str, Any]:
+    """Describe amounts intentionally left out of procurement rows.
+
+    CRM procurement items must have positive quantities and totals. Negative LSR
+    corrections therefore remain in the source workbook and are accounted for in
+    this reconciliation instead of being silently converted into fake purchases.
+    """
+    positive_total = round(sum(float(row.total or 0.0) for row in actionable_rows), 2)
+    adjustment_values: list[float] = []
+    for row in raw_rows:
+        total = _num(row.get("price_from_estimate_rub"))
+        if total is None or total >= 0:
+            continue
+        name = _clean_text(row.get("work_name"))
+        if len(name) < 4:
+            continue
+        adjustment_values.append(float(total))
+
+    adjustment_total = round(sum(adjustment_values), 2)
+    signed_total = round(positive_total + adjustment_total, 2)
+    declared_total = _read_declared_estimate_total(path)
+    unallocated_total = None
+    if declared_total is not None:
+        unallocated_total = round(float(declared_total) - signed_total, 2)
+
+    return {
+        "schema_version": 1,
+        "actionable_row_count": len(actionable_rows),
+        "positive_position_total": positive_total,
+        "excluded_adjustment_count": len(adjustment_values),
+        "excluded_adjustment_total": adjustment_total,
+        "signed_position_total": signed_total,
+        "declared_total": declared_total,
+        "unallocated_total": unallocated_total,
+    }
+
+
+def _read_via_project_parser_result(path: Path) -> tuple[list[EstimateRow], dict[str, Any]]:
     try:
         from autobot.main import Tender, _build_tender_clean_df, extract_rows_from_excel
     except Exception:
-        return []
+        return [], {}
     tender = Tender(
         tender_id="uploaded",
         title="Загруженная Excel-смета",
@@ -224,11 +305,11 @@ def _read_via_project_parser(path: Path) -> list[EstimateRow]:
     )
     raw_rows = extract_rows_from_excel(path, tender)
     if not raw_rows:
-        return []
+        return [], {}
     try:
         clean = _build_tender_clean_df(raw_rows)
     except Exception:
-        return []
+        return [], {}
     out: list[EstimateRow] = []
     for _, row in clean.iterrows():
         name = _clean_text(row.get(COL_NAME))
@@ -251,7 +332,14 @@ def _read_via_project_parser(path: Path) -> list[EstimateRow]:
                 source="project-parser",
             )
         )
-    return _dedupe_rows(out)
+    rows = _dedupe_rows(out)
+    return rows, _project_parser_reconciliation(path, raw_rows, rows)
+
+
+def _read_via_project_parser(path: Path) -> list[EstimateRow]:
+    """Compatibility wrapper for callers that only need actionable rows."""
+    rows, _diagnostics = _read_via_project_parser_result(path)
+    return rows
 
 
 def _raw_sheets(path: Path) -> dict[str, pd.DataFrame]:
@@ -527,12 +615,13 @@ def load_estimate_session(path: Path, *, progress_cb: ProgressCallback | None = 
         return EstimateSession(file_path=Path(path), rows=rows, catalogue=catalogue)
 
     _progress(progress_cb, 8, "Открываю Excel", f"Файл: {Path(path).name}")
+    diagnostics: dict[str, Any] = {}
     rows = _read_standard_report(path)
     if rows:
         _progress(progress_cb, 38, "Прочитан готовый отчёт", f"Найдено строк: {len(rows)}")
     if not rows:
         _progress(progress_cb, 28, "Пробую проектный парсер", "Ищу строки сметы в структуре ЛСР")
-        rows = _read_via_project_parser(path)
+        rows, diagnostics = _read_via_project_parser_result(path)
         if rows:
             _progress(progress_cb, 64, "Проектный парсер завершён", f"Найдено строк: {len(rows)}")
     if not rows:
@@ -546,7 +635,7 @@ def load_estimate_session(path: Path, *, progress_cb: ProgressCallback | None = 
     _progress(progress_cb, 88, "Формирую каталог позиций", "Собираю список работ, услуг, товаров и материалов")
     catalogue = build_catalogue(rows)
     _progress(progress_cb, 96, "Подготовка завершена", f"Строк: {len(rows)} · позиций: {len(catalogue)}")
-    return EstimateSession(file_path=Path(path), rows=rows, catalogue=catalogue)
+    return EstimateSession(file_path=Path(path), rows=rows, catalogue=catalogue, diagnostics=diagnostics)
 
 
 def build_catalogue(rows: list[EstimateRow], *, limit: int = 10000) -> list[str]:

@@ -15,6 +15,7 @@ from autobot.main import (
     get_tender_id,
     parse_stage_from_card_text,
     parse_tender_card_metadata,
+    pick_lsr_position_total,
     select_estimate_pdf_files,
     write_estimate_parse_manifest,
 )
@@ -319,3 +320,141 @@ def test_extract_lsr_rows_uses_explicit_current_unit_price_column():
     assert result[1]["qty"] == 17.1
     assert result[1]["unit_price_rub"] == 5062.25
     assert result[1]["price_from_estimate_rub"] == 86564.48
+
+
+def test_pick_lsr_position_total_prefers_detected_total_column_on_explicit_total_row():
+    rows = [[None] * 23 for _ in range(3)]
+    rows[1][2] = "Всего по позиции"
+    rows[1][11] = 51563.58
+    rows[1][22] = 7.25
+
+    assert pick_lsr_position_total(pd.DataFrame(rows), 0, 2, total_col=11) == 51563.58
+
+
+def test_extract_lsr_rows_detects_compact_pk_rik_columns():
+    rows = [[None] * 23 for _ in range(9)]
+    rows[0][0] = "№ п/п"
+    rows[0][1] = "Обоснование"
+    rows[0][2] = "Наименование работ и затрат"
+    rows[0][3] = "Единица измерения"
+    rows[0][4] = "Количество"
+    rows[0][7] = "Сметная стоимость, руб."
+    rows[1][4] = "на единицу измерения"
+    rows[1][5] = "коэффициенты"
+    rows[1][6] = "всего с учётом коэффициентов"
+    rows[1][7] = "на единицу измерения в базисном уровне цен"
+    rows[1][8] = "индекс"
+    rows[1][9] = "на единицу измерения в текущем уровне цен"
+    rows[1][10] = "коэффициенты"
+    rows[1][11] = "всего в текущем уровне цен"
+    rows[2][0] = 1
+    rows[2][1] = "ГЭСН 27-04-016-04"
+    rows[2][2] = "Устройство прослойки из нетканого материала"
+    rows[2][3] = "1000 м2"
+    rows[2][4] = 0.5646
+    rows[2][6] = 0.5646
+    rows[3][2] = "Всего по позиции"
+    rows[3][9] = 91327.63
+    rows[3][11] = 51563.58
+    rows[4][0] = 2
+    rows[4][1] = "ТЦ_20.3.04.00"
+    rows[4][2] = "Светильник Неаполь"
+    rows[4][3] = "шт"
+    rows[4][4] = 10
+    rows[4][6] = 10
+    rows[4][9] = 5497.8
+    rows[4][11] = 54978.0
+    rows[5][2] = "Всего по позиции"
+    rows[5][9] = 5497.8
+    rows[5][11] = 54978.0
+    tender = Tender(
+        tender_id="uploaded",
+        title="Смета",
+        url="",
+        region="",
+        stage="",
+        price_rub=None,
+        publish_date="",
+    )
+
+    result = extract_lsr_rows(pd.DataFrame(rows), tender, Path("pk-rik.xlsx"))
+
+    assert len(result) == 2
+    assert result[0]["work_name"] == "Устройство прослойки из нетканого материала"
+    assert result[0]["unit"] == "1000 м2"
+    assert result[0]["qty"] == 0.5646
+    assert result[0]["unit_price_rub"] == 91327.63
+    assert result[0]["price_from_estimate_rub"] == 51563.58
+    assert result[1]["work_name"] == "Светильник Неаполь"
+    assert result[1]["unit"] == "шт"
+    assert result[1]["qty"] == 10
+    assert result[1]["unit_price_rub"] == 5497.8
+    assert result[1]["price_from_estimate_rub"] == 54978.0
+
+
+def test_build_tender_clean_df_keeps_equal_positions_on_different_excel_rows():
+    rows = []
+    for excel_row, item_no in ((100, 8), (220, 19)):
+        rows.append(
+            {
+                "source_file": "estimate.xlsx",
+                "extract_source": "LSR",
+                "item_no": item_no,
+                "basis_code": "ГЭСН 01-01-001-01",
+                "sheet_name": "Sheet1",
+                "excel_row": excel_row,
+                "section": "Раздел",
+                "work_name": "Повторная установка опоры",
+                "unit": "шт",
+                "qty": 2.0,
+                "qty_with_unit": "2 шт",
+                "unit_price_rub": 500.0,
+                "price_from_estimate_rub": 1000.0,
+            }
+        )
+
+    clean = _build_tender_clean_df(rows)
+
+    assert len(clean) == 2
+    assert clean["Строка Excel"].tolist() == [100, 220]
+
+
+def test_extract_lsr_rows_preserves_negative_adjustment_for_safe_filtering():
+    rows = [[None] * 23 for _ in range(7)]
+    rows[0][0] = "№ п/п"
+    rows[0][1] = "Обоснование"
+    rows[0][2] = "Наименование работ и затрат"
+    rows[0][3] = "Единица измерения"
+    rows[0][4] = "Количество"
+    rows[0][7] = "Сметная стоимость, руб."
+    rows[1][4] = "на единицу измерения"
+    rows[1][6] = "всего с учётом коэффициентов"
+    rows[1][9] = "на единицу измерения в текущем уровне цен"
+    rows[1][11] = "всего в текущем уровне цен"
+    rows[2][0] = 1
+    rows[2][1] = "ТЦ_01"
+    rows[2][2] = "Корректировка количества трубы"
+    rows[2][3] = "м"
+    rows[2][6] = -11
+    rows[2][9] = 155.28
+    rows[2][11] = -1708.08
+    rows[3][2] = "Всего по позиции"
+    rows[3][9] = 155.28
+    rows[3][11] = -1708.08
+    tender = Tender(
+        tender_id="uploaded",
+        title="Смета",
+        url="",
+        region="",
+        stage="",
+        price_rub=None,
+        publish_date="",
+    )
+
+    extracted = extract_lsr_rows(pd.DataFrame(rows), tender, Path("pk-rik.xlsx"))
+    clean = _build_tender_clean_df(extracted)
+
+    assert len(extracted) == 1
+    assert extracted[0]["qty"] == -11
+    assert extracted[0]["price_from_estimate_rub"] == -1708.08
+    assert clean.empty

@@ -98,28 +98,66 @@ _ESTIMATE_IMPORT_CAPABILITY_SECRET = (
 del _estimate_capability_secret_raw
 
 
+def _http_origin(value: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlparse(str(value or "").strip())
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").strip().rstrip(".").lower()
+        if scheme not in {"http", "https"} or not hostname:
+            return None
+        hostname = hostname.encode("idna").decode("ascii")
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except (UnicodeError, ValueError):
+        return None
+    return scheme, hostname, port
+
+
+def _trusted_mutation_origins() -> set[tuple[str, str, int]]:
+    """Return configured public origins, falling back to the request host locally."""
+
+    configured_values = (
+        os.environ.get("WEB_UI_PUBLIC_BASE_URL", ""),
+        os.environ.get("REPORT_SITE_PUBLIC_BASE_URL", ""),
+        os.environ.get("PMBI_PUBLIC_BASE_URL", ""),
+        os.environ.get("PMBI_CRM_PUBLIC_URL", ""),
+        os.environ.get("PMBI_CRM_PARENT_ORIGIN", ""),
+    )
+    trusted: set[tuple[str, str, int]] = set()
+    for value in configured_values:
+        origin = _http_origin(str(value or ""))
+        if origin is not None:
+            trusted.add(origin)
+    if not any(str(value or "").strip() for value in configured_values):
+        host_origin = _http_origin(request.host_url)
+        if host_origin is not None:
+            trusted.add(host_origin)
+    return trusted
+
+
 @app.before_request
 def reject_cross_site_mutation():
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         return None
     if str(request.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
-        return jsonify({"ok": False, "error": "cross_site_request_blocked"}), 403
+        return jsonify(
+            {
+                "ok": False,
+                "error": "cross_site_request_blocked",
+                "message": "Не удалось подтвердить источник запроса. Обновите страницу и повторите действие.",
+            }
+        ), 403
     origin = str(request.headers.get("Origin") or "").strip()
     if not origin:
         return None
-    try:
-        origin_url = urlparse(origin)
-        request_url = urlparse(request.host_url)
-        origin_port = origin_url.port or (443 if origin_url.scheme == "https" else 80)
-        request_port = request_url.port or (443 if request_url.scheme == "https" else 80)
-    except ValueError:
-        return jsonify({"ok": False, "error": "cross_site_request_blocked"}), 403
-    if (
-        origin_url.scheme.lower() != request_url.scheme.lower()
-        or (origin_url.hostname or "").lower() != (request_url.hostname or "").lower()
-        or origin_port != request_port
-    ):
-        return jsonify({"ok": False, "error": "cross_site_request_blocked"}), 403
+    request_origin = _http_origin(origin)
+    if request_origin is None or request_origin not in _trusted_mutation_origins():
+        return jsonify(
+            {
+                "ok": False,
+                "error": "cross_site_request_blocked",
+                "message": "Не удалось подтвердить источник запроса. Обновите страницу и повторите действие.",
+            }
+        ), 403
     return None
 
 
@@ -3592,7 +3630,12 @@ def _estimate_crm_prefill(estimate_id: str) -> dict:
     estimate_title = str(meta.get("title") or f"Смета {estimate_id}").strip()[:240]
     original_name = str(meta.get("original_filename") or "").strip()
     created_at = str(meta.get("created_at") or "").strip()
-    budget = _float_or_none(summary.get("total_sum")) or 0.0
+    reconciliation = meta.get("reconciliation") if isinstance(meta.get("reconciliation"), dict) else {}
+    declared_total = _float_or_none(reconciliation.get("declared_total"))
+    budget = declared_total if declared_total is not None and declared_total > 0 else (_float_or_none(summary.get("total_sum")) or 0.0)
+    excluded_adjustment_count = int(_float_or_none(reconciliation.get("excluded_adjustment_count")) or 0)
+    excluded_adjustment_total = _float_or_none(reconciliation.get("excluded_adjustment_total"))
+    unallocated_total = _float_or_none(reconciliation.get("unallocated_total"))
     description_lines = [
         "Импортировано из auto_bot по отдельной смете.",
         f"Смета: {estimate_title}",
@@ -3600,6 +3643,19 @@ def _estimate_crm_prefill(estimate_id: str) -> dict:
         f"Дата загрузки: {created_at}" if created_at else "",
         f"Строк в смете: {int(summary.get('row_count') or 0)}",
         f"Состав: {', '.join(type_bits)}" if type_bits else "",
+        f"Итог исходного файла: {declared_total:.2f} руб." if declared_total is not None else "",
+        (
+            f"Отрицательные корректировки: {excluded_adjustment_count} шт., "
+            f"{excluded_adjustment_total:.2f} руб.; в закупки не добавлены."
+            if excluded_adjustment_count and excluded_adjustment_total is not None
+            else ""
+        ),
+        (
+            f"Разница между итогом файла и распознанными позициями: {unallocated_total:.2f} руб.; "
+            "отдельная закупочная строка не создавалась."
+            if unallocated_total is not None and abs(unallocated_total) > 0.01
+            else ""
+        ),
     ]
     return {
         "estimate_id": estimate_id,
@@ -3609,6 +3665,7 @@ def _estimate_crm_prefill(estimate_id: str) -> dict:
         "row_count": int(summary.get("row_count") or 0),
         "total_sum": budget if budget > 0 else None,
         "total_sum_fmt": _fmt_money(budget) if budget > 0 else "—",
+        "reconciliation": reconciliation,
         "project": {
             "title": estimate_title,
             "client_name": "Объект по смете",
@@ -3672,6 +3729,9 @@ def _build_estimate_crm_import_payload(estimate_id: str) -> dict:
         "fileName": str(prefill.get("original_filename") or ""),
         "sourceReference": reference,
     }
+    reconciliation = prefill.get("reconciliation")
+    if isinstance(reconciliation, dict) and reconciliation:
+        source["metadata"] = {"reconciliation": reconciliation}
     # Repeat the source identity on every row. A single CRM request can then
     # contain several estimates while preserving each one as an independently
     # replaceable source under the project.
@@ -4915,6 +4975,30 @@ def _fmt_money(v: float | None) -> str:
     return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + " ₽"
 
 
+def _estimate_reconciliation_view(meta: dict) -> dict:
+    diagnostics = meta.get("reconciliation") if isinstance(meta, dict) else None
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return {"available": False}
+
+    declared_total = _float_or_none(diagnostics.get("declared_total"))
+    signed_total = _float_or_none(diagnostics.get("signed_position_total"))
+    difference = _float_or_none(diagnostics.get("unallocated_total"))
+    adjustment_count = int(_float_or_none(diagnostics.get("excluded_adjustment_count")) or 0)
+    adjustment_total = _float_or_none(diagnostics.get("excluded_adjustment_total"))
+    available = declared_total is not None or signed_total is not None or adjustment_count > 0
+    has_difference = difference is not None and abs(difference) > 0.01
+    return {
+        "available": available,
+        "needs_attention": bool(adjustment_count or has_difference),
+        "declared_total_fmt": _fmt_money(declared_total),
+        "signed_total_fmt": _fmt_money(signed_total),
+        "difference_fmt": _fmt_money(difference),
+        "has_difference": has_difference,
+        "adjustment_count": adjustment_count,
+        "adjustment_total_fmt": _fmt_money(adjustment_total),
+    }
+
+
 def _fmt_qty(v: float | None) -> str:
     if v is None:
         return "—"
@@ -5855,6 +5939,7 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
         session = load_estimate_session(src_path, progress_cb=_estimate_upload_progress_cb(job_id))
         rows = [_estimate_row_to_dict(r) for r in session.rows]
         summary = _summarize_estimate_rows(rows)
+        reconciliation = dict(getattr(session, "diagnostics", {}) or {})
         _estimate_upload_set(job_id, progress=97, stage="Сохраняю смету", detail="Записываю карточку и таблицу")
         meta = {
             "id": estimate_id,
@@ -5865,6 +5950,8 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
             "total_sum": summary.get("total_sum"),
             "source_path": str(src_path.relative_to(REPO_ROOT)),
         }
+        if reconciliation:
+            meta["reconciliation"] = reconciliation
         _estimate_rows_path(estimate_id).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
         _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         index_items = [x for x in _read_estimates_index() if str(x.get("id") or "") != estimate_id]
@@ -5877,12 +5964,22 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
                 job["ok"] = True
                 job["progress"] = 100
                 job["stage"] = "Готово"
-                job["detail"] = f"Строк: {len(rows)} · смета сохранена"
+                detail_bits = [f"Строк: {len(rows)}", "смета сохранена"]
+                adjustment_count = int(_float_or_none(reconciliation.get("excluded_adjustment_count")) or 0)
+                adjustment_total = _float_or_none(reconciliation.get("excluded_adjustment_total"))
+                unallocated_total = _float_or_none(reconciliation.get("unallocated_total"))
+                if adjustment_count:
+                    detail_bits.append(
+                        f"корректировки: {adjustment_count} ({_fmt_money(adjustment_total)})"
+                    )
+                if unallocated_total is not None and abs(unallocated_total) > 0.01:
+                    detail_bits.append(f"разница итога: {_fmt_money(unallocated_total)}")
+                job["detail"] = " · ".join(detail_bits)
                 job["estimate_id"] = estimate_id
                 job["ended_at"] = datetime.now().isoformat(timespec="seconds")
                 job["updated_at"] = job["ended_at"]
                 job["progress_estimated"] = False
-                _estimate_upload_log_append(job, f"Готово: смета сохранена, строк {len(rows)}")
+                _estimate_upload_log_append(job, f"Готово: {job['detail']}")
                 _estimate_upload_persist_locked(job)
     except Exception as e:
         with estimate_upload_lock:
@@ -8393,6 +8490,12 @@ ESTIMATE_DETAIL_TEMPLATE = """
     .summary-item { padding:9px 10px; background:#fff; border:1px solid #dfe7f1; border-radius:12px; }
     .summary-item span { display:block; color:var(--muted); font-size:11px; }
     .summary-item b { display:block; margin-top:4px; font-size:15px; }
+    .reconciliation-note { margin-top:10px; padding:11px 12px; border:1px solid #dfe7f1; border-radius:12px; background:linear-gradient(180deg,#fbfdff,#f6f9fd); color:#52657d; font-size:12px; line-height:1.45; }
+    .reconciliation-note.needs-attention { border-color:#ead9ad; background:linear-gradient(180deg,#fffdf8,#fff8e9); color:#66562f; }
+    .reconciliation-note strong { display:block; margin-bottom:6px; color:#283b52; font-size:13px; }
+    .reconciliation-values { display:flex; flex-wrap:wrap; gap:5px 14px; }
+    .reconciliation-values span { white-space:nowrap; }
+    .reconciliation-explain { margin-top:6px; }
     .download-box { margin-top:10px; padding:10px; background:#f8fbff; border:1px solid #dfe7f1; border-radius:12px; }
     .download-title { margin:0 0 8px; font-size:13px; font-weight:700; color:#1b2a41; }
     .download-links { display:flex; flex-wrap:wrap; gap:8px; }
@@ -8552,6 +8655,26 @@ ESTIMATE_DETAIL_TEMPLATE = """
         <div class="summary-item"><span>Общая сумма</span><b>{{ summary.total_sum_fmt }}</b></div>
         <div class="summary-item"><span>Средняя цена</span><b>{{ summary.avg_price_fmt }}</b></div>
       </div>
+      {% if reconciliation.available %}
+      <div class="reconciliation-note{% if reconciliation.needs_attention %} needs-attention{% endif %}" role="note">
+        <strong>Сверка исходной сметы</strong>
+        <div class="reconciliation-values">
+          <span>Итог файла: <b>{{ reconciliation.declared_total_fmt }}</b></span>
+          <span>Позиции с корректировками: <b>{{ reconciliation.signed_total_fmt }}</b></span>
+          <span>Разница: <b>{{ reconciliation.difference_fmt }}</b></span>
+        </div>
+        {% if reconciliation.adjustment_count %}
+        <div class="reconciliation-explain">
+          В закупки вошли только положительные позиции. Отрицательные корректировки: {{ reconciliation.adjustment_count }} на {{ reconciliation.adjustment_total_fmt }} — они сохранены в исходном Excel и учтены при сверке.
+        </div>
+        {% endif %}
+        {% if reconciliation.has_difference %}
+        <div class="reconciliation-explain">
+          Разница итога не добавлена отдельной закупкой: проверьте итоговые начисления в исходном Excel.
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
       <div class="crm-callout">
         <button class="btn" id="estimateCrmOpenBtn" type="button">Добавить в объекты</button>
         <div class="crm-callout-note">
@@ -9710,6 +9833,7 @@ def estimate_detail_page(estimate_id: str):
     market_sections = _estimate_market_sections(estimate_id, rows, selected_types=selected_types)
     market_links = _estimate_market_links(estimate_id, market_sections, q=q, selected_types=selected_types)
     crm_prefill = _estimate_crm_prefill(estimate_id)
+    reconciliation = _estimate_reconciliation_view(meta)
     return render_template_string(
         ESTIMATE_DETAIL_TEMPLATE,
         meta=meta,
@@ -9729,6 +9853,7 @@ def estimate_detail_page(estimate_id: str):
         market_links=market_links,
         type_options=type_options,
         summary=summary,
+        reconciliation=reconciliation,
         crm_prefill=crm_prefill,
         crm_parent_origin=_configured_crm_parent_origin(),
         estimate_import_capability=_issue_estimate_import_capability(estimate_id),
