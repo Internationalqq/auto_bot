@@ -4859,17 +4859,12 @@ def _estimate_market_progress_for_card(estimate_id: str, rows: list[dict] | None
         market_path = _estimate_market_merged_path(estimate_id)
     if market_path.is_file():
         try:
-            df = pd.read_excel(market_path)
-            saved_done = int(len(df.index))
+            from autobot.market_contract import confirmed_prices
+
+            df = _estimate_market_df_for_rows(market_path, rows)
+            saved_done = sum(bool(confirmed_prices(row)) for _, row in df.iterrows())
         except Exception:
             saved_done = 0
-
-    with estimate_market_lock:
-        job = dict(estimate_market_jobs.get(estimate_id) or {})
-    live_total = int(job.get("total") or 0)
-    live_done = int(job.get("done") or 0)
-    if job.get("running") and live_total > 0:
-        return max(0, min(live_done, live_total)), max(0, live_total)
     return max(0, min(saved_done, total)), total
 
 
@@ -5110,6 +5105,9 @@ def _estimate_rows_to_report_df(rows: list[dict]) -> pd.DataFrame:
                 COL_UNIT_PRICE: _json_num(r.get("unit_price")),
                 COL_SUM: _json_num(r.get("total")),
                 "Лист": str(r.get("sheet") or ""),
+                "basis_code": str(r.get("basis_code") or ""),
+                "position_id": str(r.get("position_id") or ""),
+                "estimate_version": str(r.get("estimate_version") or ""),
                 "Строка Excel": r.get("excel_row"),
                 "Раздел": str(r.get("section") or ""),
                 "Тип": str(r.get("type_label") or ""),
@@ -5119,139 +5117,46 @@ def _estimate_rows_to_report_df(rows: list[dict]) -> pd.DataFrame:
 
 
 def _merge_uploaded_estimate_market_df(est_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
-    from autobot.market_analytics import COL_NAME, extract_ruble_amounts, recalc_estimate_qty_price_from_unit
-    from autobot.merge_estimate_market import _agg_text, _norm_key, _normalize_market_columns
+    from autobot.market_contract import merge_market_frames
+    from autobot.merge_estimate_market import _normalize_market_columns
 
-    est = recalc_estimate_qty_price_from_unit(est_df.copy())
-    ali = _normalize_market_columns(market_df.copy())
-    if COL_NAME not in est.columns or COL_NAME not in ali.columns:
-        return est
-
-    est["__merge_key"] = est[COL_NAME].map(_norm_key)
-    ali["__merge_key"] = ali[COL_NAME].map(_norm_key)
-    ali = ali.drop(columns=[COL_NAME], errors="ignore")
-    agg_cols = [c for c in ali.columns if c != "__merge_key"]
-    if agg_cols:
-        ali = ali.groupby("__merge_key", as_index=False).agg({c: _agg_text for c in agg_cols})
-    merged = est.merge(ali, on="__merge_key", how="left").drop(columns=["__merge_key"], errors="ignore")
-    merged = recalc_estimate_qty_price_from_unit(merged)
-
-    def _rub_line(txt) -> str:
-        if txt is None or (isinstance(txt, float) and pd.isna(txt)):
-            return ""
-        amounts = extract_ruble_amounts(str(txt))
-        if not amounts:
-            return ""
-        uniq = sorted({round(x, 2) for x in amounts})[:12]
-        return "; ".join(f"{v:,.0f}".replace(",", " ") for v in uniq)
-
-    if "Рыночные источники" in merged.columns:
-        merged["Суммы из текста ответа (авто)"] = merged["Рыночные источники"].map(_rub_line)
-    if "Цены за ед. (рынок, руб)" in merged.columns:
-        strict_prices = merged["Цены за ед. (рынок, руб)"].fillna("").astype(str).str.strip()
-        fallback = merged.get("Суммы из текста ответа (авто)", pd.Series([""] * len(merged), index=merged.index))
-        merged["Рынок цены за ед. (итог)"] = strict_prices.where(strict_prices != "", fallback)
-    elif "Суммы из текста ответа (авто)" in merged.columns:
-        merged["Рынок цены за ед. (итог)"] = merged["Суммы из текста ответа (авто)"]
-    return merged
+    return merge_market_frames(est_df, _normalize_market_columns(market_df))
 
 
 def _estimate_market_sections(estimate_id: str, rows_filtered: list[dict], selected_types: list[str] | None = None) -> list[dict]:
-    from autobot.market_analytics import COL_NAME
-    from autobot.merge_estimate_market import _norm_key
+    from autobot.market_contract import offers_for_row, clean
+    from autobot.tender_viability import _market_median_for_row
 
-    path = _estimate_market_merged_path(estimate_id)
-    if not path.is_file() or not rows_filtered:
+    frame = _estimate_market_df_for_rows(_estimate_market_merged_path(estimate_id), rows_filtered)
+    if frame.empty:
         return []
-    try:
-        df = pd.read_excel(path)
-    except Exception:
-        return []
-    if df.empty or COL_NAME not in df.columns:
-        return []
-
-    by_key: dict[str, dict] = {}
-    for _, row in df.iterrows():
-        key = _norm_key(str(row.get(COL_NAME) or ""))
-        if key and key not in by_key:
-            by_key[key] = {str(k): row.get(k) for k in df.columns}
-
-    labels_full = {"work": "Работы", "service": "Услуги", "product": "Товары/изделия", "material": "Материалы", "other": "Другое"}
-    groups: dict[str, list[dict]] = {}
-    for src in rows_filtered:
-        key = _norm_key(str(src.get("name") or ""))
-        merged = by_key.get(key)
-        if not merged:
-            continue
-        offers_raw = merged.get("Цена-сайт-телефон (json)")
-        offers: list[dict] = []
-        if isinstance(offers_raw, str) and offers_raw.strip():
-            try:
-                parsed = json.loads(offers_raw)
-                if isinstance(parsed, list):
-                    for item in parsed[:5]:
-                        if not isinstance(item, dict):
-                            continue
-                        price_num = _json_num(item.get("price"))
-                        offers.append(
-                            {
-                                "source": str(item.get("source") or "Интернет"),
-                                "title": str(item.get("title") or "Источник"),
-                                "price": price_num,
-                                "price_fmt": _fmt_money(price_num) if price_num else "—",
-                                "url": str(item.get("url") or ""),
-                                "snippet": str(item.get("snippet") or "")[:320],
-                            }
-                        )
-            except Exception:
-                offers = []
-        if not offers:
-            for i in range(1, 6):
-                title = str(merged.get(f"Название объявления {i}") or "").strip()
-                url = str(merged.get(f"Ссылка объявления {i}") or "").strip()
-                if not title and not url:
-                    continue
-                price_num = _json_num(merged.get(f"Цена объявления {i}"))
-                offers.append(
-                    {
-                        "source": str(merged.get(f"Источник {i}") or "Интернет"),
-                        "title": title or "Источник",
-                        "price": price_num,
-                        "price_fmt": _fmt_money(price_num) if price_num else "—",
-                        "url": url,
-                        "snippet": "",
-                    }
-                )
-        if not offers and not str(merged.get("Ошибка / статус") or "").strip():
-            continue
+    labels = {"work": "Работы", "service": "Услуги", "product": "Товары/изделия", "material": "Материалы", "other": "Другое"}
+    groups = {}
+    for src, (_, row) in zip(rows_filtered, frame.iterrows()):
+        verified, candidates = [], []
+        for item in offers_for_row(row):
+            price = _json_num(item.get("price"))
+            offer = {"source": clean(item.get("source")) or "Интернет", "title": clean(item.get("title")) or "Источник",
+                "price": price, "price_fmt": _fmt_money(price) if price is not None else "—",
+                "url": clean(item.get("url")), "snippet": clean(item.get("evidence") or item.get("snippet"))[:320],
+                "verification": item["verification"], "reason": clean(item.get("verification_reason"))}
+            (verified if item["verification"] == "verified" else candidates).append(offer)
+        median = _market_median_for_row(row)
+        status = clean(row.get("Ошибка / статус"))
+        if not verified:
+            status = status or ("Есть кандидаты, цена требует проверки" if candidates else "Нет подтверждённой цены")
         type_key = str(src.get("type") or "other")
-        groups.setdefault(type_key, []).append(
-            {
-                "name": str(src.get("name") or ""),
-                "type": type_key,
-                "type_label": str(src.get("type_label") or labels_full.get(type_key, type_key)),
-                "unit": str(src.get("unit") or ""),
-                "qty_fmt": _fmt_qty(_json_num(src.get("qty"))),
-                "estimate_price_fmt": _fmt_money(_json_num(src.get("unit_price"))),
-                "estimate_total_fmt": _fmt_money(_json_num(src.get("total"))),
-                "market_prices": str(merged.get("Рынок цены за ед. (итог)") or merged.get("Цены за ед. (рынок, руб)") or "").strip(),
-                "status": str(merged.get("Ошибка / статус") or "").strip(),
-                "offers": offers,
-            }
-        )
-
+        groups.setdefault(type_key, []).append({
+            "position_index": src.get("idx"), "name": str(src.get("name") or ""),
+            "type": type_key, "type_label": src.get("type_label") or labels[type_key],
+            "unit": str(src.get("unit") or ""), "qty_fmt": _fmt_qty(_json_num(src.get("qty"))),
+            "estimate_price_fmt": _fmt_money(_json_num(src.get("unit_price"))),
+            "estimate_total_fmt": _fmt_money(_json_num(src.get("total"))),
+            "market_prices": _fmt_money(median) if median is not None else "—",
+            "status": status, "offers": verified[:12], "candidates": candidates[:12],
+        })
     order = selected_types or ["work", "service", "product", "material", "other"]
-    sections: list[dict] = []
-    for key in order:
-        items = groups.get(key) or []
-        if not items:
-            continue
-        sections.append({"key": key, "label": labels_full.get(key, key), "count": len(items), "items": items})
-    if sections:
-        return sections
-    for key, items in groups.items():
-        sections.append({"key": key, "label": labels_full.get(key, key), "count": len(items), "items": items})
-    return sections
+    return [{"key": k, "label": labels.get(k, k), "count": len(groups[k]), "items": groups[k]} for k in order if groups.get(k)]
 
 
 def _estimate_market_links(estimate_id: str, market_sections: list[dict], *, q: str = "", selected_types: list[str] | None = None) -> list[dict]:
@@ -5276,28 +5181,18 @@ def _estimate_market_links(estimate_id: str, market_sections: list[dict], *, q: 
 
 
 def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict]) -> pd.DataFrame:
-    from autobot.market_analytics import COL_NAME
-    from autobot.merge_estimate_market import _norm_key, _normalize_market_columns
+    from autobot.market_contract import merge_market_frames
+    from autobot.merge_estimate_market import _normalize_market_columns
 
     if not path.is_file():
         return pd.DataFrame()
     try:
-        df = pd.read_excel(path)
-    except Exception:
+        market = _normalize_market_columns(pd.read_excel(path))
+    except (OSError, ValueError):
         return pd.DataFrame()
-    if getattr(df, "empty", True):
-        return pd.DataFrame()
-    df = _normalize_market_columns(df)
-    if not rows_filtered or COL_NAME not in df.columns:
-        return df
-    allowed_keys = {_norm_key(str(r.get("name") or "")) for r in rows_filtered if str(r.get("name") or "").strip()}
-    if not allowed_keys:
-        return df
-    try:
-        filtered = df[df[COL_NAME].fillna("").astype(str).map(_norm_key).isin(allowed_keys)].copy()
-    except Exception:
-        filtered = df.copy()
-    return filtered
+    # Include all requested estimate rows in the denominator, even when the
+    # persisted market file contains only a successful subset.
+    return merge_market_frames(_estimate_rows_to_report_df(rows_filtered), market)
 
 
 def _table_cell_text(value) -> str:
@@ -5401,18 +5296,12 @@ def _estimate_compare_rows(rows_filtered: list[dict], compare_df: pd.DataFrame) 
     from autobot.merge_estimate_market import _norm_key
     from autobot.tender_viability import _estimate_numeric_for_compare, _market_median_for_row, _rub_col
 
-    by_key: dict[str, dict] = {}
-    if not getattr(compare_df, "empty", True) and COL_NAME in compare_df.columns:
-        for _, row in compare_df.iterrows():
-            key = _norm_key(str(row.get(COL_NAME) or ""))
-            if key and key not in by_key:
-                by_key[key] = {str(k): row.get(k) for k in compare_df.columns}
-
-    rc = _rub_col(compare_df) if not getattr(compare_df, "empty", True) else None
+    from autobot.market_contract import match_market_rows
+    matches = match_market_rows(_estimate_rows_to_report_df(rows_filtered), compare_df)
+    rc = _rub_col(compare_df) if not compare_df.empty else None
     out: list[dict] = []
-    for src in rows_filtered:
-        key = _norm_key(str(src.get("name") or ""))
-        merged = by_key.get(key, {})
+    for src, matched in zip(rows_filtered, matches):
+        merged = matched or {}
         section = _normalize_section_title(str(src.get("section") or "")) or "Без раздела"
         market_num = None
         est_num = None
@@ -5485,16 +5374,11 @@ def _estimate_source_rows(rows_filtered: list[dict], raw_df: pd.DataFrame) -> li
     from autobot.market_analytics import COL_NAME
     from autobot.merge_estimate_market import _norm_key
 
-    by_key: dict[str, dict] = {}
-    if not getattr(raw_df, "empty", True) and COL_NAME in raw_df.columns:
-        for _, row in raw_df.iterrows():
-            key = _norm_key(str(row.get(COL_NAME) or ""))
-            if key and key not in by_key:
-                by_key[key] = {str(k): row.get(k) for k in raw_df.columns}
+    from autobot.market_contract import match_market_rows
+    matches = match_market_rows(_estimate_rows_to_report_df(rows_filtered), raw_df)
     out: list[dict] = []
-    for src in rows_filtered:
-        key = _norm_key(str(src.get("name") or ""))
-        merged = by_key.get(key, {})
+    for src, matched in zip(rows_filtered, matches):
+        merged = matched or {}
         text = str(merged.get("Рыночные источники") or "").strip()
         query = str(merged.get("Поисковый запрос рынка") or "").strip()
         status = str(merged.get("Ошибка / статус") or "").strip() or ("Есть источники" if text else "Нет источников")
@@ -5538,21 +5422,9 @@ def _estimate_viability_overview(compare_df: pd.DataFrame, compare_rows: list[di
             "html": "",
         }
     stats = compute_viability_stats(compare_df)
-    if stats.comparable < 3 and scope_info.get("has_notice"):
-        title = "РЫНОК НЕ СОБРАН ДЛЯ ЭТОГО ТИПА"
-        tone = "warn"
-    elif stats.comparable < 3:
-        title = "НЕДОСТАТОЧНО ДАННЫХ"
-        tone = "warn"
-    elif stats.median_ratio is not None and stats.median_ratio > 1.08:
-        title = "ВЫГОДНО"
-        tone = "good"
-    elif stats.median_ratio is not None and stats.median_ratio < 0.92:
-        title = "НЕВЫГОДНО"
-        tone = "bad"
-    else:
-        title = "ПОГРАНИЧНО"
-        tone = "warn"
+    from autobot.tender_viability import _verdict_label
+    title, verdict_class = _verdict_label(stats)
+    tone = "bad" if verdict_class == "viability--tight" else "warn"
 
     types_seen = []
     for row in compare_rows:
@@ -5561,10 +5433,10 @@ def _estimate_viability_overview(compare_df: pd.DataFrame, compare_rows: list[di
             types_seen.append(label)
     comparable_types = ", ".join(types_seen) if types_seen else "пока без уверенного покрытия"
     facts = [
-        {"label": "Сравнимых позиций", "value": str(stats.comparable)},
-        {"label": "Без рынка", "value": str(stats.no_market)},
-        {"label": "Смета / рынок", "value": (f"{stats.median_ratio:.2f}".replace(".", ",") if stats.median_ratio is not None else "—")},
-        {"label": "По сумме", "value": (_fmt_money(stats.comparable_gap_total) if stats.comparable_gap_total is not None else "—")},
+        {"label": "Проверено по сумме", "value": (f"{stats.coverage_cost_percent:.1f}%".replace(".", ",") if stats.coverage_cost_percent is not None else "Неизвестно")},
+        {"label": "Без подтверждённой цены", "value": _fmt_money(stats.uncovered_estimate_total)},
+        {"label": "Позиций с ценой", "value": f"{stats.comparable} из {stats.rows_considered}"},
+        {"label": "Разница по проверенной части", "value": (_fmt_money(stats.comparable_gap_total) if stats.comparable_gap_total is not None else "—")},
     ]
     group_map: dict[str, dict] = {}
     for row in compare_rows:
@@ -5580,7 +5452,10 @@ def _estimate_viability_overview(compare_df: pd.DataFrame, compare_rows: list[di
         else:
             g["none"] += 1
     groups = list(group_map.values())[:18]
-    subtitle = str(scope_info.get("text") or f"Анализ построен по уже найденным данным. Сейчас покрыты: {comparable_types}.")
+    subtitle = str(scope_info.get("text") or f"Сейчас покрыты: {comparable_types}.")
+    subtitle += f" Расчёт по распознанным позициям на {_fmt_money(stats.total_estimate)}. Разница со сметой ещё не прибыль: нужны все затраты и цена предложения."
+    if stats.rows_without_amount:
+        subtitle += f" Неизвестна сумма {stats.rows_without_amount} позиций; полнота по стоимости пока не определена."
     return {
         "available": True,
         "title": title,
@@ -7517,7 +7392,7 @@ ESTIMATES_TEMPLATE_V2 = """
 
             <div class="estimate-progress">
               <div class="estimate-progress-head">
-                <span class="estimate-progress-label">Проанализировано</span>
+                <span class="estimate-progress-label">Цены подтверждены</span>
                 <span class="estimate-progress-value">{{ e.market_progress_done }} из {{ e.market_progress_total }}</span>
               </div>
               <div class="estimate-progress-track">
@@ -9479,9 +9354,10 @@ ESTIMATE_MARKET_VIEW_TEMPLATE = """
       <div class="items">
         {% for item in active_section["items"] %}
         <article class="item">
+          <span data-market-contract="1" hidden></span>
           <div class="item-head">
             <div style="display:flex; gap:12px; align-items:flex-start;">
-              <div class="item-index">{{ loop.index }}</div>
+              <div class="item-index">{{ item.position_index or loop.index }}</div>
               <div class="item-title">{{ item.name }}</div>
             </div>
             <span class="tag">{{ item.type_label }}</span>
@@ -9517,8 +9393,11 @@ ESTIMATE_MARKET_VIEW_TEMPLATE = """
             {% endfor %}
           </div>
           {% endif %}
-          {% if item.status %}
           <div class="status-note">{{ item.status }}</div>
+          {% if item.candidates %}
+          <details class="candidate-sources"><summary>Требуют проверки · {{ item.candidates|length }}</summary>
+            {% for candidate in item.candidates %}<p><a href="{{ candidate.url }}" target="_blank" rel="noopener noreferrer">{{ candidate.title }}</a> · {{ candidate.price_fmt }}<br><small>{{ candidate.reason }}</small></p>{% endfor %}
+          </details>
           {% endif %}
         </article>
         {% endfor %}
@@ -9572,25 +9451,32 @@ def _render_estimates_page_v2():
         market_total = max(market_total, int(summary.get("row_count") or 0))
         market_done = max(0, min(market_done, market_total)) if market_total > 0 else 0
         market_pct = int(min(100, max(0, round(100.0 * market_done / market_total)))) if market_total > 0 else 0
-        if has_market_compare:
-            market_status_label = "Смета vs рынок"
+        if market_total > 0 and market_done == market_total:
+            market_status_label = "Цены собраны"
             market_status_class = "status-ready"
-            market_summary = "Сравнение уже готово"
+            market_summary = f"Подтверждены цены: {market_done} из {market_total}"
             market_summary_class = "metric-good"
-            market_progress_note = "Сравнение собрано, можно открывать смету и смотреть разбор."
+            market_progress_note = "Откройте сравнение и проверьте условия предложений."
             with_compare += 1
-        elif has_market_sources:
-            market_status_label = "Есть источники"
+        elif has_market_sources or has_market_compare:
+            market_status_label = "Часть цен найдена" if market_done else "Проверить источники"
             market_status_class = "status-partial"
-            market_summary = "Собраны источники рынка"
+            market_summary = f"Подтверждены цены: {market_done} из {market_total}"
             market_summary_class = ""
-            market_progress_note = f"Найдено цен: {market_done} из {market_total}. Можно дособрать сравнение внутри сметы."
+            market_progress_note = "Продолжите поиск недостающих цен внутри сметы. Кандидаты в расчёт не входят."
+            with_compare += int(market_done > 0)
         else:
             market_status_label = "Нет рынка"
             market_status_class = "status-idle"
             market_summary = "Рынок ещё не анализировали"
             market_summary_class = "metric-bad"
             market_progress_note = "Поиск цен ещё не запускался."
+        with estimate_market_lock:
+            running = bool((estimate_market_jobs.get(estimate_id) or {}).get("running"))
+        if running:
+            market_status_label = "Идёт поиск"
+            market_status_class = "status-partial"
+            market_progress_note = "Поиск продолжается. " + market_progress_note
 
         item = dict(meta)
         item["total_sum_fmt"] = _fmt_money(summary.get("total_sum"))
@@ -9818,7 +9704,10 @@ def estimate_detail_page(estimate_id: str):
                 "sheet_total_fmt": _fmt_money(current_sheet_total if current_sheet_has_sum else None),
             }
         )
-    compare_df = _estimate_market_df_for_rows(_estimate_market_merged_path(estimate_id), rows)
+    market_path = _estimate_market_raw_path(estimate_id)
+    if not market_path.is_file():
+        market_path = _estimate_market_merged_path(estimate_id)
+    compare_df = _estimate_market_df_for_rows(market_path, rows)
     raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows)
     compare_rows = _estimate_compare_rows(rows, compare_df)
     source_rows = _estimate_source_rows(rows, raw_df)
@@ -10038,7 +9927,10 @@ def estimate_market_compare_download_xlsx(estimate_id: str):
     q = (request.args.get("q", "") or "").strip()
     selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
     rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
-    compare_df = _estimate_market_df_for_rows(_estimate_market_merged_path(estimate_id), rows)
+    market_path = _estimate_market_raw_path(estimate_id)
+    if not market_path.is_file():
+        market_path = _estimate_market_merged_path(estimate_id)
+    compare_df = _estimate_market_df_for_rows(market_path, rows)
     compare_rows = _estimate_compare_rows(rows, compare_df)
     if not compare_rows:
         abort(404)
@@ -10082,14 +9974,24 @@ def tender_svodka_download_xlsx(tender_id: str):
     tid = (tender_id or "").strip()
     if not tid or "/" in tid or ".." in tid:
         abort(404)
-    from autobot.merge_estimate_market import OUT_PREFIX
+    from autobot.merge_estimate_market import OUT_PREFIX, _normalize_market_columns
+    from autobot.market_contract import merge_market_frames, sanitize_market_frame
 
     path = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
-    if not path.is_file():
+    raw_path = _price_output_path_for_tender(tid)
+    market_path = raw_path if raw_path.is_file() else path
+    if not market_path.is_file():
         abort(404)
+    market = _normalize_market_columns(pd.read_excel(market_path))
+    estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
+    frame = (merge_market_frames(pd.read_excel(estimate_path), market)
+             if estimate_path.is_file() else sanitize_market_frame(market))
+    buf = io.BytesIO()
+    frame.to_excel(buf, index=False, engine="openpyxl")
+    buf.seek(0)
     meta = load_tender_metadata().get(tid) or {}
     filename = _safe_download_stem(meta.get("title") or tid, tid)
-    return send_file(path, as_attachment=True, download_name=f"{filename} - выгодность.xlsx", max_age=0)
+    return send_file(buf, as_attachment=True, download_name=f"{filename} - сравнение рынка.xlsx", max_age=0)
 
 
 @app.route("/api/estimates/<estimate_id>/market-status")
@@ -12510,7 +12412,7 @@ def api_generate_merge_site_one():
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
         return jsonify({"ok": False, "message": "Нужен tender_id"}), 400
-    threading.Thread(target=_run_merge_site_all_worker, kwargs={"ids_override": [tid]}, daemon=True).start()
+    threading.Thread(target=_run_merge_site_all_worker, kwargs={"ids_override": [tid], "market_only_without_verified": True}, daemon=True).start()
     return jsonify({"ok": True, "tender_id": tid})
 
 

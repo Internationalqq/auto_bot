@@ -431,7 +431,14 @@ def test_verified_market_keys_only_returns_rows_with_verified_sources() -> None:
         ]
     )
 
-    assert market._verified_market_keys(frame) == {market._norm_key("Песок строительный")}
+    # A saved counter is not evidence; the verified bundle determines readiness.
+    assert market._verified_market_keys(frame) == set()
+    from autobot.market_contract import position_identity
+    frame.loc[0, "Ед. изм."] = "м3"
+    frame.loc[0, "Цена-сайт-телефон (json)"] = json.dumps([
+        {"price": 900, "url": "https://supplier.example/sand", "verification": "verified"}
+    ])
+    assert market._verified_market_keys(frame) == {position_identity(frame.iloc[0])}
 
 
 def test_avito_only_pass_can_restore_non_avito_evidence() -> None:

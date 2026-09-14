@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260902-tabs-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260914-coverage-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
@@ -15,9 +15,9 @@
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы">
-      <a class="topnav-primary" href="/estimates">Сметы</a>
+      <a class="topnav-primary" href="/estimates">Мои сметы</a>
       <a class="topnav-primary is-active" href="/tenders" aria-current="page">Тендеры</a>
-      <a href="/research">Поиск позиции</a>
+      <a href="/research">Найти цену</a>
     </nav>
   </header>
 
@@ -37,17 +37,17 @@
           <small>Объект закупки</small>
           <h1 id="tenderTitle">{{ tender.title }}</h1>
         </div>
-        <div class="eis-field customer">
-          <small>Заказчик</small>
+        <details class="eis-field customer">
+          <summary>Заказчик</summary>
           {% if tender.customer_name %}<strong>{{ tender.customer_name }}</strong>{% else %}<em>Заказчик пока не получен из ЕИС</em>{% endif %}
-        </div>
+        </details>
       </div>
       <aside class="eis-side">
         <div class="price"><small>Начальная цена</small><strong>{{ tender.price_fmt }}</strong></div>
-        <div class="dates">
+        <details class="publication-dates"><summary>Даты публикации</summary><div class="dates">
           <span><small>Размещено</small><b>{{ tender.publish_date or "—" }}</b></span>
           <span><small>Обновлено</small><b>{{ tender.updated_date or "—" }}</b></span>
-        </div>
+        </div></details>
         <div class="region"><small>Регион</small><b>{{ tender.region or "Не указан" }}</b></div>
       </aside>
     </section>
@@ -66,6 +66,15 @@
 
     {% if tender.active_tab == "overview" %}
 
+    <section class="market-coverage" aria-label="Полнота проверки цен">
+      <div class="coverage-heading"><h2>Что уже известно по ценам</h2><span>Разница со сметой ещё не прибыль</span></div>
+      <dl>
+        <div><dt>Проверено по сумме позиций</dt><dd>{{ tender.coverage_cost_fmt }}</dd></div>
+        <div><dt>Без подтверждённой цены</dt><dd>{{ tender.uncovered_estimate_fmt }}</dd></div>
+        <div><dt>Позиций с ценой</dt><dd>{{ tender.counts.verified }} <small>из {{ tender.total_positions }}</small></dd></div>
+      </dl>
+      <p>Расчёт по распознанным позициям на {{ tender.estimate_total_fmt }}. {% if tender.rows_without_amount %}У {{ tender.rows_without_amount }} поз. не определена сумма — полнота пока неизвестна.{% else %}Для прибыли ещё нужны доставка, накладные, резерв и цена предложения.{% endif %}</p>
+    </section>
     <section class="action-panel">
       <div>
         <small>Следующий шаг AutoBot</small>
@@ -73,15 +82,13 @@
         <span>{{ tender.status_detail or "Откройте позиции и проверьте готовность данных." }}</span>
       </div>
       <div class="action-buttons">
-        {% if tender.has_estimate %}
-        <button class="btn secondary" type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>
-        {% endif %}
-        <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="{{ '1' if tender.has_market else '0' }}">
-          {{ "Полный анализ заново" if tender.has_market else "Полный анализ рынка" }}
+        <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="0">
+          {{ "Найти недостающие цены" if tender.has_market else "Найти рыночные цены" }}
         </button>
         <details class="action-more">
           <summary class="btn ghost">Ещё <span aria-hidden="true">⌄</span></summary>
           <div class="action-more-menu">
+            {% if tender.has_estimate %}<button type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>{% endif %}
             {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>{% endif %}
             {% if tender.has_estimate %}<button type="button" id="addTenderToCrmBtn">Добавить в объект CRM</button>{% endif %}
             <a href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть в ЕИС ↗</a>
@@ -90,11 +97,8 @@
       </div>
     </section>
 
-    <section class="tender-command-center" aria-label="Инструменты анализа тендера">
-      <header>
-        <div><small>Действия с тендером</small><strong>Что хотите сделать?</strong><span>Карточка откроет окно с подробностями. Поиск начнётся только после нажатия синей кнопки внутри.</span></div>
-        <span class="command-center-state" id="commandCenterState">Обновляю состояние…</span>
-      </header>
+    <details class="tender-command-center" aria-label="Инструменты анализа тендера">
+      <summary>Источники и журнал <span class="command-center-state" id="commandCenterState">Обновляю состояние…</span></summary>
       <div class="command-tool-grid">
         {% if tender.has_estimate %}
         <button class="command-tool" type="button" data-feature-open="estimateModal">
@@ -110,18 +114,18 @@
         </button>
         <button class="command-tool is-live" type="button" data-feature-open="agentMarketModal">
           <span class="command-tool-icon is-hermes" aria-hidden="true">⚕</span>
-          <span class="command-tool-copy"><small>Запустить · Hermes · обычные сайты</small><strong id="agentLauncherTitle">Повторно найти цены</strong><span id="agentLauncherStatus">До 20 сложных строк, где цены ещё нет</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
+          <span class="command-tool-copy"><small>Запустить · Сайты поставщиков</small><strong id="agentLauncherTitle">Повторно найти цены</strong><span id="agentLauncherStatus">До 20 сложных строк, где цены ещё нет</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
           <b aria-hidden="true">→</b>
         </button>
         <button class="command-tool" type="button" data-feature-open="avitoModal">
           <span class="command-tool-icon is-avito" aria-hidden="true">
             <i></i><i></i><i></i><i></i>
           </span>
-          <span class="command-tool-copy"><small>Запустить · Hermes · Авито</small><strong>Найти цены на Авито</strong><span id="avitoLauncherStatus">До 5 строк через браузер Mac mini</span></span>
+          <span class="command-tool-copy"><small>Запустить · Авито</small><strong>Найти цены на Авито</strong><span id="avitoLauncherStatus">Объявления для выбранных позиций</span></span>
           <b aria-hidden="true">→</b>
         </button>
       </div>
-    </section>
+    </details>
 
     {% if tender.has_estimate %}
     <section class="estimate-check estimate-check-{{ tender.estimate_check_class }}" data-feature-content="estimateModal" aria-label="Сверка сметы с начальной ценой">
@@ -169,14 +173,14 @@
     <section class="agent-market-card" id="agentMarketCard" data-feature-content="agentMarketModal">
       <div class="agent-market-head">
         <div>
-          <small>Hermes на Mac mini</small>
-          <strong>Дожать позиции без подтверждённой цены</strong>
-          <span>AutoBot уже сделал массовый веб-поиск. Hermes получает только сложные строки и проверяет обычные сайты поставщиков в браузере Mac mini.</span>
+          <small>Поиск по сайтам поставщиков</small>
+          <strong>Найти недостающие цены</strong>
+          <span>Дополнительная проверка прямых страниц поставщиков для строк, где цены ещё не подтверждены.</span>
         </div>
         <div class="agent-market-actions">
           <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
           <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
-          <button class="btn primary" type="button" id="queueAgentMarketBtn">Дожать 20 без цены</button>
+          <button class="btn primary" type="button" id="queueAgentMarketBtn">Проверить 20 позиций</button>
         </div>
       </div>
       <div class="agent-live" id="agentLive" aria-live="polite">
@@ -197,8 +201,8 @@
           <span class="agent-current-pulse" aria-hidden="true"></span>
           <div>
             <small id="agentCurrentOrdinal">Текущая позиция</small>
-            <strong id="agentCurrentPosition">Ожидаю данные от Mac mini</strong>
-            <span id="agentCurrentStatus">Hermes ещё не забрал задание</span>
+            <strong id="agentCurrentPosition">Ожидаю исполнителя поиска</strong>
+            <span id="agentCurrentStatus">Задание ещё не принято в работу</span>
           </div>
           <time id="agentUpdatedAt"></time>
         </div>
@@ -213,7 +217,7 @@
       <p class="agent-market-note" id="agentMarketNote">Проверяю подключение очереди…</p>
       <div class="agent-results" id="agentResults" hidden>
         <div class="agent-results-head">
-          <div><small>Результаты Hermes</small><strong>Что агент нашёл и что AutoBot принял</strong></div>
+          <div><small>Найденные предложения</small><strong>Что агент нашёл и что AutoBot принял</strong></div>
           <button class="btn ghost" type="button" id="agentReloadTable">Обновить таблицу сметы</button>
         </div>
         <div class="agent-result-totals">
@@ -233,7 +237,7 @@
     <section class="avito-safe-card" id="avitoSafeCard" data-feature-content="avitoModal">
       <div class="avito-safe-top">
         <div class="avito-safe-copy">
-          <small>Hermes · браузер Mac mini</small>
+          <small>Поиск по объявлениям</small>
           <strong id="avitoSafeTitle">Поиск цен на Авито</strong>
           <span id="avitoSafeStatus">Позиции уходят в отдельную очередь и проверяются по одной.</span>
         </div>
@@ -308,7 +312,7 @@
               </td>
               <td data-label="Ед. / объём"><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
               <td class="money" data-label="Смета"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money market-price market-price-{{ p.verdict_class }}" data-label="Рынок" title="{{ p.verdict }}" aria-label="Рыночная цена {{ p.market_unit_fmt }}. {{ p.verdict }}"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}взвешенная медиана · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% if p.market_status %}<small class="row-status">{{ p.market_status }}</small>{% endif %}</td>
+              <td class="money market-price market-price-{{ p.verdict_class }}" data-label="Рынок" title="{{ p.verdict }}" aria-label="Рыночная цена {{ p.market_unit_fmt }}. {{ p.verdict }}"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}медиана проверенных цен · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% if p.market_status %}<small class="row-status">{{ p.market_status }}</small>{% endif %}</td>
               <td class="sources" data-label="Источники">
                 {% if p.verified_count %}<span class="source-count verified">✓ {{ p.verified_count }} проверено</span>{% endif %}
                 {% if p.candidate_count %}<span class="source-count candidate">? {{ p.candidate_count }} кандид.</span>{% endif %}
@@ -413,7 +417,7 @@
   <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Запускает Hermes на Mac mini · обычные сайты</small><h2 id="agentMarketModalTitle">Повторно найти недостающие цены</h2><p>Выберите строки таблицы или отправьте первые 20 позиций без цены. Hermes откроет сайты поставщиков и вернёт прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Дополнительные источники · сайты поставщиков</small><h2 id="agentMarketModalTitle">Повторно найти недостающие цены</h2><p>Выберите строки таблицы или отправьте первые 20 позиций без цены. Hermes откроет сайты поставщиков и вернёт прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -421,7 +425,7 @@
   <aside class="feature-modal" id="avitoModal" hidden aria-labelledby="avitoModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Запускает Hermes на Mac mini · только Авито</small><h2 id="avitoModalTitle">Найти цены в объявлениях Авито</h2><p>Выберите строки таблицы или отправьте первые 5 позиций без цены. Hermes откроет объявления и сохранит прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Дополнительные источники · Авито</small><h2 id="avitoModalTitle">Найти цены в объявлениях Авито</h2><p>Выберите строки таблицы или отправьте первые 5 позиций без цены. Hermes откроет объявления и сохранит прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -627,7 +631,7 @@
         queueAgentMarketButton.disabled = marketBusy || !agentQueueEnabled || agentQueuePosting;
         queueAgentMarketButton.textContent = agentQueuePosting
           ? "Ставлю в очередь…"
-          : (count ? "Дожать выбранные · " + count : "Дожать 20 без цены");
+          : (count ? "Дожать выбранные · " + count : "Проверить 20 позиций");
       }
       if (avitoSafeButton) {
         avitoSafeButton.disabled = marketBusy || !avitoAgentQueueEnabled || avitoAgentQueuePosting;
@@ -712,27 +716,27 @@
           if (ordinal) ordinal.textContent = "Сейчас · позиция " + currentNo + " из " + total;
           if (position) position.textContent = current.position_name || "Позиция без названия";
           if (currentStatus) currentStatus.textContent = current.status === "leased"
-            ? "Hermes открыл браузер и ищет прямые страницы с ценами"
-            : "Задание ждёт, когда Mac mini заберёт его из очереди";
+            ? "Исполнитель проверяет прямые страницы с ценами"
+            : "Задание в очереди; ожидается доступный исполнитель";
           if (updated) updated.textContent = current.updated_at
             ? new Date(Number(current.updated_at) * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
             : "";
           if (launcherTitle) launcherTitle.textContent = "Обработано " + processed + " из " + total;
           if (launcherStatus) launcherStatus.textContent = "Сейчас: " + (current.position_name || "позиция без названия");
-          if (commandState) commandState.textContent = "Hermes работает · " + currentNo + " из " + total;
+          if (commandState) commandState.textContent = (current.status === "leased" ? "Исполнитель взял задание" : "Ожидаем исполнителя") + " · " + currentNo + " из " + total;
         } else {
           if (ordinal) ordinal.textContent = total && processed >= total ? "Очередь завершена" : "Текущая позиция";
           if (position) position.textContent = total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
-          if (currentStatus) currentStatus.textContent = total && processed >= total ? "Результаты уже добавлены в таблицу сметы" : "Hermes сейчас ничего не обрабатывает";
+          if (currentStatus) currentStatus.textContent = total && processed >= total ? "Найденные предложения и ошибки доступны в журнале" : "Активных заданий нет";
           if (updated) updated.textContent = "";
           if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Повторно найти цены";
           if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "До 20 сложных строк, где цены ещё нет";
-          if (commandState) commandState.textContent = total && processed >= total ? "Фоновый анализ завершён" : "Инструменты готовы";
+          if (commandState) commandState.textContent = total && processed >= total ? "Очередь обработана" : "Заданий пока нет";
         }
         if (agentMarketNote) {
           agentMarketNote.textContent = data.enabled
-            ? (progress.running ? "Фоновый анализ идёт. Страницу можно закрыть — Mac mini продолжит работу." : "Очередь готова. Mac mini заберёт новое задание при следующем опросе.")
-            : "Очередь работает, но для подключения Mac нужно задать MARKET_AGENT_TOKEN в AutoBot.";
+            ? (Number(progress.leased || 0) > 0 ? "Исполнитель взял задание. Страницу можно закрыть." : "Для обработки очереди нужен подключённый исполнитель. Постановка задания ещё не означает запуск поиска.")
+            : "Подключение поискового исполнителя пока не настроено.";
           agentMarketNote.classList.toggle("is-warning", !data.enabled);
         }
         const jobs = (current ? [current] : []).concat(progress.recent || []).slice(0, 7);
@@ -820,11 +824,11 @@
         });
         if (current) {
           const currentIndex = Number(run.current_index || Math.min(total, processed + 1));
-          if (avitoRunState) avitoRunState.textContent = current.status === "leased" ? "Hermes ищет" : "Ждёт Mac mini";
+          if (avitoRunState) avitoRunState.textContent = current.status === "leased" ? "Поиск идёт" : "Ждёт Mac mini";
           if (avitoRunTitle) avitoRunTitle.textContent = "Позиция " + currentIndex + " из " + total;
           if (avitoRunMeta) avitoRunMeta.textContent = current.position_name || "Позиция без названия";
           if (avitoAgentNote) avitoAgentNote.textContent = current.reason || "Задание выполняется";
-          if (avitoSafeTitle) avitoSafeTitle.textContent = "Hermes ищет объявления";
+          if (avitoSafeTitle) avitoSafeTitle.textContent = "Идёт поиск объявлений";
           if (avitoSafeStatus) avitoSafeStatus.textContent = "Текущая позиция: " + (current.position_name || "без названия");
           if (launcher) launcher.textContent = currentIndex + " из " + total + " · " + (current.position_name || "позиция");
         } else {
@@ -839,14 +843,14 @@
           }
           if (avitoAgentNote) avitoAgentNote.textContent = data.enabled
             ? (total && processed >= total ? "Запуск завершён. Ниже показаны все позиции и причины результата." : "Можно отправить выбранные позиции или первые пять строк без подтверждённой цены.")
-            : "Для подключения Mac mini не настроен MARKET_AGENT_TOKEN.";
+            : "Исполнитель поиска ещё не подключён.";
           if (avitoSafeTitle) avitoSafeTitle.textContent = "Поиск цен на Авито";
           if (avitoSafeStatus) avitoSafeStatus.textContent = total
             ? ("Последний запуск: " + processed + " из " + total + " · " + formatAgentDuration(run.elapsed_seconds))
             : "Позиции уходят в отдельную очередь и проверяются по одной.";
           if (launcher) launcher.textContent = total && processed >= total
             ? (processed + " из " + total + " · " + Number(run.verified_offers || 0) + " цен принято")
-            : "До 5 строк через браузер Mac mini";
+            : "Объявления для выбранных позиций";
         }
 
         const positions = Array.isArray(run.positions) ? run.positions : [];
@@ -980,7 +984,7 @@
       const keys = selectedAgentKeys();
       avitoAgentQueuePosting = true;
       refreshAgentSelection();
-      if (avitoSafeTitle) avitoSafeTitle.textContent = "Передаю позиции Hermes";
+      if (avitoSafeTitle) avitoSafeTitle.textContent = "Передаю позиции на поиск";
       if (avitoSafeStatus) avitoSafeStatus.textContent = keys.length
         ? ("Выбрано позиций: " + keys.length + ". Поиск будет выполнен только на Авито.")
         : "Будут взяты первые пять позиций без подтверждённой цены.";

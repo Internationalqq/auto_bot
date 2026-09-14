@@ -2977,36 +2977,27 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
 
 
 def _processed_keys(prev: pd.DataFrame) -> set[str]:
-    if prev.empty or COL_NAME not in prev.columns:
-        return set()
-    # Отчёты прежней версии брали цену из поискового сниппета и не содержат
-    # результата проверки самой страницы. Их нельзя считать завершёнными.
-    if "Код типа позиции рынка" not in prev.columns or "Проверенных источников" not in prev.columns:
-        return set()
-    return {_norm_key(str(x)) for x in prev[COL_NAME].fillna("").astype(str) if str(x).strip()}
+    from autobot.market_contract import confirmed_prices, position_identity
+
+    return {position_identity(row) for _, row in prev.iterrows() if confirmed_prices(row)}
 
 
 def _verified_market_keys(prev: pd.DataFrame) -> set[str]:
-    if prev.empty or COL_NAME not in prev.columns:
-        return set()
-    keys: set[str] = set()
-    for _, row in prev.iterrows():
-        try:
-            verified_count = int(float(row.get("Проверенных источников") or 0))
-        except (TypeError, ValueError):
-            verified_count = 0
-        if verified_count > 0:
-            key = _norm_key(str(row.get(COL_NAME, "") or ""))
-            if key:
-                keys.add(key)
-    return keys
+    return _processed_keys(prev)
 
 
 def _saved_offers_for_key(prev: pd.DataFrame, key: str) -> list[MarketOffer]:
     """Restore saved evidence so an Avito-only pass cannot erase other sites."""
     if prev.empty or COL_NAME not in prev.columns or not key:
         return []
-    matches = prev[prev[COL_NAME].fillna("").astype(str).map(_norm_key) == key]
+    from autobot.market_contract import position_identity
+    matches = prev[[position_identity(row) == key for _, row in prev.iterrows()]]
+    if matches.empty:
+        # Compatibility for explicit callers of the old helper: only a single
+        # unambiguous saved row may be addressed by its title.
+        legacy = prev[prev[COL_NAME].fillna("").astype(str).map(_norm_key) == key]
+        if len(legacy) == 1:
+            matches = legacy
     if matches.empty:
         return []
     raw = matches.iloc[0].get("Цена-сайт-телефон (json)", "")
@@ -3042,20 +3033,18 @@ def _avito_safe_error_is_fatal(err: str) -> bool:
 
 
 def _merge_rows(prev: pd.DataFrame, rows: list[dict]) -> pd.DataFrame:
-    cur = pd.DataFrame(rows)
+    from autobot.market_contract import position_identity, match_market_rows
+
+    current = pd.DataFrame(rows)
     if prev.empty:
-        return cur
-    if cur.empty:
+        return current
+    if current.empty:
         return prev
-    if COL_NAME not in prev.columns or COL_NAME not in cur.columns:
-        return pd.concat([prev, cur], ignore_index=True)
-    prev = prev.copy()
-    cur = cur.copy()
-    prev["__key"] = prev[COL_NAME].map(_norm_key)
-    cur["__key"] = cur[COL_NAME].map(_norm_key)
-    prev = prev[~prev["__key"].isin(set(cur["__key"]))]
-    out = pd.concat([prev, cur], ignore_index=True).drop(columns=["__key"], errors="ignore")
-    return out
+    replaced = {position_identity(row) for _, row in current.iterrows()}
+    # Upgrade a legacy row only if it has one unambiguous current owner.
+    replaced.update(position_identity(row) for row in match_market_rows(current, prev) if row is not None)
+    retained = prev[[position_identity(row) not in replaced for _, row in prev.iterrows()]]
+    return pd.concat([retained, current], ignore_index=True)
 
 
 def _offers_from_local_index(src_row: pd.Series, *, max_results: int) -> list[MarketOffer]:
@@ -3269,6 +3258,24 @@ def probe_agent_market_start_urls(
     }
 
 
+def _resolve_agent_source_row(estimate: pd.DataFrame, payload: dict) -> pd.Series:
+    from autobot.market_contract import position_identity, key as identity_key
+
+    supplied_key = str(payload.get("position_key") or "")
+    if re.fullmatch(r"[a-f0-9]{32}", supplied_key):
+        matches = estimate[[position_identity(row) == supplied_key for _, row in estimate.iterrows()]]
+    else:
+        matches = estimate[estimate[COL_NAME].map(_norm_key) == _norm_key(payload.get("name") or "")]
+        if payload.get("unit"):
+            matches = matches[matches["Ед. изм."].map(normalize_unit) == normalize_unit(payload["unit"])]
+        for field, column in (("source_file", "Файл ЛСР"), ("section", "Раздел"), ("basis_code", "basis_code")):
+            if payload.get(field) and column in matches:
+                matches = matches[matches[column].map(identity_key) == identity_key(payload[field])]
+    if len(matches) != 1:
+        raise ValueError("Смета изменилась или позиция неоднозначна. Создайте новое задание поиска.")
+    return matches.iloc[0]
+
+
 def import_agent_market_result(
     tender_id: str,
     position_payload: dict[str, object],
@@ -3287,10 +3294,7 @@ def import_agent_market_result(
     if COL_NAME not in estimate.columns:
         raise ValueError(f"В смете нет колонки {COL_NAME!r}")
     key = _norm_key(name)
-    matches = estimate[estimate[COL_NAME].fillna("").astype(str).map(_norm_key) == key]
-    if matches.empty:
-        raise ValueError("Позиция агента больше не найдена в смете")
-    source_row = matches.iloc[0]
+    source_row = _resolve_agent_source_row(estimate, position_payload)
     metadata = load_tender_metadata().get(tid, {})
     plan = build_search_plan(
         source_row.get(COL_NAME, ""),
@@ -3431,10 +3435,14 @@ def import_agent_market_result(
         equivalent_key = _norm_key(equivalent_name)
         if not equivalent_key or equivalent_key in output_keys:
             continue
-        equivalent_matches = estimate[estimate[COL_NAME].fillna("").astype(str).map(_norm_key) == equivalent_key]
-        if equivalent_matches.empty:
+        try:
+            equivalent_row = _resolve_agent_source_row(estimate, equivalent)
+        except ValueError:
             continue
-        equivalent_row = equivalent_matches.iloc[0]
+        if normalize_unit(equivalent_row.get("Ед. изм.")) != normalize_unit(source_row.get("Ед. изм.")):
+            continue
+        if equivalent_key.rstrip(".,; ") != key.rstrip(".,; "):
+            continue
         equivalent_plan = build_search_plan(
             equivalent_row.get(COL_NAME, ""),
             equivalent_row.get("Ед. изм.", ""),
@@ -3495,6 +3503,9 @@ def run_tender(
     avito_collect_only: bool = False,
     dry_run: bool = False,
 ) -> Path | None:
+    from autobot.market_contract import position_identity
+    from autobot.atomic_output import write_excel
+
     tid = str(tender_id or "").strip()
     if not tid:
         return None
@@ -3512,13 +3523,13 @@ def run_tender(
     prev = pd.DataFrame() if no_resume else _read_previous(out_path)
     prev, revalidated_rows = _revalidate_previous(prev)
     if revalidated_rows:
-        prev.to_excel(out_path, index=False)
+        write_excel(prev, out_path)
         print(f"Перепроверен масштаб сохранённых цен: {revalidated_rows} строк", flush=True)
     index_backfill_enabled = (os.environ.get("MARKET_INDEX_BACKFILL", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
     if index_backfill_enabled and not dry_run and not prev.empty:
         prev, backfilled_offers = _backfill_price_index_from_report(tid, prev)
         if backfilled_offers:
-            prev.to_excel(out_path, index=False)
+            write_excel(prev, out_path)
             print(f"Локальный индекс: перенесено проверенных источников из отчёта — {backfilled_offers}", flush=True)
     eligible = _eligible_rows(est)
     if only_without_verified:
@@ -3526,7 +3537,7 @@ def run_tender(
         filtered: list[tuple[int, pd.Series]] = []
         seen_keys: set[str] = set()
         for row_index, row in eligible:
-            key = _norm_key(str(row.get(COL_NAME, "") or ""))
+            key = position_identity(row)
             if not key or key in verified_keys or key in seen_keys:
                 continue
             plan = build_search_plan(
@@ -3541,10 +3552,15 @@ def run_tender(
             seen_keys.add(key)
             filtered.append((row_index, row))
         eligible = filtered
+    # Start with the positions that dominate the budget, preserving source
+    # order in the estimate itself. Search order must not become row identity.
+    eligible.sort(key=lambda entry: -float(pd.to_numeric(entry[1].get("Сумма, руб"), errors="coerce") or 0)
+                  if pd.notna(pd.to_numeric(entry[1].get("Сумма, руб"), errors="coerce")) else 0)
+    done_keys = set() if no_resume or rerun_selected else _processed_keys(prev)
+    eligible = [(index, row) for index, row in eligible if position_identity(row) not in done_keys]
     if max_rows and max_rows > 0:
         eligible = eligible[:max_rows]
     total = len(eligible)
-    done_keys = set() if no_resume or rerun_selected else _processed_keys(prev)
     new_rows: list[dict] = []
     run_started = time.monotonic()
     health = {"processed": 0, "with_offers": 0, "verified": 0, "candidates": 0, "errors": 0}
@@ -3558,7 +3574,7 @@ def run_tender(
     with AvitoBrowserFetcher(enabled=use_browser and not dry_run, headless=browser_headless) as browser:
         for seq, (_, row) in enumerate(eligible, start=1):
             work_name = str(row.get(COL_NAME, "") or "").strip()
-            key = _norm_key(work_name)
+            key = position_identity(row)
             if key in done_keys:
                 continue
             plan = build_search_plan(
@@ -3660,7 +3676,7 @@ def run_tender(
                 indexed_stored += _store_verified_offers_in_index(tid, row, offers)
             new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
             merged = _merge_rows(prev, new_rows)
-            merged.to_excel(out_path, index=False)
+            write_excel(merged, out_path)
             verified_count = sum(1 for offer in offers if offer.verification == "verified")
             candidate_count = sum(1 for offer in offers if offer.verification == "candidate")
             health["processed"] += 1
@@ -3709,9 +3725,9 @@ def run_tender(
     if not new_rows and not prev.empty:
         return out_path
     if new_rows:
-        _merge_rows(prev, new_rows).to_excel(out_path, index=False)
+        write_excel(_merge_rows(prev, new_rows), out_path)
     elif not out_path.is_file():
-        pd.DataFrame().to_excel(out_path, index=False)
+        write_excel(pd.DataFrame(), out_path)
     return out_path
 
 

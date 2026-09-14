@@ -37,12 +37,14 @@ def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypa
         [
             {
                 COL_NAME: "Работа с ценой",
+                COL_UNIT: "м3",
                 "Цена-сайт-телефон (json)": verified_offer,
                 "Проверенных источников": 1,
                 "Медиана цена за ед. (рынок)": 90,
             },
             {
                 COL_NAME: "Работа без цены",
+                COL_UNIT: "м2",
                 "Проверенных источников": 0,
                 "Ошибка / статус": "обработано, подтверждённых цен не найдено",
             },
@@ -143,7 +145,7 @@ def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     assert 'class="command-tool-icon is-hermes"' in template
     assert 'data-feature-open="rulesModal"' not in template
     assert 'id="rulesModal"' not in template
-    assert "Карточка откроет окно с подробностями" in template
+    assert "Источники и журнал" in template
     assert "Смета против НМЦК" in template
     assert "Статус обработки" in template
     assert "Повторно найти цены" in template
@@ -155,7 +157,7 @@ def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     assert "max-height: calc(100dvh - 20px)" in styles
     assert 'JSON.stringify({ mode: "web"' in template
     assert 'JSON.stringify({ mode: "avito"' in template
-    assert "Дожать 20 без цены" in template
+    assert "Проверить 20 позиций" in template
 
 
 def test_avito_modal_shows_one_minimal_latest_run_summary():

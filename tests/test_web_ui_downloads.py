@@ -154,6 +154,12 @@ def test_tender_export_adds_estimates_to_selected_existing_project(monkeypatch):
 
 
 def test_tender_download_routes_serve_existing_files(monkeypatch, tmp_path):
+    import io
+    import json
+    import pandas as pd
+    from autobot.market_contract import BUNDLE_COLUMN
+    from autobot.market_analytics import COL_NAME, COL_UNIT, COL_QTY, COL_UNIT_PRICE, COL_SUM
+
     tid = "123456"
     report_dir = tmp_path / "reports"
     report_dir.mkdir()
@@ -162,9 +168,13 @@ def test_tender_download_routes_serve_existing_files(monkeypatch, tmp_path):
     market_path = report_dir / f"РЫНОК_ИСТОЧНИКИ_ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
     svodka_path = report_dir / f"СВОДКА_РЫНОК_{tid}.xlsx"
 
-    estimate_path.write_bytes(b"estimate-bytes")
-    market_path.write_bytes(b"market-bytes")
-    svodka_path.write_bytes(b"svodka-bytes")
+    row = {COL_NAME: 'Щебень гранитный', COL_UNIT: 'м3', COL_QTY: 1,
+           COL_UNIT_PRICE: 3000, COL_SUM: 3000}
+    pd.DataFrame([row]).to_excel(estimate_path, index=False)
+    pd.DataFrame([dict(row, **{BUNDLE_COLUMN: json.dumps([{
+        'price': 2500, 'url': 'https://supplier.example/item', 'verification': 'candidate'}]),
+        'Медиана цена за ед. (рынок)': 2500})]).to_excel(market_path, index=False)
+    pd.DataFrame([dict(row, **{'Медиана цена за ед. (рынок)': 1})]).to_excel(svodka_path, index=False)
 
     monkeypatch.setattr(web_ui, "REPORTS_DIR", report_dir)
     monkeypatch.setattr(web_ui, "load_tender_metadata", lambda: {tid: {"title": "Test Tender"}})
@@ -176,14 +186,35 @@ def test_tender_download_routes_serve_existing_files(monkeypatch, tmp_path):
     svodka_resp = client.get(f"/tenders/{tid}/svodka.xlsx")
 
     assert estimate_resp.status_code == 200
-    assert estimate_resp.data == b"estimate-bytes"
+    assert estimate_resp.data == estimate_path.read_bytes()
     assert "attachment" in estimate_resp.headers.get("Content-Disposition", "")
 
     assert market_resp.status_code == 200
-    assert market_resp.data == b"market-bytes"
+    assert market_resp.data == market_path.read_bytes()
 
     assert svodka_resp.status_code == 200
-    assert svodka_resp.data == b"svodka-bytes"
+    exported = pd.read_excel(io.BytesIO(svodka_resp.data))
+    assert pd.isna(exported.iloc[0]['Медиана цена за ед. (рынок)'])
+    assert exported.iloc[0][COL_SUM] == 3000
+    assert json.loads(exported.iloc[0][BUNDLE_COLUMN])[0]['verification'] == 'candidate'
+
+
+def test_estimate_price_progress_excludes_candidates_and_live_processed_count(monkeypatch, tmp_path):
+    import json
+    import pandas as pd
+    from autobot.market_contract import BUNDLE_COLUMN
+
+    rows = [{'name': 'Щебень гранитный', 'unit': unit, 'qty': 1, 'unit_price': 3000, 'total': 3000}
+            for unit in ['м3', 'т']]
+    frame = web_ui._estimate_rows_to_report_df(rows)
+    frame[BUNDLE_COLUMN] = [json.dumps([{'price': 2500, 'url': 'https://supplier.example/item',
+                                        'verification': state}]) for state in ['verified', 'candidate']]
+    path = tmp_path / 'market.xlsx'
+    frame.to_excel(path, index=False)
+    monkeypatch.setattr(web_ui, '_estimate_market_raw_path', lambda _: path)
+    monkeypatch.setattr(web_ui, 'estimate_market_jobs', {'abc123': {'running': True, 'done': 2, 'total': 2}})
+
+    assert web_ui._estimate_market_progress_for_card('abc123', rows) == (1, 2)
 
 
 def test_estimate_detail_page_renders_switchable_tables(monkeypatch, tmp_path):

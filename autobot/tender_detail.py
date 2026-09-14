@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import math
 import re
 import statistics
@@ -13,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from autobot.market_analytics import COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
+from autobot.market_analytics import COL_DUP, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
 from autobot.market_strategy import (
     assess_price_plausibility,
     build_search_plan,
@@ -179,7 +178,9 @@ def _parse_bundle(
     if not text:
         return []
     try:
-        payload = json.loads(text)
+        from autobot.market_contract import offers_for_row, BUNDLE_COLUMN
+        payload = offers_for_row({BUNDLE_COLUMN: text, COL_NAME: name, COL_UNIT: unit,
+            COL_UNIT_PRICE: estimate_price, COL_QTY: quantity, COL_SUM: total})
     except Exception:
         return []
     if not isinstance(payload, list):
@@ -277,7 +278,10 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     estimate = _read_excel(estimate_path)
     market = _read_excel(market_path)
     parse_manifest = _estimate_parse_manifest(tender_id)
-    market_by_name = _market_rows_by_name(market)
+    from autobot.market_contract import merge_market_frames, position_identity
+    from autobot.tender_viability import compute_viability_stats, _estimate_numeric_for_compare
+    estimate = merge_market_frames(estimate, market)
+    viability = compute_viability_stats(estimate)
 
     positions: list[dict[str, Any]] = []
     file_ids: dict[str, str] = {}
@@ -298,7 +302,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     estimate_rows = [pair for _, pair in estimate_rows_with_order]
     for index, (_, row) in enumerate(estimate_rows, start=1):
         name = _clean(row.get(COL_NAME, ""))
-        if not name:
+        if not name or _clean(row.get(COL_DUP)) == "Да":
             continue
         unit = _clean(row.get(COL_UNIT, ""))
         basis_code = _clean(row.get("basis_code", ""))
@@ -320,11 +324,11 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         if plan.position.needs_decomposition:
             counts["attention"] += 1
 
-        estimate_unit = _number(row.get(COL_UNIT_PRICE))
+        estimate_unit = _estimate_numeric_for_compare(row)
         row_total = _number(row.get(COL_SUM))
         if row_total is not None:
             estimate_total += row_total
-        market_row = market_by_name.get(_key(name))
+        market_row = row if row.get("Рынок обработано") == "Да" else None
         market_processed = market_row is not None
         if market_processed:
             counts["processed"] += 1
@@ -350,7 +354,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
             for source in verified_sources
             if source["price"] is not None
         ]
-        market_median_base = weighted_median(verified_weighted_prices) if verified_prices else None
+        market_median_base = statistics.median(verified_prices) if verified_prices else None
         if not verified_prices:
             verified_count = 0
         unit_multiplier = estimate_unit_multiplier(
@@ -367,13 +371,11 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         elif candidate_count:
             counts["candidates"] += 1
         verdict, verdict_class = _verdict(estimate_unit, market_median)
-        status_text = _clean(market_row.get("Ошибка / статус", "")) if market_row is not None else ""
+        status_text = _clean(market_row.get("Ошибка / статус", "")) if market_row is not None else "Нет подходящего результата для этой позиции"
 
         positions.append(
             {
-                "position_key": hashlib.sha256(
-                    "\x1f".join((name.casefold(), unit.casefold(), section.casefold(), source_file.casefold())).encode("utf-8")
-                ).hexdigest()[:24],
+                "position_key": position_identity(row),
                 "index": index,
                 "item_no": _clean(row.get("№ п/п", "")) or str(section_position_index),
                 "name": name,
@@ -563,6 +565,11 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         "counts": counts,
         "total_positions": total_positions,
         "coverage": coverage,
+        "coverage_cost": viability.coverage_cost_percent,
+        "coverage_cost_fmt": (f"{viability.coverage_cost_percent:.1f}%" if viability.coverage_cost_percent is not None else "Не определено"),
+        "uncovered_estimate_fmt": _fmt_money(viability.uncovered_estimate_total),
+        "rows_without_amount": viability.rows_without_amount,
+        "market_comparison_fmt": _fmt_money(viability.comparable_gap_total),
         "estimate_total": estimate_total if estimate_total else None,
         "estimate_total_fmt": _fmt_money(estimate_total) if estimate_total else "—",
         "estimate_files_count": estimate_files_count,

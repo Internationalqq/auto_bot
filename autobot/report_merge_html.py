@@ -416,111 +416,20 @@ def _contacts_from_structured(phones_text: str, urls_text: str) -> str:
 
 
 def _rows_from_bundle_or_fallback(
-    *,
-    bundle_json: str,
-    qty_scale: float,
-    fallback_prices_text: str,
-    fallback_phones_text: str,
-    fallback_urls_text: str,
-    market_full_text: str = "",
+    *, bundle_json: str, qty_scale: float, fallback_prices_text: str,
+    fallback_phones_text: str, fallback_urls_text: str, market_full_text: str = "",
     median_unit_raw: object = None,
 ) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    structured_bundle_seen = False
-    try:
-        data = json.loads(bundle_json) if bundle_json and str(bundle_json).strip() else []
-        if isinstance(data, list):
-            structured_bundle_seen = bool(data)
-            for it in data:
-                if not isinstance(it, dict):
-                    continue
-                verification = str(it.get("verification", "") or "").strip().lower()
-                # New reports keep both verified offers and rejected/candidate
-                # evidence in the bundle.  Only verified prices may be rendered
-                # in the calculation/source table; legacy rows without the field
-                # remain visible for backwards compatibility.
-                if verification and verification != "verified":
-                    continue
-                p_raw = str(it.get("price", "") or "").strip()
-                u_raw = str(it.get("url", "") or "").strip()
-                ph_raw = str(it.get("phone", "") or "").strip()
-                title_raw = str(it.get("title", "") or "").strip()
-                source_raw = str(it.get("source", "") or "").strip()
-                price_txt = ""
-                if p_raw:
-                    try:
-                        pv = float(p_raw.replace(" ", "").replace(",", "."))
-                        if qty_scale and qty_scale > 1.0:
-                            pv *= qty_scale
-                        price_txt = f"{pv:,.0f}".replace(",", " ") + " ₽"
-                    except (TypeError, ValueError):
-                        price_txt = p_raw
-                rows.append({"price": price_txt, "phone": ph_raw, "url": u_raw, "title": title_raw, "source": source_raw})
-    except (TypeError, ValueError, json.JSONDecodeError):
-        rows = []
+    from autobot.market_contract import offers_for_row, BUNDLE_COLUMN, clean
 
-    if rows:
-        pool_u = collect_urls(market_full_text)
-        pool_p = collect_phones(market_full_text)
-        nums_fb = _parse_semicolon_numbers(fallback_prices_text or "")
-        if not nums_fb:
-            mu = _median_unit_float(median_unit_raw)
-            if mu is not None:
-                nums_fb = [mu]
-        if qty_scale and qty_scale > 1.0:
-            nums_fb = [round(x * qty_scale, 2) for x in nums_fb]
-        price_pool = [f"{v:,.0f}".replace(",", " ") + " ₽" for v in nums_fb[:12]]
-        iu = ip = ipr = 0
-        for r in rows:
-            if not str(r.get("url", "") or "").strip() and iu < len(pool_u):
-                r["url"] = pool_u[iu]
-                iu += 1
-            if not str(r.get("phone", "") or "").strip() and ip < len(pool_p):
-                r["phone"] = pool_p[ip]
-                ip += 1
-            if not str(r.get("price", "") or "").strip():
-                if ipr < len(price_pool):
-                    r["price"] = price_pool[ipr]
-                    ipr += 1
-                elif price_pool:
-                    r["price"] = price_pool[-1]
-        return rows[:12]
-
-    # A parsed modern bundle that contains candidates only must not fall through
-    # to the legacy semicolon columns: those columns can contain the same
-    # unverified prices and would make them look confirmed in the HTML report.
-    if structured_bundle_seen:
-        return []
-
-    # fallback: подхватываем отдельные списки и выравниваем по индексу
-    prices = _parse_semicolon_numbers(fallback_prices_text or "")
-    if qty_scale and qty_scale > 1.0:
-        prices = [round(x * qty_scale, 2) for x in prices]
-    prices_txt = [f"{v:,.0f}".replace(",", " ") + " ₽" for v in prices[:12]]
-    phones = _split_semicolon_values(fallback_phones_text or "")[:12]
-    urls = _split_semicolon_values(fallback_urls_text or "")[:12]
-    if (market_full_text or "").strip():
-        for u in collect_urls(market_full_text):
-            if u not in urls:
-                urls.append(u)
-        for p in collect_phones(market_full_text):
-            if p not in phones:
-                phones.append(p)
-        phones = phones[:24]
-        urls = urls[:24]
-    n = max(len(prices_txt), len(phones), len(urls))
-    out: list[dict[str, str]] = []
-    for i in range(n):
-        out.append(
-            {
-                "price": prices_txt[i] if i < len(prices_txt) else "",
-                "phone": phones[i] if i < len(phones) else "",
-                "url": urls[i] if i < len(urls) else "",
-                "title": "",
-                "source": "",
-            }
-        )
-    return out
+    rows = []
+    for item in offers_for_row({BUNDLE_COLUMN: bundle_json}):
+        if item["verification"] != "verified":
+            continue
+        price = item["price"] * (qty_scale or 1)
+        rows.append({"price": f"{price:,.2f}".replace(",", " ") + " ₽", "phone": clean(item.get("phone")),
+            "url": clean(item.get("url")), "title": clean(item.get("title")), "source": clean(item.get("source"))})
+    return rows[:12]
 
 
 def _bundle_col_prices_html(rows: list[dict[str, str]], *, qty_scale: float = 1.0, unit_label: str = "") -> str:
@@ -692,15 +601,16 @@ def _row_compare_market_value(row: pd.Series, market_unit: float | None) -> floa
 
 
 def _row_market_total(row: pd.Series, market_unit: float | None) -> float | None:
-    if market_unit is None or market_unit <= 0:
-        return None
-    qty = _safe_float(row.get(COL_QTY))
-    q_scale, _ = _quantity_multiplier_from_row(row)
-    if qty is not None and qty > 0:
-        return float(market_unit * qty * max(1.0, q_scale))
-    if q_scale and q_scale > 1.0:
-        return float(market_unit * q_scale)
-    return float(market_unit)
+    from autobot.market_contract import relative_market_total_kopecks, decimal_number, kopecks
+    from autobot.tender_viability import _estimate_numeric_for_compare
+
+    comparison = _row_compare_market_value(row, market_unit)
+    amount = relative_market_total_kopecks(row.get(COL_SUM), _estimate_numeric_for_compare(row), comparison)
+    if amount is None:
+        quantity, price = decimal_number(row.get(COL_QTY)), decimal_number(comparison)
+        if quantity is not None and quantity > 0 and price is not None and price > 0:
+            amount = kopecks(quantity * price)
+    return amount / 100 if amount is not None else None
 
 
 def _row_verdict(est_value: float | None, market_value: float | None) -> tuple[str, str]:
@@ -708,10 +618,10 @@ def _row_verdict(est_value: float | None, market_value: float | None) -> tuple[s
         return "Нет рынка", "status-empty"
     ratio = est_value / market_value
     if ratio > 1.08:
-        return "Выгодно", "status-good"
+        return "Рынок ниже сметы", "status-good"
     if ratio < 0.92:
-        return "Невыгодно", "status-bad"
-    return "На грани", "status-warn"
+        return "Рынок выше сметы", "status-bad"
+    return "Близко к смете", "status-warn"
 
 
 def _render_html(
@@ -722,6 +632,8 @@ def _render_html(
     *,
     viability_html: str = "",
 ) -> str:
+    from autobot.market_contract import sanitize_market_frame
+    df = sanitize_market_frame(df)
     market_col = "Рыночные источники" if "Рыночные источники" in df.columns else ""
     market_full_col = "Рыночные источники (полный текст)" if "Рыночные источники (полный текст)" in df.columns else market_col
     if "Рынок цены за ед. (итог)" in df.columns:
@@ -1395,6 +1307,8 @@ def _render_html_typed(
     *,
     viability_html: str = "",
 ) -> str:
+    from autobot.market_contract import sanitize_market_frame
+    df = sanitize_market_frame(df)
     market_col = "Рыночные источники" if "Рыночные источники" in df.columns else ""
     market_full_col = "Рыночные источники (полный текст)" if "Рыночные источники (полный текст)" in df.columns else market_col
     if "Рынок цены за ед. (итог)" in df.columns:

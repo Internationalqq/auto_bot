@@ -134,20 +134,17 @@ def _estimate_numeric_for_compare(row: pd.Series) -> float | None:
     return float(use)
 
 
-def _market_median_for_row(row: pd.Series, rub_col: str) -> float | None:
-    raw = row.get(rub_col, "")
-    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-        return None
-    s = str(raw).strip()
-    if not s or s in ("—", "-", "nan", "None"):
-        return None
-    nums = _parse_semicolon_numbers(s)
+def _market_median_for_row(row: pd.Series, rub_col: str | None = None) -> float | None:
+    from autobot.market_contract import confirmed_prices
+    from autobot.market_strategy import estimate_unit_multiplier
+
+    nums = confirmed_prices(row)
     if not nums:
         return None
-    q_scale, _ = _quantity_multiplier_from_unit(str(row.get(COL_UNIT, "") or ""))
-    if q_scale and q_scale > 1.0:
-        nums = [round(n * q_scale, 2) for n in nums]
-    return float(statistics.median(nums))
+    scale = estimate_unit_multiplier(row.get(COL_NAME), row.get(COL_UNIT),
+        estimate_price=row.get(COL_UNIT_PRICE), quantity=row.get(COL_QTY), total=row.get(COL_SUM))
+    from decimal import Decimal
+    return float(statistics.median([Decimal(str(n)) for n in nums]) * Decimal(str(scale)))
 
 
 def _rub_col(df: pd.DataFrame) -> str | None:
@@ -175,6 +172,11 @@ class ViabilityStats:
     comparable_market_total: float | None
     comparable_gap_total: float | None
     comparable_gap_percent: float | None
+    total_estimate: float | None = None
+    uncovered_estimate_total: float | None = None
+    coverage_cost_percent: float | None = None
+    coverage_rows_percent: float = 0
+    rows_without_amount: int = 0
 
 
 def _fmt_rub(v: float | None) -> str:
@@ -184,103 +186,78 @@ def _fmt_rub(v: float | None) -> str:
 
 
 def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
-    df = recalc_estimate_qty_price_from_unit(df.copy())
-    rc = _rub_col(df)
-    rows_total = len(df)
-    considered = 0
-    comparable = 0
-    no_market = 0
-    below = near = above = 0
-    ratios: list[float] = []
-    sum_smeta_cheap = 0.0
-    sum_smeta_all = 0.0
-    comparable_est_total = 0.0
-    comparable_market_total = 0.0
-    comparable_has_sum = False
+    from autobot.market_contract import clean, decimal_number, kopecks, relative_market_total_kopecks
 
+    # Preserve the original row total. Recalculating block quantities here used
+    # to multiply an already extended amount for a second time.
+    considered = comparable = no_market = below = near = above = missing_amount = 0
+    ratios = []
+    total_kop = compared_kop = market_kop = cheap_kop = compared_amount_count = 0
     for _, row in df.iterrows():
-        if str(row.get(COL_DUP, "")).strip() == "Да":
-            continue
-        name = str(row.get(COL_NAME, "") or "").strip()
-        if len(name) < 4:
+        if clean(row.get(COL_DUP)) == "Да" or len(clean(row.get(COL_NAME))) < 4:
             continue
         considered += 1
-        if rc is None:
-            no_market += 1
-            continue
+        amount = decimal_number(row.get(COL_SUM))
+        if amount is None:
+            price, qty = decimal_number(row.get(COL_UNIT_PRICE)), decimal_number(row.get(COL_QTY))
+            amount = price * qty if price is not None and qty is not None and qty > 0 else None
+        if amount is None or amount < 0:
+            amount = None
+            missing_amount += 1
+        row_kop = kopecks(amount) if amount is not None else None
+        if row_kop is not None:
+            total_kop += row_kop
         est = _estimate_numeric_for_compare(row)
-        mkt = _market_median_for_row(row, rc) if rc else None
-        sm = _safe_float(row.get(COL_SUM))
+        mkt = _market_median_for_row(row)
         if est is None or mkt is None or mkt <= 0:
             no_market += 1
             continue
         comparable += 1
-        r = est / mkt
-        ratios.append(r)
-        qty = _safe_float(row.get(COL_QTY))
-        sm_row = _safe_float(row.get(COL_SUM))
-        est_total_row = sm_row if sm_row is not None else (est * qty if qty is not None and qty > 0 else est)
-        market_total_row = (mkt * qty) if qty is not None and qty > 0 else mkt
-        if est_total_row is not None and market_total_row is not None and est_total_row > 0 and market_total_row > 0:
-            comparable_est_total += float(est_total_row)
-            comparable_market_total += float(market_total_row)
-            comparable_has_sum = True
-        if sm is not None and sm > 0:
-            sum_smeta_all += sm
-            if r < 0.97:
-                sum_smeta_cheap += sm
-        if r < 0.92:
+        ratio = est / mkt
+        ratios.append(ratio)
+        if row_kop is not None:
+            compared_kop += row_kop
+            compared_amount_count += 1
+            # Relative price times the original extended sum respects both
+            # normal units and normative blocks, rounded once per line.
+            market_kop += relative_market_total_kopecks(amount, est, mkt)
+            if ratio < 0.97:
+                cheap_kop += row_kop
+        if ratio < 0.92:
             below += 1
-        elif r > 1.08:
+        elif ratio > 1.08:
             above += 1
         else:
             near += 1
-
-    med_r = float(statistics.median(ratios)) if ratios else None
-    share = (sum_smeta_cheap / sum_smeta_all) if sum_smeta_all > 0 else None
-    gap_total = None
-    gap_pct = None
-    if comparable_has_sum and comparable_market_total > 0:
-        gap_total = comparable_est_total - comparable_market_total
-        gap_pct = gap_total / comparable_market_total
-
+    gap_kop = compared_kop - market_kop
     return ViabilityStats(
-        rows_total=rows_total,
-        rows_considered=considered,
-        comparable=comparable,
-        no_market=no_market,
-        smeta_below_market=below,
-        smeta_near_market=near,
-        smeta_above_market=above,
-        median_ratio=med_r,
-        share_sum_smeta_where_cheaper_than_median=share,
-        comparable_estimate_total=(comparable_est_total if comparable_has_sum else None),
-        comparable_market_total=(comparable_market_total if comparable_has_sum else None),
-        comparable_gap_total=gap_total,
-        comparable_gap_percent=gap_pct,
+        rows_total=len(df), rows_considered=considered, comparable=comparable, no_market=no_market,
+        smeta_below_market=below, smeta_near_market=near, smeta_above_market=above,
+        median_ratio=float(statistics.median(ratios)) if ratios else None,
+        share_sum_smeta_where_cheaper_than_median=cheap_kop / compared_kop if compared_kop else None,
+        comparable_estimate_total=compared_kop / 100 if compared_amount_count else None,
+        comparable_market_total=market_kop / 100 if compared_amount_count else None,
+        comparable_gap_total=gap_kop / 100 if compared_amount_count else None,
+        comparable_gap_percent=gap_kop / market_kop if market_kop else None,
+        total_estimate=total_kop / 100 if considered else None,
+        uncovered_estimate_total=(total_kop - compared_kop) / 100 if considered else None,
+        coverage_cost_percent=100 * compared_kop / total_kop if total_kop > 0 and not missing_amount else None,
+        coverage_rows_percent=100 * comparable / considered if considered else 0,
+        rows_without_amount=missing_amount,
     )
 
 
 def _verdict_label(st: ViabilityStats) -> tuple[str, str]:
-    """(краткая оценка, css-класс)."""
-    if st.comparable < 3:
-        return "🟡 Недостаточно данных: пока нельзя уверенно сказать, выгодный тендер или нет.", "viability--warn"
+    """Market comparison is not a profit calculation for the whole tender."""
+    if st.coverage_cost_percent is None or st.coverage_cost_percent < 90 or st.comparable < 3:
+        return "Нужно уточнить затраты: рыночные цены покрывают только часть сметы.", "viability--warn"
     if st.median_ratio is None:
-        return "🟡 Нет нормального сравнения сметы с рынком: вывод пока неясный.", "viability--warn"
+        return "Недостаточно данных для сравнения со сметой.", "viability--warn"
     if st.median_ratio < 0.92:
-        return (
-            "🔴 Тендер, скорее всего, невыгодный: сметные цены в среднем ниже рынка.",
-            "viability--tight",
-        )
+        return "Найденные рыночные цены выше сметы. Проверьте бюджет этих позиций.", "viability--tight"
     if st.median_ratio > 1.08:
-        return (
-            "✅ Тендер выглядит выгодным: сметные цены в среднем выше рынка, запас есть.",
-            "viability--room",
-        )
-    return (
-        "🟡 Тендер на грани: смета и рынок близки, нужна ручная проверка ключевых позиций.",
-        "viability--neutral",
-    )
+        return "Найденные рыночные цены ниже сметы. Прибыль требует расчёта всех затрат.", "viability--neutral"
+    return "Рынок близок к смете. Проверьте доставку, накладные и резерв.", "viability--neutral"
 
 
 def build_viability_section_html(
@@ -296,6 +273,8 @@ def build_viability_section_html(
         if st.share_sum_smeta_where_cheaper_than_median is not None
         else "—"
     )
+    coverage_s = f"{st.coverage_cost_percent:.1f}%" if st.coverage_cost_percent is not None else "не определено"
+    uncovered_s = _fmt_rub(st.uncovered_estimate_total)
     est_total_s = _fmt_rub(st.comparable_estimate_total)
     market_total_s = _fmt_rub(st.comparable_market_total)
     gap_total_s = _fmt_rub(abs(st.comparable_gap_total) if st.comparable_gap_total is not None else None)
@@ -322,7 +301,7 @@ def build_viability_section_html(
         elif st.comparable_gap_total > 0:
             why_line = (
                 f"По строкам, где рынок найден, смета даёт {est_total_s}, "
-                f"а рынок показывает примерно {market_total_s}. Запас около {gap_total_s} ({gap_pct_s})."
+                f"а рынок показывает примерно {market_total_s}. Разница {gap_total_s} ({gap_pct_s} к рыночной сумме)."
             )
         else:
             why_line = f"По строкам, где рынок найден, смета и рынок почти равны: {est_total_s} против {market_total_s}."
@@ -344,7 +323,8 @@ def build_viability_section_html(
   <p class="viability__verdict"><strong>{title_esc}</strong></p>
   <p class="viability__muted" style="margin-top:-.2rem;margin-bottom:.8rem;">{html_std.escape(why_line)}</p>
   <ul class="viability__facts">
-    <li>Строк в смете: <b>{st.rows_considered}</b> · с рынком: <b>{st.comparable}</b></li>
+    <li>Проверено по сумме: <b>{coverage_s}</b> · без цены: <b>{uncovered_s}</b></li>
+    <li>Позиций с ценой: <b>{st.comparable} из {st.rows_considered}</b> · без суммы: <b>{st.rows_without_amount}</b></li>
     <li>Сумма по сравнимым строкам: <b>{est_total_s}</b> · рынок: <b>{market_total_s}</b></li>
     <li>Смета дешевле рынка (&lt;92%): <b>{st.smeta_below_market}</b> · рядом: <b>{st.smeta_near_market}</b> · дороже (&gt;108%): <b>{st.smeta_above_market}</b></li>
     <li>Медиана «цена в таблице / медиана рынка»: <b>{med_s}</b></li>
@@ -363,11 +343,11 @@ def build_viability_section_html(
     <ul>
       {dyn_con}
       <li>Много строк «смета ниже рынка» — потолок жёсткий.</li>
-      <li>Нет рынка по части строк — картина неполная; догоните Алису.</li>
+      <li>Непроверенные позиции требуют цены или явного бюджета.</li>
     </ul>
   </div>
   {narr_block}
-  <p class="viability__muted">Цены с сайтов — ориентир, не НМЦК.</p>
+  <p class="viability__muted">Разница со сметой не равна прибыли: здесь не учтены все затраты и цена вашего предложения.</p>
 </section>"""
 
 
@@ -420,7 +400,7 @@ def format_viability_for_telegram(tender_id: str) -> str | None:
         f"• Дешевле рынка (&lt;92%): <b>{st.smeta_below_market}</b> · рядом: <b>{st.smeta_near_market}</b> · дороже (&gt;108%): <b>{st.smeta_above_market}</b>",
         f"• Медиана «смета/рынок»: <b>{med_s}</b> · сумма при &lt;0,97: <b>{share_s}</b>",
         "",
-        "<i>Цены с сайтов — ориентир, не НМЦК.</i>",
+        "<i>Разница со сметой не равна прибыли: здесь не учтены все затраты и цена вашего предложения.</i>",
     ]
     if nar and nar.strip():
         lines.extend(["", "<b>AI</b>", html_std.escape(nar.strip()[:2200])])
