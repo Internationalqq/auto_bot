@@ -17,8 +17,12 @@ import unicodedata
 import uuid
 import zipfile
 
+if __package__ in {None, ''}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from autobot.split_zip import SplitZipRejected, open_zip, part_number, volume_paths
+
 ARCHIVE_EXTENSIONS = {'.zip', '.rar', '.7z'}
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,8 @@ def validate_member(info, limits: Limits) -> tuple[PurePosixPath, bool, int]:
             raise ArchiveRejected('link', 'Ссылки и специальные файлы в архиве не поддерживаются')
         if info.flag_bits & 1:
             raise ArchiveRejected('encrypted', 'Архив защищён паролем')
+        if info.volume:
+            raise ArchiveRejected('multipart', 'Для этого ZIP нужны остальные тома; откройте полный комплект исходников.')
     else:
         if (info.is_symlink() or getattr(info, 'file_redir', None) is not None
                 or stat.S_IFMT(int(getattr(info, 'mode', 0) or 0)) not in {0, stat.S_IFREG, stat.S_IFDIR}):
@@ -83,10 +89,10 @@ def validate_member(info, limits: Limits) -> tuple[PurePosixPath, bool, int]:
     return path, directory, size
 
 
-def open_archive(source, name: str):
+def open_archive(source, name: str, *, budget=None, volumes=None):
     extension = Path(name).suffix.lower()
     if extension == '.zip':
-        return zipfile.ZipFile(source)
+        return open_zip(source, budget or Budget(Limits()), volumes=volumes)
     if extension == '.rar':
         import rarfile
         # rarfile selects the installed unrar/unar/7z reader. Only its stream
@@ -177,14 +183,16 @@ def _hash_file(path: Path, max_bytes: int, budget: Budget) -> str:
 
 
 def _unpack(archive_path: Path, destination: Path, chain: list[str], depth: int,
-            budget: Budget, files: list[dict], root: Path):
+            budget: Budget, files: list[dict], root: Path, volumes=None):
     if depth > budget.limits.depth:
         raise ArchiveRejected('depth', 'Превышена допустимая глубина вложенных архивов')
     budget.check_time()
-    with open_archive(archive_path, archive_path.name) as archive:
+    with open_archive(archive_path, archive_path.name, budget=budget, volumes=volumes) as archive:
         entries = budget.reserve(archive.infolist())
         for info, relative, directory, size in entries:
             target = destination / str(relative)
+            if os.name == 'nt' and len(str(target.absolute())) >= 248:
+                raise ArchiveRejected('path_length', 'Путь распакованного файла слишком длинный для Windows; откройте архив вручную')
             if directory:
                 target.mkdir(parents=True, exist_ok=True)
                 continue
@@ -247,7 +255,7 @@ def _read_cache(cache: Path, source_hash: str, limits: Limits, budget: Budget) -
 
 
 def _error(exc: Exception) -> dict:
-    if isinstance(exc, ArchiveRejected):
+    if isinstance(exc, (ArchiveRejected, SplitZipRejected)):
         return {'code': exc.code, 'message': str(exc)}
     kind = type(exc).__name__
     messages = {'BadZipFile': 'Архив ZIP повреждён', 'BadRarFile': 'Архив RAR повреждён',
@@ -257,9 +265,27 @@ def _error(exc: Exception) -> dict:
     return {'code': 'read_error', 'message': messages.get(kind, f'Не удалось распаковать архив ({kind})')}
 
 
-def extract_in_worker(archives: list[Path], extracted_base: Path, scratch: Path, limits: Limits) -> dict:
+def _source_identity(paths, budget):
+    sizes = []
+    for path in paths:
+        _assert_plain_directory(path)
+        if not path.is_file():
+            raise ArchiveRejected('source_changed', 'Один из исходных томов недоступен; повторите скачивание')
+        sizes.append(path.stat().st_size)
+    if sum(sizes) > budget.limits.input_bytes:
+        raise ArchiveRejected('input_size', 'Общий размер исходного архива превышает допустимый размер')
+    rows = [{'name': path.name, 'size': size, 'sha256': _hash_file(path, budget.limits.input_bytes, budget)}
+            for path, size in zip(paths, sizes)]
+    identity = rows[0]['sha256'] if len(rows) == 1 else hashlib.sha256(
+        json.dumps(rows, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+    return identity, rows
+
+
+def extract_in_worker(archives: list[Path], extracted_base: Path, scratch: Path, limits: Limits,
+                      source_files=None) -> dict:
     budget = Budget(limits)
     results = []
+    used_volumes = set()
     if len(archives) > limits.archives:
         raise ArchiveRejected('archive_count', 'Превышено количество исходных архивов')
     for source in archives:
@@ -267,7 +293,9 @@ def extract_in_worker(archives: list[Path], extracted_base: Path, scratch: Path,
         results.append(row)
         try:
             _assert_plain_directory(source)
-            sha256 = _hash_file(source, limits.input_bytes, budget)
+            volumes = volume_paths(source, source_files)
+            used_volumes.update(p.absolute() for p in volumes)
+            sha256, source_rows = _source_identity(volumes, budget)
             # The original stem remains the owner of its derived cache, so the
             # existing source-version trash/restore workflow still works.
             owner = extracted_base / str(safe_member_path(source.parent.name)) / str(safe_member_path(source.stem))
@@ -298,12 +326,12 @@ def extract_in_worker(archives: list[Path], extracted_base: Path, scratch: Path,
                 work.mkdir()
                 counts_before = (budget.archives, budget.members, budget.bytes)
                 files: list[dict] = []
-                _unpack(source, work / 'files', [source.name], 1, budget, files, work)
-                if _hash_file(source, limits.input_bytes, budget) != sha256:
+                _unpack(source, work / 'files', [source.name], 1, budget, files, work, volumes)
+                if _source_identity(volumes, budget)[0] != sha256:
                     raise ArchiveRejected('source_changed', 'Архив изменился во время распаковки; повторите разбор')
                 if os.name == 'nt' and any(len(str(cache / f['path'])) >= 248 for f in files):
                     raise ArchiveRejected('path_length', 'Путь распакованного файла слишком длинный для Windows; откройте архив вручную')
-                data = {'policy': POLICY_VERSION, 'source_sha256': sha256, 'files': files,
+                data = {'policy': POLICY_VERSION, 'source_sha256': sha256, 'source_files': source_rows, 'files': files,
                         'limits': asdict(limits), 'counts': dict(zip(('archives', 'members', 'bytes'),
                             (budget.archives - counts_before[0], budget.members - counts_before[1], budget.bytes - counts_before[2])))}
                 (work / 'manifest.json').write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
@@ -317,12 +345,21 @@ def extract_in_worker(archives: list[Path], extracted_base: Path, scratch: Path,
                     data = _read_cache(cache, sha256, limits, duplicate_budget)
                     if data is None:
                         raise
-            row.update(status='complete', source_sha256=sha256,
+            if _source_identity(volumes, budget)[0] != sha256:
+                raise ArchiveRejected('source_changed', 'Исходные тома изменились во время проверки; повторите разбор')
+            row.update(status='complete', source_sha256=sha256, source_files=source_rows,
                        files=[{**f, 'path': str(cache / f['path'])} for f in data['files']])
         except Exception as exc:
             row.update(_error(exc))
+    results.extend(_orphan_parts(source_files, used_volumes))
     return {'policy': POLICY_VERSION, 'limits': asdict(limits), 'archives': results,
             'failed_count': sum(r['status'] != 'complete' for r in results)}
+
+
+def _orphan_parts(source_files, used_volumes=()):
+    return [{'archive': Path(p).name, 'status': 'failed', 'files': [], 'code': 'multipart',
+             'message': 'Для тома ZIP не найден соответствующий завершающий .zip в текущем комплекте. Повторите скачивание всех документов.'}
+            for p in (source_files or []) if part_number(p) and Path(p).absolute() not in used_volumes]
 
 
 def _stop_process(proc):
@@ -338,7 +375,8 @@ def _stop_process(proc):
     proc.wait(timeout=10)
 
 
-def extract_documents(archives: list[Path], extracted_base: Path, *, limits: Limits | None = None) -> dict:
+def extract_documents(archives: list[Path], extracted_base: Path, *, limits: Limits | None = None,
+                      source_files=None) -> dict:
     """Run the whole tender budget in a child, including external RAR readers."""
     limits = limits or Limits()
     paths = list(dict.fromkeys(Path(p).absolute() for p in archives))
@@ -346,14 +384,16 @@ def extract_documents(archives: list[Path], extracted_base: Path, *, limits: Lim
     _assert_plain_directory(base)
     base.mkdir(parents=True, exist_ok=True)
     if not paths:
-        return {'policy': POLICY_VERSION, 'limits': asdict(limits), 'archives': [], 'failed_count': 0}
+        orphans = _orphan_parts(source_files)
+        return {'policy': POLICY_VERSION, 'limits': asdict(limits), 'archives': orphans, 'failed_count': len(orphans)}
     if len(paths) > limits.archives:
         return {'policy': POLICY_VERSION, 'limits': asdict(limits), 'archives': [], 'failed_count': len(paths),
                 'code': 'archive_count', 'message': 'Превышено количество исходных архивов'}
     with tempfile.TemporaryDirectory(prefix='.extract-', dir=base) as name:
         scratch = Path(name)
         request = {'archives': [str(p) for p in paths], 'base': str(base),
-                   'scratch': str(scratch), 'limits': asdict(limits)}
+                   'scratch': str(scratch), 'limits': asdict(limits),
+                   'source_files': [str(Path(p).absolute()) for p in source_files] if source_files is not None else None}
         (scratch / 'request.json').write_text(json.dumps(request), encoding='utf-8')
         command = [sys.executable, str(Path(__file__).resolve()), str(scratch / 'request.json')]
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -385,5 +425,5 @@ if __name__ == '__main__':
         resource.setrlimit(resource.RLIMIT_CPU, (120, 120))
         resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024))
     result = extract_in_worker([Path(p) for p in request['archives']], Path(request['base']),
-                               Path(request['scratch']), Limits(**request['limits']))
+                               Path(request['scratch']), Limits(**request['limits']), request.get('source_files'))
     (Path(request['scratch']) / 'result.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')

@@ -28,7 +28,7 @@ _ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 _MAX_ARCHIVE_DEPTH = 3
 _MAX_ARCHIVE_MEMBER_BYTES = 32 * 1024 * 1024
 _PREVIEW_ARCHIVE_LIMITS = Limits(depth=3, archives=16, members=500, member_bytes=_MAX_ARCHIVE_MEMBER_BYTES,
-                               total_bytes=64 * 1024 * 1024, seconds=23)
+                               total_bytes=64 * 1024 * 1024, input_bytes=_MAX_ARCHIVE_MEMBER_BYTES, seconds=23)
 
 
 def _clean(value: Any) -> str:
@@ -386,7 +386,7 @@ def _collect_archive_entries(source: Any, source_name: str, chain_prefix: list[s
                              budget: Budget) -> tuple[list[dict[str, Any]], bool]:
     if hasattr(source, "seek"):
         source.seek(0)
-    with open_archive(source, source_name) as archive:
+    with open_archive(source, source_name, budget=budget) as archive:
         infos = budget.reserve(archive.infolist())
         return _models_from_archive_infos(archive, infos, chain_prefix, depth, budget)
 
@@ -465,7 +465,7 @@ def _archive_preview(source: Any, source_name: str, chain_prefix: list[str] | No
 def _read_one_archive_member(source: Any, source_name: str, raw_name: str, budget: Budget) -> bytes:
     if hasattr(source, "seek"):
         source.seek(0)
-    with open_archive(source, source_name) as archive:
+    with open_archive(source, source_name, budget=budget) as archive:
         infos = budget.reserve(archive.infolist())
         found = next((item for item in infos if item[0].filename == raw_name), None)
         if found is None or found[2]:

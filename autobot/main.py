@@ -67,7 +67,7 @@ ARCHIVE_KEYWORDS = [
     "лср",
     "докум",
 ]
-DOC_EXTENSIONS = (".zip", ".rar", ".7z", ".xlsx", ".xls", ".xlsm", ".pdf", ".doc", ".docx", ".rtf")
+DOC_EXTENSIONS = (".zip", ".rar", ".7z", ".xlsx", ".xls", ".xlsm", ".pdf", ".doc", ".docx", ".rtf") + tuple(f'.z{i:02}' for i in range(1, 100))
 NOTICE_ROUTE_TYPES = (
     "ea20",
     "ea44",
@@ -844,9 +844,10 @@ def collect_doc_links(page) -> list[tuple[str, str]]:
             continue
         full = normalize_href(href)
         low_url = full.lower()
-        is_direct_download = "/download/" in low_url and "file.html" in low_url
+        is_direct_download = "/download/" in low_url and any(name in low_url for name in ("file.html", "download.html"))
         is_doc_ext = low_url.endswith(DOC_EXTENSIONS)
-        is_doc_text = any(k in text for k in ARCHIVE_KEYWORDS) or any(x in text for x in ("pdf", "xlsx", "xls", "doc"))
+        is_doc_text = (any(k in text for k in ARCHIVE_KEYWORDS) or any(x in text for x in ("pdf", "xlsx", "xls", "doc"))
+                       or re.search(r'\.z(?:0[1-9]|[1-9]\d)(?:\s|$)', text))
         if is_doc_ext or is_doc_text or is_direct_download:
             candidates.append((text, full))
     # Иногда ссылка на архив есть только в сыром HTML.
@@ -1209,9 +1210,11 @@ def archive_seeds_for_tender(downloads_dir: Path | None, extracted_tender_root: 
 
 
 def extract_archives_nested(archives: list[Path], extracted_base: Path, max_rounds: int = 5,
-                            *, report_path: Path | None = None, require_complete: bool = False) -> list[Path]:
+                            *, report_path: Path | None = None, require_complete: bool = False,
+                            source_files: list[Path] | None = None) -> list[Path]:
     from autobot.archive_extraction import ArchiveRejected, Limits, extract_documents
-    result = extract_documents(archives, extracted_base, limits=Limits(depth=max(1, min(max_rounds, 5))))
+    result = extract_documents(archives, extracted_base, limits=Limits(depth=max(1, min(max_rounds, 5))),
+                               source_files=source_files)
     if report_path is not None:
         search_state.atomic_json(report_path, result)
     failures = [row for row in result['archives'] if row['status'] != 'complete']
@@ -2746,7 +2749,8 @@ def _run_main(args, out_paths):
         ext_root = out_paths["extracted"] / tender.tender_id
         seeds = [p for p in downloaded_files if p.suffix.lower() in {".zip", ".rar", ".7z"}]
         extracted = extract_archives_nested(seeds, out_paths["extracted"],
-                                            report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
+                                            report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True,
+                                            source_files=downloaded_files)
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
         excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
@@ -2817,7 +2821,8 @@ def _run_main(args, out_paths):
         existing_extracted_root = out_paths["extracted"] / tid
         seeds = [p for p in downloaded_files if p.suffix.lower() in {".zip", ".rar", ".7z"}]
         extracted = extract_archives_nested(seeds, out_paths["extracted"],
-                                            report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
+                                            report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True,
+                                            source_files=downloaded_files)
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
         direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
@@ -3107,7 +3112,8 @@ def _run_main(args, out_paths):
         from autobot.archive_extraction import ArchiveRejected
         try:
             extracted = extract_archives_nested(seeds, out_paths["extracted"],
-                report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
+                report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True,
+                source_files=downloaded_files)
         except ArchiveRejected as error:
             print(f"[archive] {tender.tender_id}: {error}")
             failed_downloads.append(tender.tender_id)

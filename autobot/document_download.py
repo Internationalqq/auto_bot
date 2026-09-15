@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import re
 from email.message import Message
 
 MAX_BYTES = 128 * 1024 * 1024
@@ -33,6 +34,14 @@ def inspect_document(path, headers, expected_extension=''):
     if 'text/html' in content_type or 'application/xhtml' in content_type or any(
         marker in text[:2048] for marker in ('<!doctype html', '<html', '<head', '<body')):
         raise DownloadRejected('Источник вернул страницу сайта вместо документа. Возможно, нужна проверка доступа в ЕИС.')
+    if re.fullmatch(r'\.z(?:0[1-9]|[1-9]\d)', expected_extension):
+        if expected_extension == '.z01' and not head.startswith((b'PK\x07\x08PK\x03\x04', b'PK\x03\x04')):
+            raise DownloadRejected('Первый том ZIP не содержит начала архива.')
+        # A volume has no independent directory/CRC. The complete set is
+        # validated during extraction, before any new estimate is published.
+        return expected_extension
+    if head.startswith(b'PK\x07\x08PK\x03\x04'):
+        return '.z01'
     if head.startswith(b'PK') or expected_extension in {'.zip', '.xlsx', '.xlsm', '.docx'}:
         try:
             with zipfile.ZipFile(path) as archive:

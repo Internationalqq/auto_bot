@@ -83,6 +83,8 @@ def worker(folder):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from autobot import source_documents as documents
     from autobot.archive_extraction import ArchiveRejected
+    from autobot.split_zip import SplitZipRejected
+    from autobot.document_bundle import DocumentBundleRejected
     request = json.loads((folder / 'request.json').read_text(encoding='utf-8'))
     path = Path(request['path'])
     try:
@@ -98,7 +100,7 @@ def worker(folder):
             raise ValueError('Unknown reader operation')
     except FileNotFoundError:
         result = {'error': 'Файл внутри архива не найден', 'missing': True}
-    except (ArchiveRejected, documents.PreviewRejected) as error:
+    except (ArchiveRejected, SplitZipRejected, DocumentBundleRejected, documents.PreviewRejected) as error:
         result = {'error': str(error)}
     except Exception:
         result = {'error': 'Не удалось прочитать документ. Файл сохранён; скачайте оригинал для проверки.'}
