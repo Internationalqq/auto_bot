@@ -48,3 +48,9 @@ data/market_index/
 data/agent_market_jobs.sqlite3
 data/agent_market_jobs.sqlite3-*
 data/agent_market_worker.token
+
+# Runtime state; the existing user checkpoint remains tracked.
+/data/market_web_worker.lock
+/data/eis_search.lock
+/data/last_search_run.json
+/data/search_runs/
