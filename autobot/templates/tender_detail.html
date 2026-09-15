@@ -66,6 +66,13 @@
       <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Исходные файлы <span>{{ tender.documents.count }}</span></a>
     </nav>
 
+    {% if tender.document_parse.blocked and not tender.document_download.blocked %}
+    <section class="market-health-alert" role="alert">
+      <div><small>Обработка документов</small><strong>Новый разбор сметы не завершён</strong></div>
+      <p>{{ tender.document_parse.errors | join(' · ') }}</p>
+      <button class="btn primary" type="button" data-rebuild-report>Повторить разбор документов</button>
+    </section>
+    {% endif %}
     {% if tender.document_download.blocked %}
     <section class="market-health-alert" role="alert" aria-label="Загрузка документов не завершена">
       <div><strong>Комплект документов не загружен</strong></div>
@@ -976,7 +983,7 @@
     document.getElementById("sourceFileSearch")?.addEventListener("input", filterSourceFiles);
     document.getElementById("sourceFileKind")?.addEventListener("change", filterSourceFiles);
 
-    const documentRefreshButtons = [...document.querySelectorAll("[data-refresh-documents]")];
+    const documentRefreshButtons = [...document.querySelectorAll("[data-refresh-documents], [data-rebuild-report]")];
     const documentRefreshStatus = document.getElementById("documentRefreshStatus");
     let documentRunId = null;
     async function pollDocumentRefresh() {
@@ -998,11 +1005,11 @@
             documentRefreshStatus.textContent = "Документы обработаны. Обновляю карточку…";
             window.location.reload();
           } else {
-            documentRefreshStatus.textContent = "Загрузка или разбор не завершились. " + ((state.document_status?.errors || []).join(" · ") || "Подробности доступны в журнале обработки. Повторите попытку позже.");
+            documentRefreshStatus.textContent = "Загрузка или разбор не завершились. " + ([...(state.document_status?.errors || []), ...(state.document_parse?.errors || [])].join(" · ") || "Подробности доступны в журнале обработки. Повторите попытку позже.");
           }
           return;
         }
-        documentRefreshStatus.textContent = "Скачиваю документы и разбираю смету. Страницу можно закрыть.";
+        documentRefreshStatus.textContent = "Обрабатываю документы и разбираю смету. Страницу можно закрыть.";
       } catch (error) {
         documentRefreshStatus.textContent = "Не удалось получить состояние загрузки. Проверяю повторно…";
       }
@@ -1011,11 +1018,12 @@
     documentRefreshButtons.forEach(button => button.addEventListener("click", async function() {
       documentRefreshButtons.forEach(item => item.disabled = true);
       documentRefreshStatus.hidden = false;
-      documentRefreshStatus.textContent = "Запускаю загрузку документов…";
+      const rebuild = button.hasAttribute("data-rebuild-report");
+      documentRefreshStatus.textContent = rebuild ? "Запускаю разбор сохранённых документов…" : "Запускаю загрузку документов…";
       documentRefreshStatus.focus();
       try {
-        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/refresh-documents", {
-          method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"
+        const response = await fetch(rebuild ? "/api/rebuild-report" : "/api/tenders/" + encodeURIComponent(TENDER_ID) + "/refresh-documents", {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(rebuild ? {tender_id:TENDER_ID} : {})
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || "Не удалось запустить загрузку");

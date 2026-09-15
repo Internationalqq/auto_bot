@@ -11350,47 +11350,45 @@ def api_refresh_tender_documents(tender_id):
     address = urlparse(url)
     if address.scheme != 'https' or not address.hostname or not (address.hostname == 'zakupki.gov.ru' or address.hostname.endswith('.zakupki.gov.ru')) or address.username or address.password:
         return jsonify({'ok': False, 'message': 'В карточке нет корректной HTTPS-ссылки на ЕИС.'}), 400
+    task = 'скачивание документов и разбор сметы ' + tender_id
+    return _start_document_job(tender_id, ['--from-tender-id', tender_id, '--from-tender-url', url], task, 202)
+
+
+def _start_document_job(tender_id, cli_args, task, success_code=200):
     if _merge_site_busy():
         return jsonify({'ok': False, 'message': 'Дождитесь завершения текущего сравнения цен.'}), 409
     import uuid
     run_id = uuid.uuid4().hex
-    task = 'скачивание документов и разбор сметы ' + tender_id
     with parse_lock:
         if parse_state['running']:
             return jsonify({'ok': False, 'message': 'Сейчас выполняется другая работа с документами.'}), 409
         parse_state.update(running=True, task=task, command='', run_id=run_id, tender_id=tender_id,
             started_at=datetime.now().isoformat(timespec='seconds'), ended_at=None,
-            exit_code=None, log_lines=['Подготавливаем загрузку текущего комплекта документов…'])
+            exit_code=None, log_lines=['Подготавливаем обработку документов…'])
     try:
-        threading.Thread(target=_run_main_worker, kwargs={'cli_args': ['--from-tender-id', tender_id, '--from-tender-url', url],
+        threading.Thread(target=_run_main_worker, kwargs={'cli_args': cli_args,
             'task': task, 'run_id': run_id, 'tender_id': tender_id}, daemon=True).start()
     except RuntimeError:
         with parse_lock:
             parse_state.update(running=False, ended_at=datetime.now().isoformat(timespec='seconds'), exit_code=-1,
                                log_lines=['Не удалось запустить загрузку. Повторите попытку.'])
         return jsonify({'ok': False, 'message': 'Не удалось запустить загрузку.'}), 500
-    return jsonify({'ok': True, 'tender_id': tender_id, 'run_id': run_id}), 202
+    return jsonify({'ok': True, 'tender_id': tender_id, 'run_id': run_id}), success_code
 
 
 @app.route("/api/rebuild-report", methods=["POST"])
 def api_rebuild_report():
-    if _merge_site_busy():
-        return jsonify({"ok": False, "message": "Сначала дождитесь окончания подготовки сравнений цен."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Некорректный запрос.'}), 400
     tid = str(data.get("tender_id", "")).strip()
-    if not tid:
-        return jsonify({"ok": False, "message": "Укажите tender_id"}), 400
+    if not re.fullmatch(r'\d{8,25}', tid):
+        return jsonify({"ok": False, "message": "Укажите корректный tender_id"}), 400
+    if tid not in load_tender_metadata():
+        return jsonify({'ok': False, 'message': 'Тендер не найден.'}), 404
     if not _AUTOBOT_MAIN_FILE.is_file():
         return jsonify({"ok": False, "message": f"Не найден {_AUTOBOT_MAIN_FILE}"}), 500
-    threading.Thread(
-        target=_run_main_worker,
-        kwargs={"cli_args": ["--from-downloaded-tender-id", tid], "task": f"повторное извлечение сметы {tid}"},
-        daemon=True,
-    ).start()
-    return jsonify({"ok": True})
+    return _start_document_job(tid, ['--from-downloaded-tender-id', tid], f'повторное извлечение сметы {tid}')
 
 
 @app.route("/api/rebuild-all-reports", methods=["POST"])
@@ -11433,6 +11431,8 @@ def api_parse_status():
     if re.fullmatch(r'\d{8,25}', tender_id):
         from autobot.document_bundle import display_status
         payload['document_status'] = display_status(REPORTS_DIR, tender_id)
+        from autobot.estimate_publication import display_status as parse_status
+        payload['document_parse'] = parse_status(REPORTS_DIR, tender_id)
     return jsonify(payload)
 
 

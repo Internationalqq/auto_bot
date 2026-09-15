@@ -2116,13 +2116,22 @@ def extract_work_rows_fallback(df: pd.DataFrame, tender: Tender, source_file: Pa
     return items
 
 
-def extract_rows_from_excel(path: Path, tender: Tender) -> list[dict]:
+def extract_rows_from_excel(path: Path, tender: Tender, *, strict: bool = False, limits=None) -> list[dict]:
     rows: list[dict] = []
     if should_skip_object_estimate_file(path):
         return rows
     try:
-        data = pd.read_excel(path, sheet_name=None, header=None)
-    except Exception:
+        if strict:
+            from autobot.estimate_parse_worker import read_excel_bounded, ParseLimits
+            data = read_excel_bounded(path, limits or ParseLimits())
+        else:
+            data = pd.read_excel(path, sheet_name=None, header=None)
+    except Exception as error:
+        if strict:
+            from autobot.estimate_parse_worker import EstimateParseRejected
+            if isinstance(error, EstimateParseRejected):
+                raise
+            raise EstimateParseRejected('Не удалось прочитать Excel (' + type(error).__name__ + ').') from None
         return rows
 
     fallback_enabled = _truthy_env("ESTIMATE_EXCEL_FALLBACK", "1")
@@ -2153,27 +2162,42 @@ def extract_rows_from_excel(path: Path, tender: Tender) -> list[dict]:
     return list(uniq.values())
 
 
-def _iter_pdf_lines(path: Path) -> Iterable[str]:
+def _iter_pdf_lines(path: Path, *, strict: bool = False) -> Iterable[str]:
     try:
-        from pypdf import PdfReader  # type: ignore
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
     except Exception:
+        if strict:
+            from autobot.estimate_parse_worker import EstimateParseRejected
+            raise EstimateParseRejected('Недоступен обработчик текстового слоя PDF.') from None
         return []
     try:
-        reader = PdfReader(str(path))
+        reader = fitz.open(path)
     except Exception:
+        if strict:
+            from autobot.estimate_parse_worker import EstimateParseRejected
+            raise EstimateParseRejected('Не удалось открыть PDF.') from None
         return []
     out: list[str] = []
-    for pg in reader.pages:
-        try:
-            txt = pg.extract_text() or ""
-        except Exception:
-            txt = ""
-        if not txt:
-            continue
-        for ln in txt.splitlines():
-            s = re.sub(r"\s+", " ", ln).strip()
-            if s:
-                out.append(s)
+    try:
+        for pg in reader:
+            try:
+                txt = pg.get_text('text') or ""
+            except Exception:
+                if strict:
+                    from autobot.estimate_parse_worker import EstimateParseRejected
+                    raise EstimateParseRejected('Одна из страниц PDF не прочитана; частичная смета не сохраняется.') from None
+                txt = ""
+            if not txt:
+                continue
+            for ln in txt.splitlines():
+                s = re.sub(r"\s+", " ", ln).strip()
+                if s:
+                    out.append(s)
+    finally:
+        reader.close()
     return out
 
 
@@ -2249,7 +2273,7 @@ def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
     return rows
 
 
-def extract_rows_from_pdf(path: Path, tender: Tender) -> list[dict]:
+def extract_rows_from_pdf(path: Path, tender: Tender, *, strict: bool = False) -> list[dict]:
     """
     Сначала распознаём настоящую таблицу ЛСР, включая сканы. Строчный PDF-парсер — резерв.
     """
@@ -2261,7 +2285,8 @@ def extract_rows_from_pdf(path: Path, tender: Tender) -> list[dict]:
         print(f"[pdf] OCR ЛСР не сработал для {path.name}: {type(error).__name__}: {error}")
 
     rows: list[dict] = []
-    for line in _iter_pdf_lines(path):
+    lines = _iter_pdf_lines(path, strict=True) if strict else _iter_pdf_lines(path)
+    for line in lines:
         m = PDF_LINE_PRICE_RE.match(line)
         if not m:
             continue
@@ -2321,6 +2346,26 @@ def write_outputs(tenders: list[Tender], rows: list[dict], out_paths: dict[str, 
     df.to_excel(report_path, index=False)
     return report_path
 
+
+
+def parse_tender_report(tender, excel_files, pdf_files, downloaded_files, out_paths, tg_cfg=None):
+    from autobot.estimate_publication import parse_and_publish
+    from autobot.estimate_parse_worker import EstimateParseRejected
+    try:
+        return parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_paths)
+    except EstimateParseRejected as error:
+        if excel_files or pdf_files:
+            print(f"[parse] {tender.tender_id}: {error}")
+            raise
+        folder = out_paths['downloads'] / tender.tender_id
+        _print_no_estimate_files_summary(tender.tender_id, folder)
+        if tg_cfg:
+            token, chat = tg_cfg
+            try:
+                _send_no_estimate_files_summary_to_tg(token, chat, tender.tender_id, tender.title, folder)
+            except Exception as error:
+                print(f"Telegram: не удалось отправить список файлов по {tender.tender_id}: {type(error).__name__}")
+        raise
 
 def write_tender_estimate_report(tender: Tender, rows: list[dict], out_paths: dict[str, Path]) -> tuple[Path, pd.DataFrame]:
     safe_name = f"ОТЧЕТ_ПО_СМЕТАМ_{tender.tender_id}.xlsx"
@@ -2760,45 +2805,9 @@ def _run_main(args, out_paths):
         estimate_excel_files = [p for p in excel_files if is_estimate_excel(p)]
         if not estimate_excel_files:
             estimate_excel_files = excel_files
-        if not estimate_excel_files:
-            if not pdf_files:
-                print("Не найдено ни одного Excel/PDF-файла (ЛСР/смета) после скачивания/распаковки.")
-                raise SystemExit(3)
         estimate_excel_files = sort_excel_for_lsr_priority(estimate_excel_files)
-        tender_rows: list[dict] = []
-        for excel_path in estimate_excel_files:
-            rows = extract_rows_from_excel(excel_path, tender)
-            tender_rows.extend(rows)
-        pdf_rows, pdf_totals = extract_estimate_pdf_rows(pdf_files, tender)
-        tender_rows.extend(pdf_rows)
-        write_estimate_parse_manifest(tid, pdf_files, tender_rows, out_paths, pdf_totals)
-        if not tender_rows:
-            rar_cnt = sum(1 for p in tender_dl.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
-            extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
-            if rar_cnt and not extracted_xlsx:
-                print(
-                    f"[single] {tid}: найдено RAR: {rar_cnt}, но из архивов не извлечено ни одного .xlsx/.xls. "
-                    "Установите 7-Zip (в т.ч. в «C:\\Program Files (x86)\\7-Zip\\») или добавьте 7z.exe в PATH."
-                )
-            elif rar_cnt:
-                print(
-                    f"[single] {tid}: RAR распакованы, но в {len(estimate_excel_files)} Excel не найдено строк ЛСР "
-                    "(возможен нестандартный формат сметы)."
-                )
-            else:
-                print(
-                    f"[single] {tid}: в скачанных Excel не найдено строк ЛСР "
-                    f"(просмотрено файлов: {len(estimate_excel_files)})."
-                )
-            _print_no_estimate_files_summary(tid, tender_dl)
-            if tg_cfg:
-                tok, chat = tg_cfg
-                try:
-                    _send_no_estimate_files_summary_to_tg(tok, chat, tid, tender.title, tender_dl)
-                except Exception as e:
-                    print(f"Telegram: не удалось отправить список файлов по {tid}: {e}")
-        tender_report, clean_df = write_tender_estimate_report(tender, tender_rows, out_paths)
-        tender_html = write_tender_estimate_html(tender, clean_df, out_paths)
+        tender_rows, tender_report, clean_df, tender_html = parse_tender_report(
+            tender, estimate_excel_files, pdf_files, downloaded_files, out_paths, tg_cfg)
         print(f"Отчет по сметам (Excel): {tender_report} (позиций: {len(clean_df)}, исходно: {len(tender_rows)})")
         print(f"Отчет по сметам (HTML): {tender_html}")
         return
@@ -2829,39 +2838,11 @@ def _run_main(args, out_paths):
         extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
         pdf_files = select_estimate_pdf_files(extracted_pdf + direct_pdf)
         estimate_excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
-        if not estimate_excel_files and not pdf_files:
-            print(f"Для тендера {tid} в downloads/extracted не найдено Excel/PDF-файлов.")
-            raise SystemExit(4)
         estimate_excel_files = sort_excel_for_lsr_priority(estimate_excel_files)
-        tender_rows: list[dict] = []
-        for excel_path in estimate_excel_files:
-            tender_rows.extend(extract_rows_from_excel(excel_path, tender))
-        pdf_rows, pdf_totals = extract_estimate_pdf_rows(pdf_files, tender)
-        tender_rows.extend(pdf_rows)
-        write_estimate_parse_manifest(tid, pdf_files, tender_rows, out_paths, pdf_totals)
-        if not tender_rows:
-            rar_cnt = sum(1 for p in base.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
-            extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
-            if rar_cnt and not extracted_xlsx:
-                print(
-                    f"Для {tid}: RAR найдены ({rar_cnt}), но распаковка не дала Excel — нужен 7-Zip/UnRAR."
-                )
-            elif rar_cnt:
-                print(f"Для {tid}: Excel извлечён из RAR, но строк ЛСР не найдено.")
-            else:
-                print(f"Для {tid}: в Excel не найдено строк ЛСР.")
-            _print_no_estimate_files_summary(tid, base)
-            if tg_cfg:
-                tok, chat = tg_cfg
-                try:
-                    _send_no_estimate_files_summary_to_tg(tok, chat, tid, tender.title, base)
-                except Exception as e:
-                    print(f"Telegram: не удалось отправить список файлов по {tid}: {e}")
-        tender_report, clean_df = write_tender_estimate_report(tender, tender_rows, out_paths)
-        tender_html = write_tender_estimate_html(tender, clean_df, out_paths)
-        print(f"Отчет по сметам (Excel): {tender_report} (позиций в отчёте: {len(clean_df)}, исходно строк: {len(tender_rows)})")
+        tender_rows, tender_report, clean_df, tender_html = parse_tender_report(
+            tender, estimate_excel_files, pdf_files, downloaded_files, out_paths, tg_cfg)
+        print(f"Отчет по сметам (Excel): {tender_report} (позиций: {len(clean_df)}, исходно: {len(tender_rows)})")
         print(f"Отчет по сметам (HTML): {tender_html}")
-        print(f"Done (exit 0). Tender {tid}: {len(clean_df)} positions -> XLSX + HTML.")
         return
 
     summary = args._search_summary
@@ -3136,34 +3117,20 @@ def _run_main(args, out_paths):
             estimate_excel_files = excel_files
 
         estimate_excel_files = sort_excel_for_lsr_priority(estimate_excel_files)
-        tender_rows: list[dict] = []
-        for excel_path in estimate_excel_files:
-            rows = extract_rows_from_excel(excel_path, tender)
-            tender_rows.extend(rows)
-        pdf_rows, pdf_totals = extract_estimate_pdf_rows(pdf_files, tender)
-        tender_rows.extend(pdf_rows)
-        write_estimate_parse_manifest(tender.tender_id, pdf_files, tender_rows, out_paths, pdf_totals)
-        if not tender_rows:
-            rar_cnt = sum(1 for p in tender_dl.rglob("*") if p.is_file() and p.suffix.lower() == ".rar")
-            extracted_xlsx = [p for p in extracted if p.exists() and is_excel_file(p)] if extracted else []
-            if rar_cnt and not extracted_xlsx:
-                print(
-                    f"  -> {tender.tender_id}: RAR ({rar_cnt} шт.) не распакованы в Excel — проверьте 7-Zip в PATH."
-                )
-            elif rar_cnt:
-                print(f"  -> {tender.tender_id}: RAR распакованы, но строк ЛСР в Excel нет.")
-            _print_no_estimate_files_summary(tender.tender_id, tender_dl)
-            if tg_cfg:
-                tok, chat = tg_cfg
-                try:
-                    _send_no_estimate_files_summary_to_tg(tok, chat, tender.tender_id, tender.title, tender_dl)
-                except Exception as e:
-                    print(f"Telegram: не удалось отправить список файлов по {tender.tender_id}: {e}")
-
+        from autobot.estimate_parse_worker import EstimateParseRejected
+        try:
+            tender_rows, tender_report, clean_df, tender_html = parse_tender_report(
+                tender, estimate_excel_files, pdf_files, downloaded_files, out_paths, tg_cfg)
+        except EstimateParseRejected as error:
+            print(f"[parse] {tender.tender_id}: {error}")
+            failed_downloads.append(tender.tender_id)
+            summary['counts']['document_failed'] = summary['counts'].get('document_failed', 0) + 1
+            search_state.save_summary(out_paths['root'], summary)
+            _save_search_checkpoint(out_paths, args, filtered=filtered, completed_ids=completed_ids,
+                                    new_ids=new_ids, search_total=search_total, completed=False)
+            continue
         all_rows.extend(tender_rows)
-        tender_report, clean_df = write_tender_estimate_report(tender, tender_rows, out_paths)
-        tender_html = write_tender_estimate_html(tender, clean_df, out_paths)
-        print(f"  -> Отчет по сметам (Excel): {tender_report} (позиций в отчёте: {len(clean_df)}, исходно строк: {len(tender_rows)})")
+        print(f"  -> Отчет по сметам (Excel): {tender_report} (позиций: {len(clean_df)}, исходно: {len(tender_rows)})")
         print(f"  -> Отчет по сметам (HTML): {tender_html}")
 
         if tg_cfg and tender.tender_id in new_ids:

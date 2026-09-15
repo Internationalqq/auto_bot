@@ -34,6 +34,10 @@ def fingerprints(reports: Path, tender_id: str) -> dict:
     if documents is not None:
         result['current_documents'] = {'state': documents.get('state'),
             'files': sorted(documents.get('files', []), key=lambda row: row.get('saved_name', ''))}
+    from autobot.estimate_publication import read_status
+    parsing = read_status(reports, tender_id)
+    if parsing is not None:
+        result['document_parse'] = {'state': parsing.get('state'), 'sources': parsing.get('sources', [])}
     return result
 
 

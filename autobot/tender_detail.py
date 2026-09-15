@@ -526,6 +526,8 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     archive_status = _archive_extraction_status(tender_id)
     from autobot.document_bundle import display_status
     document_download = display_status(REPORTS_DIR, tender_id)
+    from autobot.estimate_publication import display_status as parse_status
+    document_parse = parse_status(REPORTS_DIR, tender_id)
     if archive_status['failed_count']:
         estimate_check_class = "warn"
         estimate_check_title = "Не все документы распакованы"
@@ -535,9 +537,17 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         estimate_check_class = 'warn'
         estimate_check_title = 'Комплект документов не загружен'
         estimate_check_detail = 'Новый отчёт не сформирован. ' + ' · '.join(document_download['errors'])
+    elif document_parse['blocked']:
+        estimate_check_class = 'warn'
+        estimate_check_title = 'Новый разбор сметы не завершён'
+        estimate_check_detail = ' · '.join(document_parse['errors'])
+    elif document_parse['warnings']:
+        estimate_check_class = 'warn'
+        estimate_check_title = 'Часть документов требует проверки'
+        estimate_check_detail = ' · '.join(document_parse['warnings']) + ' ' + estimate_check_detail
     steps = (
         {"key": "documents", "label": "Документы", "done": bool(workflow.get("has_downloads")) and not document_download['blocked']},
-        {"key": "estimate", "label": "Смета", "done": estimate_path.is_file() and not archive_status['failed_count'] and not document_download['blocked']},
+        {"key": "estimate", "label": "Смета", "done": estimate_path.is_file() and not archive_status['failed_count'] and not document_download['blocked'] and not document_parse['blocked']},
         {"key": "market", "label": "Проверка цен", "done": market_path.is_file() and counts["verified"] > 0},
         {"key": "comparison", "label": "Сравнение", "done": comparison_path.is_file() and counts["verified"] > 0},
     )
@@ -599,6 +609,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         "estimate_check_class": estimate_check_class,
         "estimate_check_title": estimate_check_title,
         "estimate_check_detail": estimate_check_detail,
+        "document_parse": document_parse,
         "has_estimate": estimate_path.is_file(),
         "has_market": market_path.is_file(),
         "has_comparison": comparison_path.is_file(),

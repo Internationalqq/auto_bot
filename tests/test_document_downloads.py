@@ -141,7 +141,8 @@ def test_unfinished_incoming_is_not_listed_or_downloadable(monkeypatch, tmp_path
 
 
 def test_reparse_uses_current_manifest_and_preserves_old_report_if_document_changed(monkeypatch, tmp_path):
-    files = run_batch(tmp_path, {'current': ('estimate.xlsx', b'current')})
+    from test_estimate_parse_pipeline import excel_bytes
+    files = run_batch(tmp_path, {'current': ('estimate.xlsx', excel_bytes())})
     (files[0].parent/'old.zip').write_bytes(b'broken old archive')
     paths = {key: tmp_path/key for key in ('downloads', 'extracted', 'reports')}
     paths['root'] = tmp_path
@@ -152,24 +153,19 @@ def test_reparse_uses_current_manifest_and_preserves_old_report_if_document_chan
     monkeypatch.setattr(main, 'parse_args', lambda: args)
     monkeypatch.setattr(main, 'telegram_config', lambda: None)
     monkeypatch.setattr(main, 'configure_rar_backend', lambda: True)
-    selected = []
     def extract(archives, *args, **kwargs):
         assert archives == []
         return []
     monkeypatch.setattr(main, 'extract_archives_nested', extract)
-    def rows(path, tender):
-        selected.append(path)
-        return [{'source_file': str(path), 'work_name': 'Монтаж оборудования', 'price_from_estimate_rub': 500,
-                 'unit': 'шт', 'qty': 1, 'unit_price_rub': 500, 'sheet_name': 'ЛСР', 'excel_row': 1}]
-    monkeypatch.setattr(main, 'extract_rows_from_excel', rows)
     main.main()
-    assert selected == files
+    parsed = json.loads((paths['reports']/'ESTIMATE_PARSE_12345678.json').read_text())
+    assert [row['path'] for row in parsed['parse_sources']] == [str(p) for p in files]
     report = paths['reports']/'ОТЧЕТ_ПО_СМЕТАМ_12345678.xlsx'
     before = report.read_bytes()
     files[0].write_bytes(b'changed')
     with pytest.raises(bundle.DocumentBundleRejected):
         main.main()
-    assert report.read_bytes() == before and selected == files
+    assert report.read_bytes() == before
 
 
 def test_partial_download_visible_on_both_detail_tabs(monkeypatch, tmp_path):
