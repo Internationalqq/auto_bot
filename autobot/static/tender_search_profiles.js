@@ -54,7 +54,7 @@
   async function load() {
     lock(true); message('Загружаем профили…'); reload.hidden = true;
     try {
-      const response = await fetch('/api/search-profiles', {cache: 'no-store'});
+      const response = await fetch('/api/tender-search-profiles', {cache: 'no-store'});
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось прочитать профили.');
       const firstLoad = !catalogue;
@@ -119,7 +119,7 @@
       const filters = read(); if (!filters) return;
       const profile = {id: selectedId, name: field('Name').value.trim(), filters};
       lock(true); message('Сохраняем профиль…');
-      const response = await fetch('/api/search-profiles', {method: 'POST', headers: {'Content-Type':'application/json'},
+      const response = await fetch('/api/tender-search-profiles', {method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({revision: catalogue.revision, profile})});
       const data = await response.json();
       if (!response.ok || !data.ok) { reload.hidden = response.status !== 409; throw new Error(data.message || 'Не удалось сохранить профиль.'); }

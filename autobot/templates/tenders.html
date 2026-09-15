@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-profiles-1" />
-  <script defer src="{{ url_for('static', filename='tender_search_profiles.js') }}?v=20260915-1"></script>
+  <script defer src="{{ url_for('search_profiles_script') }}?v=20260915-2"></script>
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендеры</title>
 </head>
@@ -1031,7 +1031,7 @@
       showLive(mode === 'resume' ? 'Продолжаем скачивание документов' : 'Ищем до ' + filters.max_tenders + ' закупок',
         mode === 'resume' ? 'Берём только незавершённые закупки сохранённого поиска.' : 'Добавляем подходящие карточки в каталог без анализа рынка.');
       try {
-        await postJson('/api/start-parse', mode === 'resume' ? {search_mode:'resume'} : {search_mode:'fresh', search_filters:filters, catalog_only:true});
+        await postJson('/api/tender-search/start', mode === 'resume' ? {search_mode:'resume'} : {search_mode:'fresh', search_filters:filters, catalog_only:true});
         wakeLiveStatusPolling(0);
         return true;
       } catch (e) {

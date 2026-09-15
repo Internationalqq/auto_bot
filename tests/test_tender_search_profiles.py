@@ -181,13 +181,16 @@ def test_api_saves_profiles_and_starts_only_valid_snapshot(tmp_path, monkeypatch
         def start(self): pass
     monkeypatch.setattr(web_ui.threading,'Thread',Thread)
     client=web_ui.app.test_client()
-    assert client.post('/api/search-profiles',json={},headers={'Origin':'https://other.example'}).status_code==403
+    script=client.get('/tenders/search-profiles.js')
+    assert script.status_code==200 and b'/api/tender-search-profiles' in script.data
+    assert client.get('/api/tender-search-profiles').get_json()['profiles']==profiles.load_profiles(tmp_path)['profiles']
+    assert client.post('/api/tender-search-profiles',json={},headers={'Origin':'https://other.example'}).status_code==403
     loaded=client.get('/api/search-profiles').get_json()
     row=dict(loaded['profiles'][0],filters=settings(regions=['Москва'],keywords=['ремонт'],max_tenders=7))
     assert client.post('/api/search-profiles',json={'revision':0,'profile':row}).status_code==200
     assert client.post('/api/start-parse',json={'search_filters':settings(max_tenders=101)}).status_code==400
     assert not calls
-    assert client.post('/api/start-parse',json={'search_profile':'legacy'}).status_code==200
+    assert client.post('/api/tender-search/start',json={'search_profile':'legacy'}).status_code==200
     command=calls[0]['cli_args']
     assert json.loads(command[command.index('--search-filters-json')+1])==row['filters']
     assert command[command.index('--max-tenders')+1]=='7' and '--catalog-only' in command

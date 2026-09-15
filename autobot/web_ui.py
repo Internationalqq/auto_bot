@@ -2186,7 +2186,7 @@ INDEX_TEMPLATE = """
           max_tenders: parseInt(document.getElementById("optMaxTenders").value, 10) || 15,
           days_back: parseInt(document.getElementById("optDaysBack").value, 10) || 60,
         };
-        const r = await fetch("/api/start-parse", {
+        const r = await fetch("/api/tender-search/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -11261,6 +11261,13 @@ def api_parse_nmck_justification():
     return jsonify({"ok": True, **out})
 
 
+@app.get('/tenders/search-profiles.js')
+def search_profiles_script():
+    # This existing protected page prefix is routed to AutoBot by the CRM proxy.
+    return app.send_static_file('tender_search_profiles.js')
+
+
+@app.route('/api/tender-search-profiles', methods=['GET', 'POST'])
 @app.route('/api/search-profiles', methods=['GET', 'POST'])
 def api_search_profiles():
     from autobot.tender_search_profiles import load_profiles, save_profile, ProfileConflict
@@ -11280,6 +11287,7 @@ def api_search_profiles():
         return jsonify({'ok': False, 'message': 'Не удалось сохранить или прочитать профили. Повторите попытку.'}), 503
 
 
+@app.route('/api/tender-search/start', methods=['POST'])
 @app.route("/api/start-parse", methods=["POST"])
 def api_start_parse():
     if _merge_site_busy():
