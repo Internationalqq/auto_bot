@@ -352,8 +352,9 @@
               <td class="row-no" data-label="№">{{ p.item_no }}</td>
               <td class="position-name" data-label="Позиция">
                 <div><span class="type type-{{ p.type_slug }}">{{ p.type_label }}</span>{% if p.basis_code %}<code>{{ p.basis_code }}</code>{% endif %}</div>
-                <strong>{{ p.name }}</strong>
-                {% if p.section_note %}<small>{{ p.section_note }}</small>{% endif %}
+                  <strong>{{ p.name }}</strong>
+                  {% if p.section_note %}<small>{{ p.section_note }}</small>{% endif %}
+                  <a href="/tenders/{{ tender.tender_id }}/review?position_id={{ p.review_id|urlencode }}">Сверить с исходником</a>
               </td>
               <td data-label="Ед. / объём"><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
               <td class="money" data-label="Смета"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>

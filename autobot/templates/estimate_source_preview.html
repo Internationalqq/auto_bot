@@ -2,9 +2,10 @@
 <body class="review-document"><h1>{{ title }}</h1>
 {% if preview.truncated %}<p>Показана часть большого файла. Полный документ можно скачать.</p>{% endif %}
 {% if preview.kind == 'pdf-page' %}
-<nav class="review-pdf-nav" aria-label="Страницы PDF"><form method="get"><label>Страница <input type="number" name="page" min="1" max="{{ preview.pages }}" value="{{ preview.page }}"></label> из {{ preview.pages }} <button>Открыть</button></form>
-{% if preview.page>1 %}<a href="?page={{ preview.page-1 }}">← Предыдущая</a>{% endif %}{% if preview.page<preview.pages %}<a href="?page={{ preview.page+1 }}">Следующая →</a>{% endif %}
-<a href="?page={{ preview.page }}{% if not actual_size %}&amp;zoom=1{% endif %}">{{ 'По ширине' if actual_size else 'Масштаб 100%' }}</a></nav>
+{% set position_query = ('position_id=' ~ (source_position_id|urlencode) ~ '&') if source_position_id else '' %}
+<nav class="review-pdf-nav" aria-label="Страницы PDF"><form method="get">{% if source_position_id %}<input type="hidden" name="position_id" value="{{ source_position_id }}">{% endif %}<label>Страница <input type="number" name="page" min="1" max="{{ preview.pages }}" value="{{ preview.page }}"></label> из {{ preview.pages }} <button>Открыть</button></form>
+{% if preview.page>1 %}<a href="?{{ position_query }}page={{ preview.page-1 }}">← Предыдущая</a>{% endif %}{% if preview.page<preview.pages %}<a href="?{{ position_query }}page={{ preview.page+1 }}">Следующая →</a>{% endif %}
+<a href="?{{ position_query }}page={{ preview.page }}{% if not actual_size %}&amp;zoom=1{% endif %}">{{ 'По ширине' if actual_size else 'Масштаб 100%' }}</a></nav>
 <div class="review-document-table"><img class="review-pdf-image{% if actual_size %} actual-size{% endif %}" src="{{ preview.image }}" alt="Страница {{ preview.page }} исходного PDF" width="{{ preview.width }}" height="{{ preview.height }}"></div>
 {% elif preview.kind == 'excel' %}{% for sheet in preview.sheets %}<h2>{{ sheet.name }}</h2><div class="review-document-table"><table><thead><tr>{% for value in sheet.columns %}<th>{{ value }}</th>{% endfor %}</tr></thead><tbody>{% for row in sheet.rows %}<tr>{% for value in row %}<td>{{ value }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>{% endfor %}
 {% else %}<p>{{ preview.message or 'Предпросмотр этого формата недоступен.' }}</p>{% endif %}

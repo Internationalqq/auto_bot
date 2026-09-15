@@ -415,6 +415,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         positions.append(
             {
                 "position_key": position_identity(row),
+                "review_id": _clean(row.get('position_id')) or 'legacy:' + position_identity(row),
                 "index": index,
                 "item_no": _clean(row.get("№ п/п", "")) or str(section_position_index),
                 "name": name,

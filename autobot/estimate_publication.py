@@ -81,6 +81,19 @@ def parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_path
     try:
         with output_lock(bundle_path(reports, tender.tender_id), timeout=.1):
             recover_publication(reports, tender.tender_id)
+            from autobot import tender_corrections
+            from autobot.estimate_publication_recovery import consistent_report
+            previous = None
+            control_path = reports / f'ESTIMATE_PARSE_{tender.tender_id}.json'
+            with consistent_report(reports, tender.tender_id):
+                if control_path.exists():
+                    try:
+                        guarded = tender_corrections.LEDGER_KEY in tender_corrections._read_json(control_path)
+                        guarded = guarded or bool((read_status(reports,tender.tender_id) or {}).get('normalization_revision'))
+                        if guarded:
+                            previous = tender_corrections.snapshot_locked(reports, tender.tender_id)
+                    except tender_corrections.CorrectionError as error:
+                        raise EstimateParseRejected(str(error)) from None
             atomic_json(journal, state)
             try:
                 selected = [Path(p).absolute() for p in downloaded_files]
@@ -94,7 +107,6 @@ def parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_path
                     report, frame = main.write_tender_estimate_report(tender, result['rows'], preview_paths)
                     if frame.empty or not frame['Сумма, руб'].notna().any():
                         raise EstimateParseRejected('После проверки не осталось позиций с определённой суммой. Предыдущий отчёт сохранён.')
-                    html = main.write_tender_estimate_html(tender, frame, preview_paths)
                     control = main.write_estimate_parse_manifest(tender.tender_id, pdf_files, result['rows'], preview_paths, result['official_totals'])
                     payload = json.loads(control.read_text(encoding='utf-8'))
                     payload.update(parse_sources=result['sources'], parse_documents=result['documents'],
@@ -102,6 +114,15 @@ def parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_path
                                        'resources':row['resources']} for row in result['rows'] if row.get('resources')],
                                    unresolved_amount_rows=[row for row in result['rows'] if row.get('price_from_estimate_rub') is None],
                                    selected_excel_count=len(excel_files), parsed_row_count=len(frame))
+                    frame = tender_corrections.carry_forward(previous, payload, frame)
+                    if previous:
+                        frame = tender_corrections.write_frame(report, frame)
+                    html_frame = frame.copy()
+                    if previous:
+                        import pandas as pd
+                        for column in ('Кол-во', 'Цена за ед., руб', 'Сумма, руб'):
+                            html_frame[column] = pd.to_numeric(html_frame[column], errors='coerce')
+                    html = main.write_tender_estimate_html(tender, html_frame, preview_paths)
                     atomic_json(control, payload)
                     warnings = []
                     for document in result['documents']:
@@ -114,6 +135,9 @@ def parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_path
                             warnings.append(name + ': не определены количество, единица или сумма части позиций; проверьте исходную смету.')
                     state.update(state='complete', warnings=warnings, rows=len(frame),
                                  finished_at=datetime.now(timezone.utc).isoformat(), sources=result['sources'])
+                    if previous:
+                        state.update(warnings=tender_corrections.current_warnings(warnings,frame),
+                                     normalization_revision=previous['revision'])
                     completed = staging / journal.name
                     atomic_json(completed, state)
                     validate_snapshot(originals)

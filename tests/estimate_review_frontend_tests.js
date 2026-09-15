@@ -6,14 +6,14 @@ const values={name:'Бетон',basis_code:'',type:'material',unit:'м3',qty:2,u
 const response=(data,status=200)=>({ok:status<400,status,json:async()=>data});
 const current=(version='c'.repeat(64),row=values)=>({ok:true,version,revision:1,row,history:[],next_before:null});
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
-function harness(storage=new Map(),initial=[]) {
+function harness(storage=new Map(),initial=[],kind='') {
   function node() {return {value:'',textContent:'',dataset:{},hidden:false,disabled:false,children:[],classList:{toggle(){}},
     addEventListener(name,callback){this[name]=callback;},append(...children){this.children.push(...children);},appendChild(child){this.children.push(child);},replaceChildren(){this.children=[];}};}
   const ids=Object.fromEntries(['correctionForm','correctionSave','correctionRefresh','correctionStatus','correctionMore','correctionHistory',
     'correction-reason',...fields.map(name=>'correction-'+name)].map(id=>[id,node()]));
   fields.forEach(name=>ids['correction-'+name].value=String(values[name]));
   ids['correction-reason'].value='Сверено с файлом';ids.correctionRefresh.hidden=true;
-  ids.correctionConfig={textContent:JSON.stringify({estimateId:'a'.repeat(16),positionId:'pdf:1:2',version:'a'.repeat(64),fields,labels:{},values})};
+  ids.correctionConfig={textContent:JSON.stringify({kind,estimateId:kind==='tender'?'12345678':'a'.repeat(16),positionId:'pdf:1:2',version:'a'.repeat(64),fields,labels:{},values})};
   const requests=[],responses=[...initial],label=node();
   const context={console,AbortController,crypto:require('node:crypto').webcrypto,
     document:{getElementById:id=>ids[id],createElement:node,querySelector:()=>label,querySelectorAll:()=>[]},
@@ -52,5 +52,14 @@ function harness(storage=new Map(),initial=[]) {
   const missing=harness();missing.ids['correction-reason'].value=' ';await missing.submit();assert.equal(missing.requests.length,0);
   const invalid=harness();invalid.responses.push(response({ok:false,message:'Неверное число'},400));await invalid.submit();assert.equal(invalid.storage.size,0);
   assert.equal(invalid.ids.correctionSave.disabled,false);assert.match(invalid.ids.correctionStatus.textContent,/Неверное число/);
+  const tender=harness(new Map(),[],'tender');tender.responses.push(new Error('lost'));await tender.submit();
+  assert.equal(tender.requests[0].url,'/api/tender/12345678/corrections');
+  assert.equal([...tender.storage.keys()][0],'autobot:correction:tender:12345678:pdf:1:2');
+  const tenderAgain=harness(tender.storage,[response({ok:false},404)],'tender');await flush();
+  const historyItem={revision:1,actor:{name:'Автор'},created_at:'2026-09-15T00:00:00Z',position_name:'Другая строка',position_id:'pdf:2:3',reason:'Сверено',changes:{total:{before:1,after:2}}};
+  tenderAgain.responses.push(response({ok:true,version:'c'.repeat(64),revision:1}),response({...current(),history:[historyItem]}));
+  await tenderAgain.submit();
+  assert.deepEqual(JSON.parse(tenderAgain.requests[1].options.body),JSON.parse(tender.requests[0].options.body));
+  assert.equal(tenderAgain.ids.correctionHistory.children[0].children[2].children[0].href,'/tenders/12345678/review?position_id=pdf%3A2%3A3');
   console.log('Estimate review: saved revision, lost acknowledgement, reload recovery, version conflict, input preservation, validation and double submit passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

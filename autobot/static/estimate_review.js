@@ -7,8 +7,10 @@
   const status = document.getElementById('correctionStatus');
   const more = document.getElementById('correctionMore');
   const history = document.getElementById('correctionHistory');
-  const endpoint = '/api/estimates/' + encodeURIComponent(config.estimateId) + '/corrections';
-  const storageKey = 'autobot:correction:' + config.estimateId + ':' + config.positionId;
+  const isTender = config.kind === 'tender';
+  const workspace = (isTender ? '/tenders/' : '/estimates/') + encodeURIComponent(config.estimateId);
+  const endpoint = (isTender ? '/api/tender/' : '/api/estimates/') + encodeURIComponent(config.estimateId) + '/corrections';
+  const storageKey = 'autobot:correction:' + (isTender ? 'tender:' : '') + config.estimateId + ':' + config.positionId;
   let version = config.version, pending = null, busy = false, conflict = false;
   const text = value => value == null || value === '' ? '—' : String(value);
   const date = value => { const parsed=new Date(value); return Number.isNaN(parsed.getTime())?value:parsed.toLocaleString('ru-RU'); };
@@ -43,7 +45,7 @@
       const time=document.createElement('time'); time.dateTime=item.created_at;time.textContent=date(item.created_at);
       const position=document.createElement('p'), link=document.createElement('a');
       link.textContent=item.position_name || 'Проверить позицию';
-      link.href='/estimates/'+encodeURIComponent(config.estimateId)+'/review?position_id='+encodeURIComponent(item.position_id);
+      link.href=workspace+'/review?position_id='+encodeURIComponent(item.position_id);
       position.appendChild(link);
       const reason=document.createElement('p'); reason.textContent=item.reason;
       const list=document.createElement('ul');

@@ -8,8 +8,10 @@
   <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
 </head>
 <body class="autobot-page estimate-review-page">
+{% set workspace_url = workspace_url|default('/estimates/' ~ estimate_id) %}
+{% set source_preview_url = source_preview_url|default('/estimates/' ~ estimate_id ~ '/source-preview?page=' ~ source_page) %}
 <main class="estimate-review">
-  <a class="review-back" href="/estimates/{{ estimate_id }}">← К позициям сметы</a>
+  <a class="review-back" href="{{ workspace_url }}">← К позициям сметы</a>
   <header class="review-heading"><div><p class="review-eyebrow">Проверка исходника</p><h1>Уточнить позицию</h1><p>{{ meta.title }}</p></div><span class="review-version">Редакция {{ revision }}</span></header>
   <div class="review-layout">
     <section class="review-panel review-editor" aria-labelledby="reviewTitle">
@@ -36,16 +38,16 @@
     </section>
     <aside class="review-panel review-source">
       <details open><summary>Оригинал сметы</summary>
-      {% if has_original %}<p><a href="{{ original_url }}">Скачать исходный файл</a></p><iframe src="/estimates/{{ estimate_id }}/source-preview?page={{ source_page }}" title="Исходный документ сметы" loading="lazy"></iframe>
+      {% if has_original %}<p><a href="{{ original_url }}">Скачать исходный файл</a></p><iframe src="{{ source_preview_url }}" title="Исходный документ сметы" loading="lazy"></iframe>
       {% else %}<p>Исходный файл недоступен. Здесь сохранены значения первого распознавания.</p>{% endif %}
       </details>
     </aside>
   </div>
   <section class="review-panel review-history" aria-labelledby="historyTitle"><h2 id="historyTitle">История сметы</h2>
-    <div id="correctionHistory">{% for item in history %}<article><strong>Редакция {{ item.revision }} · {{ item.actor.name }}</strong><time datetime="{{ item.created_at }}">{{ item.created_at }}</time><p><a href="/estimates/{{ estimate_id }}/review?position_id={{ item.position_id|urlencode }}">{{ item.position_name }}</a></p><p>{{ item.reason }}</p><ul>{% for name,change in item.changes.items() %}<li>{{ fields.get(name,name) }}: {{ change.before if change.before is not none else '—' }} → {{ change.after if change.after is not none else '—' }}</li>{% endfor %}</ul></article>{% else %}<p class="review-muted">Исправлений ещё нет. Первое распознавание сохранено.</p>{% endfor %}</div>
+    <div id="correctionHistory">{% for item in history %}<article><strong>Редакция {{ item.revision }} · {{ item.actor.name }}</strong><time datetime="{{ item.created_at }}">{{ item.created_at }}</time><p><a href="{{ workspace_url }}/review?position_id={{ item.position_id|urlencode }}">{{ item.position_name }}</a></p><p>{{ item.reason }}</p><ul>{% for name,change in item.changes.items() %}<li>{{ fields.get(name,name) }}: {{ change.before if change.before is not none else '—' }} → {{ change.after if change.after is not none else '—' }}</li>{% endfor %}</ul></article>{% else %}<p class="review-muted">Исправлений ещё нет. Первое распознавание сохранено.</p>{% endfor %}</div>
     <button class="btn secondary" id="correctionMore" type="button" {% if history|length < 20 %}hidden{% endif %} data-before="{{ history[-1].revision if history else '' }}">Более ранние исправления</button>
   </section>
 </main>
 <script id="correctionConfig" type="application/json">{{ review_config|tojson }}</script>
-<script src="/estimates/review.js?v=20260915-1" defer></script>
+<script src="/estimates/review.js?v=20260916-1" defer></script>
 </body></html>

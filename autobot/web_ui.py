@@ -92,6 +92,8 @@ MAX_UPLOAD_MB = _configured_max_upload_mb()
 app = Flask(__name__)
 from autobot.uploaded_review import blueprint as uploaded_review_blueprint
 app.register_blueprint(uploaded_review_blueprint)
+from autobot.tender_review import blueprint as tender_review_blueprint
+app.register_blueprint(tender_review_blueprint)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 _estimate_capability_secret_raw = str(os.environ.get("AUTOBOT_BRIDGE_SIGNING_SECRET") or "")
 _ESTIMATE_IMPORT_CAPABILITY_SECRET = (
@@ -3465,6 +3467,14 @@ def _crm_estimate_source_item_key(
 
 
 def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
+    from autobot.estimate_publication_recovery import consistent_report
+    if not str(tender_id or '').strip():
+        return []
+    with consistent_report(REPORTS_DIR, tender_id):
+        return _consistent_tender_estimate_materials_for_crm(tender_id)
+
+
+def _consistent_tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
     from autobot.market_analytics import COL_DUP, COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
     from autobot.market_strategy import build_search_plan
 
@@ -3490,18 +3500,29 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
     meta = load_tender_metadata().get(tid, {}) or {}
     region = str(meta.get("region") or "").strip()
     materials: list[dict] = []
+    originals = {}
+    if 'estimate_version' in df and df['estimate_version'].fillna('').astype(str).str.startswith('correction:').any():
+        from autobot import tender_corrections
+        value = tender_corrections.snapshot_locked(REPORTS_DIR, tid)
+        originals = {row['position_id']: row for row in value['original_rows']}
     for row_index, (_, row) in enumerate(df.iterrows(), start=1):
         if COL_DUP in df.columns and str(row.get(COL_DUP, "")).strip().casefold() in {"да", "yes", "true", "1"}:
             continue
         title = str(row.get(COL_NAME, "") or "").strip()
-        if len(title) < 4:
+        corrected = str(row.get('estimate_version') or '').startswith('correction:')
+        original_row = originals.get(str(row.get('position_id') or ''), {})
+        if not title or (len(title) < 4 and not corrected):
             continue
         qty = _float_or_none(row.get(COL_QTY))
         unit_price = _float_or_none(row.get(COL_UNIT_PRICE))
         total = _float_or_none(row.get(COL_SUM))
-        if qty is None or qty <= 0:
+        if corrected and (qty is None or qty <= 0 or unit_price is None or unit_price < 0
+                          or total is None or total < 0 or str(row.get(COL_UNIT) or '').strip().casefold() in {'','nan','none'}):
+            from autobot.uploaded_corrections import CorrectionError
+            raise CorrectionError('Перед импортом уточните единицу, положительное количество, цену и сумму исправленной строки «' + title[:120] + '».', 422)
+        if not corrected and (qty is None or qty <= 0):
             qty = 1.0
-        if unit_price is None or (unit_price <= 0 and total is not None and total > 0):
+        if not corrected and (unit_price is None or (unit_price <= 0 and total is not None and total > 0)):
             unit_price = _float_or_none(total / qty) if total is not None and qty > 0 else 0.0
             unit_price = unit_price or 0.0
         source_file = str(row.get("Файл ЛСР", "") or "").strip()
@@ -3538,9 +3559,9 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
             {
                 "title": title[:500],
                 "unit": str(row.get(COL_UNIT, "") or "").strip() or "шт",
-                "planned_qty": max(0.000001, float(qty)),
-                "planned_price": max(0.0, float(unit_price or 0)),
-                "planned_total": max(0.0, float(total or (qty * (unit_price or 0)))),
+                "planned_qty": float(qty) if corrected else max(0.000001, float(qty)),
+                "planned_price": float(unit_price) if corrected else max(0.0, float(unit_price or 0)),
+                "planned_total": float(total) if corrected else max(0.0, float(total or (qty * (unit_price or 0)))),
                 "article": basis_code,
                 "code": basis_code,
                 "basis_code": basis_code,
@@ -3553,12 +3574,12 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
                 "estimate_title": estimate_title,
                 "source_item_key": _crm_estimate_source_item_key(
                     source_scope=file_name,
-                    sheet=sheet,
-                    excel_row=excel_row,
-                    item_no=item_no,
+                    sheet=original_row.get('sheet', sheet),
+                    excel_row=original_row.get('excel_row', excel_row),
+                    item_no=original_row.get('item_no', item_no),
                     row_index=row_index,
-                    basis_code=basis_code,
-                    title=title,
+                    basis_code=original_row.get('basis_code', basis_code),
+                    title=original_row.get('name', title),
                 ),
                 "notes": "; ".join(notes),
             }
@@ -10156,6 +10177,7 @@ def api_crm_projects():
 
 @app.route("/api/export-to-crm", methods=["POST"])
 def api_export_to_crm():
+    from autobot.uploaded_corrections import CorrectionError
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
@@ -10164,6 +10186,8 @@ def api_export_to_crm():
         return jsonify({"ok": False, "message": "Такой тендер не найден в tenders.json"}), 404
     try:
         result = export_tender_to_crm(tid, project_id=data.get("project_id", data.get("projectId")))
+    except CorrectionError as error:
+        return jsonify({'ok':False,'message':str(error)}), error.status
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)[:700]}), 500
     return jsonify({"ok": True, "tender_id": tid, **result})

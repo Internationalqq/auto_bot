@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Проверка позиции · AutoBot</title>
+<link rel="stylesheet" href="/static/autobot-ui.css?v=20260915-upload-1">
+<link rel="stylesheet" href="/estimates/review.css?v=20260915-1">
+</head>
+<body class="autobot-page estimate-review-page"><main class="estimate-review">
+<a class="review-back" href="/tenders/{{ tender_id }}">← К тендеру</a>
+<section class="review-panel"><h1>Пока не удалось открыть проверку</h1>
+<p class="review-status" role="alert">{{ message }}</p>
+<p class="review-muted">Сохранённые документы доступны в карточке тендера.</p>
+<a class="btn" href="/tenders/{{ tender_id }}?tab=files">Открыть документы</a>
+</section></main></body></html>
