@@ -34,7 +34,7 @@ def _pause_seconds():
 
 def run_once(worker_id, *, stopping=None):
     """Claim at most one web job. No jobs are created by this executor."""
-    job = queue.claim_job(worker_id, mode='web', lease_seconds=LEASE_SECONDS)
+    job = queue.claim_job(worker_id, mode='web', lease_seconds=LEASE_SECONDS, include_uploaded=True)
     if job is None:
         return None
     job_id, token = job['id'], job['lease_token']

@@ -215,7 +215,6 @@ def test_estimate_price_progress_excludes_candidates_and_live_processed_count(mo
     path = tmp_path / 'market.xlsx'
     frame.to_excel(path, index=False)
     monkeypatch.setattr(web_ui, '_estimate_market_raw_path', lambda _: path)
-    monkeypatch.setattr(web_ui, 'estimate_market_jobs', {'abc123': {'running': True, 'done': 2, 'total': 2}})
 
     assert web_ui._estimate_market_progress_for_card('abc123', rows) == (1, 2)
 

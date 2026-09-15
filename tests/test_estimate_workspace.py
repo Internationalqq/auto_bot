@@ -64,8 +64,11 @@ def test_revision_changes_only_for_saved_reports(tmp_path, monkeypatch):
     path.write_bytes(b'first version')
     first = status()['market_revision']
     assert initial != first and first == status()['market_revision']
-    web_ui.estimate_market_jobs[meta['id']] = {'running': False, 'error': 'Network timeout'}
+    from autobot import uploaded_market
+    monkeypatch_status = pytest.MonkeyPatch()
+    monkeypatch_status.setattr(uploaded_market,'status',lambda *a,**k:{'running':False,'error':'Network timeout'})
     assert status()['market_revision'] == first
+    monkeypatch_status.undo()
     previous = path.stat()
     path.write_bytes(b'other version')
     os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1000000))
@@ -83,6 +86,22 @@ def test_missing_source_nan_is_not_reported_as_an_offer():
     result = web_ui._estimate_source_rows(rows, frame)[0]
     assert result['status'] == 'Нет источников' and result['market_price'] == '—'
     assert not result['site_url']
+
+
+@pytest.mark.parametrize('missing', [float('nan'), 'nan', 'javascript:alert(1)'])
+def test_comparison_omits_missing_or_non_web_links_and_keeps_valid_fallback(missing):
+    rows = [{'name':'Бетон', 'unit':'м3'}]
+    frame = web_ui._estimate_rows_to_report_df(rows)
+    for column in ['Ссылки (строго)', 'Ссылка объявления 1', 'Ошибка / статус', 'Источник 1']:
+        frame[column] = missing
+    frame['Цена-сайт-телефон (json)'] = json.dumps([{'url':missing}])
+    result = web_ui._estimate_compare_rows(rows, frame)[0]
+    assert not result['site_url'] and result['market_price'] == '—'
+    if str(missing) == 'nan':
+        assert result['site'] == '—' and result['status'] == 'Рынок пока не найден'
+    frame['Ссылка объявления 2'] = 'https://example.org/concrete'
+    result = web_ui._estimate_compare_rows(rows, frame)[0]
+    assert result['site_url'] == 'https://example.org/concrete' and result['site'] == 'example.org'
 
 
 def test_original_download_preserves_bytes_and_safe_headers(tmp_path, monkeypatch):

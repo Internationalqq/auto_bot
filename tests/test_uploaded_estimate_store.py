@@ -30,7 +30,9 @@ def bind(tmp_path,monkeypatch):
     monkeypatch.setattr(web_ui,'ESTIMATE_UPLOAD_JOBS_DIR',root/'.upload_jobs')
     monkeypatch.setattr(web_ui,'estimate_upload_jobs',{})
     monkeypatch.setattr(web_ui,'estimate_upload_workers',set())
-    monkeypatch.setattr(web_ui,'estimate_market_jobs',{})
+    from autobot import uploaded_market, agent_market_queue
+    monkeypatch.setattr(uploaded_market,'ESTIMATES_ROOT',root)
+    monkeypatch.setattr(agent_market_queue,'DEFAULT_DB_PATH',tmp_path/'queue.sqlite3')
     return root
 
 

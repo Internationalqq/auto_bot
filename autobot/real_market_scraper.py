@@ -3417,6 +3417,9 @@ def _resolve_agent_source_row(estimate: pd.DataFrame, payload: dict) -> pd.Serie
 
 
 def _agent_import_context(tender_id, position_payload):
+    if str(tender_id).startswith('estimate:') or position_payload.get('target_kind') == 'uploaded_estimate':
+        from autobot.uploaded_market import import_context
+        return import_context(tender_id, position_payload)
     tid = str(tender_id or "").strip()
     name = str(position_payload.get("name") or "").strip()
     if not tid or not name:
@@ -3469,6 +3472,8 @@ def prepare_builtin_market_result(tender_id, position_payload, *, cancelled=None
 
 def prepare_agent_market_result(tender_id, position_payload, result):
     """Verify pages without publishing a report; return a durable replay package."""
+    if str(tender_id).startswith('estimate:') or position_payload.get('target_kind') == 'uploaded_estimate':
+        raise ValueError('Для загруженных смет сейчас включён только серверный веб-поиск.')
     tid, name, key, source_row, estimate, metadata, plan, digest = _agent_import_context(tender_id, position_payload)
     search_mode = str(position_payload.get("search_mode") or "").strip().casefold()
     avito_agent_mode = search_mode == "avito_agent"
@@ -3701,6 +3706,9 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
 
 def publish_agent_market_result(tender_id, position_payload, prepared):
     """Publish verified evidence with no network and one read/merge/write lock."""
+    if str(tender_id).startswith('estimate:') or position_payload.get('target_kind') == 'uploaded_estimate':
+        from autobot.uploaded_market import publish
+        return publish(tender_id, position_payload, prepared)
     from autobot.atomic_output import output_lock
     from autobot.estimate_publication_recovery import consistent_report
     with consistent_report(REPORTS_DIR, str(tender_id)), output_lock(output_path_for_tender(str(tender_id))):

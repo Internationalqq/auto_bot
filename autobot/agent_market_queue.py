@@ -165,59 +165,49 @@ def enqueue_jobs(
     priority: int = 100,
 ) -> dict[str, Any]:
     init_db(path)
-    created: list[dict[str, Any]] = []
-    skipped: list[str] = []
-    now = _now()
     with closing(_connect(path)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
-            for payload in positions:
-                key = str(payload.get("position_key") or "").strip()
-                name = str(payload.get("name") or "").strip()
-                if not key or not name:
-                    continue
-                raw_mode = str(payload.get("job_mode") or payload.get("search_mode") or "web").strip().casefold()
-                job_mode = "avito" if "avito" in raw_mode else "web"
-                active = connection.execute(
-                    """SELECT id FROM agent_market_jobs
-                       WHERE tender_id = ? AND position_key = ? AND job_mode = ?
-                         AND status IN ('queued', 'leased', 'applying')
-                       LIMIT 1""",
-                    (tender_id, key, job_mode),
-                ).fetchone()
-                if active:
-                    skipped.append(key)
-                    continue
-                job_id = uuid.uuid4().hex
-                connection.execute(
-                    """INSERT INTO agent_market_jobs
-                       (id, tender_id, position_key, position_name, job_mode, payload_json, status,
-                        priority, attempts, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)""",
-                    (
-                        job_id,
-                        tender_id,
-                        key,
-                        name,
-                        job_mode,
-                        json.dumps(payload, ensure_ascii=False),
-                        int(payload.get("queue_priority") or priority),
-                        now,
-                        now,
-                    ),
-                )
-                created.append({"id": job_id, "position_key": key, "position_name": name, "job_mode": job_mode})
+            result = enqueue_in_transaction(connection, tender_id, positions, priority=priority)
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    return {"created": created, "skipped_active": skipped}
+    return result
+
+
+def enqueue_in_transaction(connection, tender_id, positions, *, priority=100):
+    """Reuse the same position admission inside an already open batch transaction."""
+    if not connection.in_transaction:
+        raise ValueError('Queue admission requires a transaction')
+    created, skipped, now = [], [], _now()
+    for payload in positions:
+        key = str(payload.get('position_key') or '').strip()
+        name = str(payload.get('name') or '').strip()
+        if not key or not name:
+            continue
+        raw_mode = str(payload.get('job_mode') or payload.get('search_mode') or 'web').strip().casefold()
+        mode = 'avito' if 'avito' in raw_mode else 'web'
+        if connection.execute("""SELECT 1 FROM agent_market_jobs
+                WHERE tender_id=? AND position_key=? AND job_mode=?
+                  AND status IN ('queued','leased','applying') LIMIT 1""", (tender_id, key, mode)).fetchone():
+            skipped.append(key)
+            continue
+        job_id = uuid.uuid4().hex
+        connection.execute("""INSERT INTO agent_market_jobs
+                (id,tender_id,position_key,position_name,job_mode,payload_json,status,priority,attempts,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,'queued',?,0,?,?)""",
+                (job_id,tender_id,key,name,mode,json.dumps(payload,ensure_ascii=False,allow_nan=False),
+                 int(payload.get('queue_priority') or priority),now,now))
+        created.append({'id':job_id,'position_key':key,'position_name':name,'job_mode':mode})
+    return {'created':created,'skipped_active':skipped}
 
 
 def claim_job(
     worker_id: str,
     *,
     mode: str | None = None,
+    include_uploaded: bool = False,
     path: Path | str | None = None,
     lease_seconds: int = 300,
 ) -> dict[str, Any] | None:
@@ -236,8 +226,9 @@ def claim_job(
                 """SELECT id, attempts, payload_json
                    FROM agent_market_jobs
                    WHERE status = 'leased' AND lease_until IS NOT NULL AND lease_until <= ?
-                     AND (? IS NULL OR job_mode = ?)""",
-                (now, mode, mode),
+                     AND (? IS NULL OR job_mode = ?)
+                     AND (? OR tender_id NOT LIKE 'estimate:%')""",
+                (now, mode, mode, include_uploaded),
             ).fetchall()
             for expired_job in expired:
                 try:
@@ -268,9 +259,10 @@ def claim_job(
             row = connection.execute(
                 """SELECT * FROM agent_market_jobs
                    WHERE status = 'queued' AND (? IS NULL OR job_mode = ?)
+                     AND (? OR tender_id NOT LIKE 'estimate:%')
                    ORDER BY priority ASC, created_at ASC
                    LIMIT 1""",
-                (mode, mode),
+                (mode, mode, include_uploaded),
             ).fetchone()
             if row is None:
                 connection.execute("COMMIT")

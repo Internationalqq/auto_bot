@@ -37,7 +37,7 @@
 .estimate-market-form > div, .estimate-filter-bar > div { display: flex; gap: 8px; align-items: center; }
 .estimate-market-form input, .estimate-filter-bar input { min-width: 0; flex: 1; width: 100%; box-sizing: border-box; }
 .estimate-market-form button { flex: 0 0 auto; }
-.estimate-market .btn.is-stop { background: #fff4f4; border-color: #ebcece; color: var(--ab-red); box-shadow: none; }
+.estimate-workspace .estimate-market .btn.is-stop { background: #fff4f4; border-color: #ebcece; color: var(--ab-red); box-shadow: none; }
 .estimate-scope { margin: 12px 0; color: var(--ab-muted); font-size: 11px; line-height: 1.5; }
 .estimate-market-status { padding-top: 10px; border-top: 1px solid var(--ab-line); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 #marketStatusDetail { margin-top: 3px; color: var(--ab-muted); }

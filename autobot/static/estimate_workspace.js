@@ -1,6 +1,20 @@
 const estimatePage = JSON.parse(document.getElementById("estimatePageConfig").textContent);
 const estimateMarketRenderRevision = estimatePage.marketRevision;
 let estimateMarketStatusPending = false;
+let estimateMarketRunId = null;
+const estimateMarketStorageKey = 'autobot:market-start:' + estimatePage.estimateId;
+let estimateMarketPendingStart = null;
+try {
+  const saved = JSON.parse(window.sessionStorage.getItem(estimateMarketStorageKey) || 'null');
+  if (saved && /^[a-f0-9]{32}$/.test(saved.id || '') && typeof saved.fingerprint === 'string') estimateMarketPendingStart = saved;
+} catch (_) {}
+function rememberEstimateMarketStart(value) {
+  estimateMarketPendingStart = value;
+  try {
+    if (value) window.sessionStorage.setItem(estimateMarketStorageKey, JSON.stringify(value));
+    else window.sessionStorage.removeItem(estimateMarketStorageKey);
+  } catch (_) {}
+}
     let estimateMarketReloadPending = false;
     let estimateCrmDrawerTimer = null;
     let estimateCrmProjectsLoaded = false;
@@ -353,6 +367,9 @@ let estimateMarketStatusPending = false;
         const resp = await fetch(("/api/estimates/" + encodeURIComponent(estimatePage.estimateId) + "/market-status"), { signal: controller.signal });
         if (!resp.ok) throw new Error("status_unavailable");
         const data = await resp.json();
+        if (data.ok === false) throw new Error('status_unavailable');
+        estimateMarketRunId = data.run_id || null;
+        if (estimateMarketPendingStart?.id === estimateMarketRunId) rememberEstimateMarketStart(null);
         const main = document.getElementById("marketStatusMain");
         const detail = document.getElementById("marketStatusDetail");
         const logs = document.getElementById("marketLogs");
@@ -378,6 +395,8 @@ let estimateMarketStatusPending = false;
             main.textContent = "Поиск рынка завершён.";
           } else if (data.error) {
             main.textContent = "Поиск завершился с ошибкой.";
+          } else if (data.canceled) {
+            main.textContent = "Поиск остановлен. Уже найденные цены сохранены.";
           } else if (data.has_merged || data.has_raw) {
             main.textContent = "Сохранённые цены доступны во вкладках.";
           } else {
@@ -425,6 +444,14 @@ let estimateMarketStatusPending = false;
       const city = cityInput ? String(cityInput.value || "").trim() : "";
       const selectedTypes = Array.from(document.querySelectorAll('input[name="types"]:checked')).map(x => String(x.value || ""));
       const btn = document.getElementById("marketStartBtn");
+      if (btn?.dataset.busy === '1') return;
+      const fingerprint = JSON.stringify([city, [...selectedTypes].sort()]);
+      if (!estimateMarketPendingStart || estimateMarketPendingStart.fingerprint !== fingerprint) {
+        rememberEstimateMarketStart({id: window.crypto.randomUUID().replaceAll('-', ''), fingerprint});
+      }
+      const operationId = estimateMarketPendingStart.id;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
       if (btn) {
         btn.dataset.busy = "1";
         btn.disabled = true;
@@ -433,15 +460,20 @@ let estimateMarketStatusPending = false;
         const resp = await fetch(("/api/estimates/" + encodeURIComponent(estimatePage.estimateId) + "/market-start"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city, selected_types: selectedTypes })
+          body: JSON.stringify({ city, selected_types: selectedTypes, operation_id: operationId }),
+          signal: controller.signal
         });
         const data = await resp.json();
         if (!resp.ok || !data.ok) {
           alert(data.message || "Не удалось запустить поиск рынка");
+          if ([400, 409].includes(resp.status)) rememberEstimateMarketStart(null);
+        } else if (data.run_id === operationId) {
+          rememberEstimateMarketStart(null);
         }
       } catch (e) {
-        alert("Не удалось запустить поиск рынка");
+        alert("Ответ о запуске не получен. Проверяем очередь; повтор использует тот же запуск.");
       } finally {
+        clearTimeout(timeout);
         if (btn) btn.dataset.busy = "0";
         refreshEstimateMarketStatus();
       }
@@ -449,12 +481,17 @@ let estimateMarketStatusPending = false;
 
     async function stopEstimateMarket() {
       const btn = document.getElementById("marketStartBtn");
+      if (btn?.dataset.busy === '1') return;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
       if (btn) {
         btn.dataset.busy = "1";
         btn.disabled = true;
       }
       try {
-        const resp = await fetch(("/api/estimates/" + encodeURIComponent(estimatePage.estimateId) + "/market-stop"), { method: "POST" });
+        const resp = await fetch(("/api/estimates/" + encodeURIComponent(estimatePage.estimateId) + "/market-stop"), {
+          method: "POST", headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({run_id:estimateMarketRunId}), signal:controller.signal });
         const data = await resp.json();
         if (!resp.ok || !data.ok) {
           alert(data.message || "Не удалось остановить поиск");
@@ -462,6 +499,7 @@ let estimateMarketStatusPending = false;
       } catch (e) {
         alert("Не удалось остановить поиск");
       } finally {
+        clearTimeout(timeout);
         if (btn) btn.dataset.busy = "0";
         refreshEstimateMarketStatus();
       }

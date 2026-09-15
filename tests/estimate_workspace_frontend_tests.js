@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../autobot/static/estimate_workspace.js'), 'utf8');
 const reply = data => ({ok:true, json:async () => data});
 async function flush() {for (let i=0; i<12; i++) await Promise.resolve();}
-function harness(initial = {}, config = {}, bridge = null) {
+function harness(initial = {}, config = {}, bridge = null, storage = new Map()) {
   const requests = [], responses = [reply(initial)], redirects = [], timers = [];
   function node(attrs = {}) {return {attrs, dataset:{}, textContent:'', value:'', hidden:false, disabled:false,
     classList:{toggle(){}}, getAttribute(name) {return this.attrs[name];}, setAttribute(name,value){this.attrs[name]=value;},
@@ -22,14 +22,16 @@ function harness(initial = {}, config = {}, bridge = null) {
     URL, AbortController, console,
     document:{getElementById:id=>ids[id] || null, querySelectorAll:selector=>selector.includes('view-btn')?buttons:
       selector.includes('view-panel')?panels:selector.includes('types')?[{value:'material'}]:[]},
-    window:{AutoBotCrmBridge:bridge,location:{href:'http://localhost/estimates/aabbcc?q=бетон&types=material',replace(url){redirects.push(url);}}},
+    window:{AutoBotCrmBridge:bridge,crypto:require('node:crypto').webcrypto,
+      sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
+      location:{href:'http://localhost/estimates/aabbcc?q=бетон&types=material',replace(url){redirects.push(url);}}},
     fetch:async (url,options)=> {requests.push({url,options}); assert.ok(responses.length,'Unexpected fetch '+url);
       const result=responses.shift(); if (result instanceof Error) throw result; return result;},
     setTimeout(fn,ms){timers.push({fn,ms});return timers.length;},clearTimeout(){},setInterval(fn){context.poll=fn;},alert(message){context.lastAlert=message;}
   };
   context.window.setTimeout=context.setTimeout;
   vm.runInNewContext(source,context);
-  return {context,ids,requests,responses,redirects,buttons,panels,timers};
+  return {context,ids,requests,responses,redirects,buttons,panels,timers,storage};
 }
 
 (async()=>{
@@ -82,7 +84,9 @@ function harness(initial = {}, config = {}, bridge = null) {
   stored.responses.push(reply({ok:true}),reply({running:true,market_revision:'old'}));
   await stored.context.startEstimateMarket(); await flush();
   const start=stored.requests.find(request=>request.url.endsWith('/market-start'));
-  assert.deepEqual(JSON.parse(start.options.body),{city:'Ярославль',selected_types:['material']});
+  const startBody=JSON.parse(start.options.body);
+  assert.match(startBody.operation_id,/^[a-f0-9]{32}$/);
+  assert.deepEqual({...startBody,operation_id:undefined},{city:'Ярославль',selected_types:['material'],operation_id:undefined});
   stored.responses.push(reply({ok:true}),reply({running:false,market_revision:'old'}));
   await stored.context.toggleEstimateMarket(); await flush();
   assert.ok(stored.requests.some(request=>request.url.endsWith('/market-stop')));
@@ -116,5 +120,30 @@ function harness(initial = {}, config = {}, bridge = null) {
   assert.equal(prepared[0].options.credentials,'same-origin');
   assert.equal(embedded.requests.some(request=>request.options?.method==='POST'),false);
   assert.match(embedded.ids.estimateCrmStatus.textContent,/Готово: смета добавлена/);
-  console.log('Estimate workspace: revision refresh, repeat failure, network recovery, tabs, filter export, search/stop passed.');
+  const lost=harness({running:false,market_revision:'old'});
+  await flush();
+  lost.responses.push(new Error('lost acknowledgement'),reply({running:false,market_revision:'old'}));
+  await lost.context.startEstimateMarket();await flush();
+  const firstKey=JSON.parse(lost.requests.find(r=>r.url.endsWith('/market-start')).options.body).operation_id;
+  assert.equal(lost.storage.size,1);
+  const restored=harness({running:false,market_revision:'old'},{},null,lost.storage);
+  await flush();
+  let release;
+  restored.responses.push(new Promise(resolve=>{release=resolve;}),reply({running:true,run_id:firstKey,market_revision:'old'}));
+  const pending=restored.context.startEstimateMarket();
+  await restored.context.startEstimateMarket();
+  assert.equal(restored.requests.filter(r=>r.url.endsWith('/market-start')).length,1,'Double click cannot add another launch');
+  assert.equal(JSON.parse(restored.requests.at(-1).options.body).operation_id,firstKey,'A page reload reuses the lost request key');
+  release(reply({ok:true,accepted:true,run_id:firstKey}));
+  await pending;await flush();
+  assert.equal(restored.storage.size,0);
+  restored.responses.push(reply({ok:true}),reply({running:false,canceled:2,run_id:firstKey,market_revision:'old'}));
+  await restored.context.stopEstimateMarket();await flush();
+  assert.deepEqual(JSON.parse(restored.requests.find(r=>r.url.endsWith('/market-stop')).options.body),{run_id:firstKey});
+  assert.match(restored.ids.marketStatusMain.textContent,/Поиск остановлен/);
+  restored.responses.push(reply({ok:true}),reply({running:true,run_id:'f'.repeat(32),market_revision:'old'}));
+  await restored.context.startEstimateMarket();await flush();
+  const nextKey=JSON.parse(restored.requests.filter(r=>r.url.endsWith('/market-start')).at(-1).options.body).operation_id;
+  assert.notEqual(nextKey,firstKey,'An explicit new search after cancellation has its own operation');
+  console.log('Estimate workspace: revision, failures, tabs, CRM import, saved launch retry, reload, double submit and exact cancellation passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

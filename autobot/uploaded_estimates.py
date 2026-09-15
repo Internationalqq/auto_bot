@@ -80,6 +80,58 @@ def rows(root, estimate_id):
     return _read(root, estimate_id, 'rows_json', list)
 
 
+def _legacy(root, estimate_id, name, kind, default):
+    folder = Path(root) / estimate_id
+    path = folder / name
+    if folder.is_symlink() or path.is_symlink() or folder.resolve().parent != Path(root).resolve():
+        raise StoreError('Недопустимая папка сметы.')
+    if not path.is_file():
+        return default
+    try:
+        if path.stat().st_size > 16 * 1024 * 1024:
+            raise StoreError('Сохранённая смета превышает допустимый размер.')
+        return _decode(path.read_text(encoding='utf-8'), kind)
+    except OSError as error:
+        raise StoreError('Не удалось прочитать исходную смету.') from error
+
+
+def load_meta(root, estimate_id):
+    value = meta(root, estimate_id)
+    return value if value is not None else _legacy(root, estimate_id, 'meta.json', dict, None)
+
+
+def load_rows(root, estimate_id):
+    value = rows(root, estimate_id)
+    if value is None:
+        value = _legacy(root, estimate_id, 'rows.json', list, [])
+    if any(not isinstance(row, dict) for row in value):
+        raise StoreError('Повреждены позиции сохранённой сметы.')
+    # Old uploads did not persist physical IDs. The original ordinal is stable;
+    # never derive identity from a title or from a filtered table's row number.
+    return [dict(row, position_id=row.get('position_id') or f'upload:{estimate_id}:{index}')
+            for index, row in enumerate(value, 1)]
+
+
+def report_frame(positions):
+    import math
+    import pandas as pd
+    from autobot.market_analytics import COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
+    def number(value):
+        try:
+            result = float(value)
+            return result if math.isfinite(result) else None
+        except (TypeError, ValueError):
+            return None
+    return pd.DataFrame([{
+        COL_ITEM: str(row.get('item_no') or ''), COL_NAME: str(row.get('name') or ''),
+        COL_UNIT: str(row.get('unit') or ''), COL_QTY: number(row.get('qty')),
+        COL_UNIT_PRICE: number(row.get('unit_price')), COL_SUM: number(row.get('total')),
+        'Лист': str(row.get('sheet') or ''), 'basis_code': str(row.get('basis_code') or ''),
+        'position_id': str(row.get('position_id') or ''), 'estimate_version': str(row.get('estimate_version') or ''),
+        'Строка Excel': row.get('excel_row'), 'Раздел': str(row.get('section') or ''),
+        'Тип': str(row.get('type_label') or '')} for row in positions])
+
+
 def catalogue(root):
     with _connection(root) as connection:
         records = connection.execute('SELECT meta_json FROM uploaded_estimates ORDER BY published_at DESC, rowid DESC').fetchall() if connection else []

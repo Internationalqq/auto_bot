@@ -345,8 +345,6 @@ merge_site_lock = threading.Lock()
 estimate_upload_jobs: dict[str, dict] = {}
 estimate_upload_lock = threading.Lock()
 estimate_upload_workers: set[str] = set()
-estimate_market_jobs: dict[str, dict] = {}
-estimate_market_lock = threading.Lock()
 tender_delete_lock = threading.Lock()
 
 
@@ -4009,6 +4007,12 @@ def export_estimate_to_crm(
 
 
 def delete_estimate(estimate_id: str) -> None:
+    from autobot.uploaded_market import source_lock
+    with source_lock(estimate_id, USER_ESTIMATES_DIR):
+        _delete_estimate_locked(estimate_id)
+
+
+def _delete_estimate_locked(estimate_id: str) -> None:
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
     if not estimate_id:
         raise RuntimeError("Нужен estimate_id.")
@@ -4016,11 +4020,9 @@ def delete_estimate(estimate_id: str) -> None:
     if not meta:
         raise RuntimeError("Смета не найдена.")
 
-    with estimate_market_lock:
-        cur = estimate_market_jobs.get(estimate_id)
-        if cur and cur.get("running"):
-            raise RuntimeError("Нельзя удалить смету, пока по ней идёт поиск рынка.")
-        estimate_market_jobs.pop(estimate_id, None)
+    from autobot import uploaded_market
+    if (_uploaded_market_call(uploaded_market.status, estimate_id) or {}).get('running'):
+        raise RuntimeError("Нельзя удалить смету, пока по ней идёт поиск рынка.")
 
     est_dir = _estimate_dir_path(estimate_id)
     try:
@@ -4929,6 +4931,23 @@ def _uploaded_store_call(operation, *args):
         abort(503, description="Хранилище смет временно недоступно. Повторите открытие позже.")
 
 
+def _uploaded_market_call(operation, *args, **kwargs):
+    from autobot.uploaded_market import MarketError
+    from autobot.upload_admission import AdmissionError
+    from autobot.uploaded_estimates import StoreError
+    try:
+        return operation(*args, **kwargs)
+    except (MarketError, AdmissionError) as error:
+        if request.path.startswith('/api/'):
+            abort(make_response(jsonify({'ok':False,'message':str(error)}), error.status))
+        abort(error.status, description=str(error))
+    except (sqlite3.Error, OSError, TimeoutError, StoreError):
+        message = 'Очередь поиска временно недоступна. Повторите запрос позже.'
+        if request.path.startswith('/api/'):
+            abort(make_response(jsonify({'ok':False,'message':message}),503))
+        abort(503, description=message)
+
+
 def _read_legacy_estimates_index() -> list[dict]:
     if not USER_ESTIMATES_INDEX.is_file():
         return []
@@ -5029,33 +5048,14 @@ def _estimate_market_progress_for_card(estimate_id: str, rows: list[dict] | None
 
 
 def _load_estimate_meta(estimate_id: str) -> dict | None:
-    from autobot import uploaded_estimates
-    stored = _uploaded_store_call(uploaded_estimates.meta, estimate_id)
-    if stored is not None:
-        return stored
-    p = _estimate_meta_path(estimate_id)
-    if not p.is_file():
-        return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
+    from autobot import uploaded_estimates, uploaded_market
+    value = _uploaded_store_call(uploaded_estimates.load_meta, estimate_id)
+    return dict(value, **_uploaded_market_call(uploaded_market.settings, estimate_id)) if value else value
 
 
 def _load_estimate_rows(estimate_id: str) -> list[dict]:
     from autobot import uploaded_estimates
-    stored = _uploaded_store_call(uploaded_estimates.rows, estimate_id)
-    if stored is not None:
-        return stored
-    p = _estimate_rows_path(estimate_id)
-    if not p.is_file():
-        return []
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
+    return _uploaded_store_call(uploaded_estimates.load_rows, estimate_id)
 
 
 def _json_num(v) -> float | None:
@@ -5261,28 +5261,8 @@ def _estimate_row_to_dict(row) -> dict:
 
 
 def _estimate_rows_to_report_df(rows: list[dict]) -> pd.DataFrame:
-    from autobot.market_analytics import COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
-
-    data: list[dict] = []
-    for r in rows:
-        data.append(
-            {
-                COL_ITEM: str(r.get("item_no") or ""),
-                COL_NAME: str(r.get("name") or ""),
-                COL_UNIT: str(r.get("unit") or ""),
-                COL_QTY: _json_num(r.get("qty")),
-                COL_UNIT_PRICE: _json_num(r.get("unit_price")),
-                COL_SUM: _json_num(r.get("total")),
-                "Лист": str(r.get("sheet") or ""),
-                "basis_code": str(r.get("basis_code") or ""),
-                "position_id": str(r.get("position_id") or ""),
-                "estimate_version": str(r.get("estimate_version") or ""),
-                "Строка Excel": r.get("excel_row"),
-                "Раздел": str(r.get("section") or ""),
-                "Тип": str(r.get("type_label") or ""),
-            }
-        )
-    return pd.DataFrame(data)
+    from autobot.uploaded_estimates import report_frame
+    return report_frame(rows)
 
 
 def _merge_uploaded_estimate_market_df(est_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
@@ -5353,6 +5333,16 @@ def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict], *, prese
     from autobot.market_contract import merge_market_frames
     from autobot.merge_estimate_market import _normalize_market_columns
 
+    # Raw evidence is canonical after queued publication. Never consume a
+    # separately saved derived workbook while the source workbook is present.
+    if path.name == 'market_compare.xlsx' and path.parent.parent.resolve() == USER_ESTIMATES_DIR.resolve():
+        raw = path.with_name('market_sources.xlsx')
+        if raw.is_file():
+            path = raw
+        else:
+            from autobot import uploaded_market
+            if _uploaded_market_call(uploaded_market.latest, path.parent.name) is not None:
+                return pd.DataFrame()
     if not path.is_file():
         return pd.DataFrame()
     try:
@@ -5474,7 +5464,7 @@ def _estimate_compare_rows(rows_filtered: list[dict], compare_df: pd.DataFrame) 
     from autobot.merge_estimate_market import _norm_key
     from autobot.tender_viability import _estimate_numeric_for_compare, _market_median_for_row, _rub_col
 
-    from autobot.market_contract import match_market_rows
+    from autobot.market_contract import clean, match_market_rows
     matches = match_market_rows(_estimate_rows_to_report_df(rows_filtered), compare_df)
     rc = _rub_col(compare_df) if not compare_df.empty else None
     out: list[dict] = []
@@ -5490,12 +5480,14 @@ def _estimate_compare_rows(rows_filtered: list[dict], compare_df: pd.DataFrame) 
             market_num = _market_median_for_row(row_series, rc)
             if est_num and market_num and market_num > 0:
                 ratio = est_num / market_num
-        status = str(merged.get("Ошибка / статус") or "").strip()
+        status = clean(merged.get("Ошибка / статус"))
+        if status.casefold() in {"nan", "none", "null", "<na>"}:
+            status = ""
         if market_num is None and not status:
             status = "Рынок пока не найден"
         first_url = ""
         if merged:
-            first_url = _first_url_from_text(merged.get("Ссылки (строго)") or merged.get("Источники (ссылки/телефоны)") or "")
+            first_url = _first_url_from_text(clean(merged.get("Ссылки (строго)"))) or _first_url_from_text(clean(merged.get("Источники (ссылки/телефоны)")))
             if not first_url:
                 bundle = merged.get("Цена-сайт-телефон (json)")
                 if isinstance(bundle, str) and bundle.strip():
@@ -5505,18 +5497,20 @@ def _estimate_compare_rows(rows_filtered: list[dict], compare_df: pd.DataFrame) 
                         parsed = []
                     if isinstance(parsed, list):
                         for item in parsed:
-                            if isinstance(item, dict) and str(item.get("url") or "").strip():
-                                first_url = str(item.get("url") or "").strip()
+                            if isinstance(item, dict) and _first_url_from_text(clean(item.get("url"))):
+                                first_url = _first_url_from_text(clean(item.get("url")))
                                 break
             if not first_url:
                 for i in range(1, 6):
-                    maybe = str(merged.get(f"Ссылка объявления {i}") or "").strip()
+                    maybe = _first_url_from_text(clean(merged.get(f"Ссылка объявления {i}")))
                     if maybe:
                         first_url = maybe
                         break
         site = urlparse(first_url).netloc.replace("www.", "") if first_url else ""
         if not site:
-            site = str(merged.get("Источник 1") or merged.get("Источник") or "").strip()
+            site = clean(merged.get("Источник 1")) or clean(merged.get("Источник"))
+            if site.casefold() in {"nan", "none", "null", "<na>"}:
+                site = ""
         if ratio is None:
             compare_label = "Нет данных"
             compare_class = "muted"
@@ -5753,11 +5747,7 @@ def _estimate_upload_load_locked(job_id: str) -> dict | None:
     return payload
 
 
-def _estimate_market_log_append(job: dict, line: str) -> None:
-    logs = list(job.get("log_lines") or [])
-    stamp = datetime.now().strftime("%H:%M:%S")
-    logs.append(f"{stamp} · {line}")
-    job["log_lines"] = logs[-30:]
+
 
 
 def _estimate_upload_set(job_id: str, **updates) -> None:
@@ -5771,25 +5761,10 @@ def _estimate_upload_set(job_id: str, **updates) -> None:
         _estimate_upload_persist_locked(job)
 
 
-def _estimate_market_set(estimate_id: str, **updates) -> None:
-    with estimate_market_lock:
-        job = estimate_market_jobs.get(estimate_id)
-        if not job:
-            return
-        for key, value in updates.items():
-            job[key] = value
 
 
-def _estimate_market_cleanup(max_jobs: int = 16) -> None:
-    with estimate_market_lock:
-        items = sorted(
-            estimate_market_jobs.items(),
-            key=lambda kv: str(kv[1].get("started_at") or ""),
-            reverse=True,
-        )
-        keep = dict(items[:max_jobs])
-        estimate_market_jobs.clear()
-        estimate_market_jobs.update(keep)
+
+
 
 
 def _research_queries_from_text(raw: str, *, limit: int = 8) -> list[str]:
@@ -6149,221 +6124,7 @@ def _execute_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw:
         _estimate_upload_cleanup()
 
 
-def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str], selected_types: list[str] | None = None) -> None:
-    try:
-        from autobot.market_analytics import COL_NAME
-        from autobot.market_strategy import build_search_plan
-        from autobot.merge_estimate_market import _norm_key
-        from autobot.real_market_scraper import (
-            AvitoBrowserFetcher,
-            _build_output_row,
-            _compact_query,
-            _dedupe_and_sort,
-            _eligible_rows,
-            _merge_rows,
-            _processed_keys,
-            _read_previous,
-            _verify_offers,
-            search_market,
-        )
 
-        meta = _load_estimate_meta(estimate_id) or {}
-        rows_json = _load_estimate_rows(estimate_id)
-        if not rows_json:
-            raise ValueError("У этой сметы нет строк для поиска рынка.")
-        selected_types = _normalize_selected_estimate_types(selected_types)
-        filtered_rows_json = _filter_estimate_rows(rows_json, selected_types=selected_types)
-        if not filtered_rows_json:
-            raise ValueError("По выбранным типам позиций нет строк для поиска рынка.")
-        est_df = _estimate_rows_to_report_df(filtered_rows_json)
-        total_rows = len(_eligible_rows(est_df))
-        raw_path = _estimate_market_raw_path(estimate_id)
-        merged_path = _estimate_market_merged_path(estimate_id)
-        prev = _read_previous(raw_path)
-        if prev is not None and not getattr(prev, "empty", True) and COL_NAME in prev.columns:
-            allowed_keys = {_norm_key(str(x)) for x in est_df[COL_NAME].fillna("").astype(str).tolist() if str(x).strip()}
-            if allowed_keys:
-                prev = prev[prev[COL_NAME].fillna("").astype(str).map(_norm_key).isin(allowed_keys)].copy()
-        done_keys = _processed_keys(prev)
-        eligible = _eligible_rows(est_df)
-        total = len(eligible)
-        active_sources = list(sources)
-        _estimate_market_set(
-            estimate_id,
-            running=True,
-            progress=3,
-            stage="Готовлю строки сметы",
-            detail=f"К обработке: {total} строк" + (f" · город: {city}" if city else ""),
-            selected_types=selected_types,
-            updated_at=datetime.now().isoformat(timespec="seconds"),
-        )
-        use_browser = (os.environ.get("MARKET_AVITO_BROWSER", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
-        browser_headless = (os.environ.get("MARKET_AVITO_HEADLESS", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
-        max_results = max(1, min(10, int((os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5")))
-        pause = max(0.0, float((os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4"))
-        new_rows: list[dict] = []
-        with AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless) as browser:
-            for seq, (_, row) in enumerate(eligible, start=1):
-                with estimate_market_lock:
-                    job = estimate_market_jobs.get(estimate_id)
-                    stop_requested = bool(job.get("stop_requested")) if job else False
-                if stop_requested:
-                    with estimate_market_lock:
-                        job = estimate_market_jobs.get(estimate_id)
-                        if job:
-                            job["running"] = False
-                            job["ok"] = True
-                            job["stage"] = "Остановлено"
-                            job["detail"] = f"Остановлено пользователем · обработано {len(done_keys) + len(new_rows)} из {total}"
-                            job["ended_at"] = datetime.now().isoformat(timespec="seconds")
-                            job["done"] = max(0, len(done_keys) + len(new_rows))
-                            job["total"] = total
-                            job["has_raw"] = raw_path.is_file()
-                            job["has_merged"] = merged_path.is_file()
-                            _estimate_market_log_append(job, "Остановлено пользователем")
-                    return
-                work_name = str(row.get(COL_NAME, "") or "").strip()
-                key = _norm_key(work_name)
-                if key in done_keys:
-                    continue
-                plan = build_search_plan(
-                    work_name,
-                    row.get("Ед. изм.", ""),
-                    row.get("basis_code", ""),
-                    row.get("Раздел", ""),
-                    city,
-                )
-                queries = list(plan.queries) or [_compact_query(work_name)]
-                query = " | ".join(queries)
-                _estimate_market_set(
-                    estimate_id,
-                    progress=max(4, min(96, int(round(((seq - 1) / max(1, total)) * 100)))),
-                    stage="Ищу цены",
-                    detail=f"{seq}/{total} · {work_name[:140]}",
-                    current_item=work_name[:220],
-                    done=max(0, len(done_keys) + len(new_rows)),
-                    total=total,
-                )
-                with estimate_market_lock:
-                    job = estimate_market_jobs.get(estimate_id)
-                    if job:
-                        _estimate_market_log_append(job, f"Поиск: {seq}/{total} · {work_name[:160]}")
-                offers = []
-                error_parts: list[str] = []
-                if plan.can_auto_price:
-                    primary_sources = [source for source in active_sources if source != "avito"] or active_sources
-                    for planned_query in queries[:2]:
-                        found, found_error = search_market(
-                            planned_query,
-                            region="" if plan.queries else city,
-                            sources=primary_sources,
-                            max_results=max_results,
-                            browser_fetcher=browser,
-                        )
-                        checked = _verify_offers(
-                            row,
-                            found,
-                            plan,
-                            browser_fetcher=browser,
-                            reference_offers=offers,
-                        )
-                        offers = _dedupe_and_sort(offers + checked, max_results=max_results)
-                        if found_error:
-                            error_parts.append(found_error)
-                        if sum(1 for offer in offers if offer.verification == "verified") >= min(3, max_results):
-                            break
-                    if "avito" in active_sources and "web" in active_sources and not any(
-                        offer.verification == "verified" for offer in offers
-                    ):
-                        found, found_error = search_market(
-                            queries[0],
-                            region="" if plan.queries else city,
-                            sources=["avito"],
-                            max_results=max_results,
-                            browser_fetcher=browser,
-                        )
-                        checked = _verify_offers(
-                            row,
-                            found,
-                            plan,
-                            browser_fetcher=browser,
-                            reference_offers=offers,
-                        )
-                        offers = _dedupe_and_sort(offers + checked, max_results=max_results)
-                        if found_error:
-                            error_parts.append(found_error)
-                err = "; ".join(dict.fromkeys(error_parts))
-                err_low = str(err or "").casefold()
-                if "avito" in active_sources and ("ограничил доступ" in err_low or "ip/vpn" in err_low or "captcha" in err_low):
-                    active_sources = [x for x in active_sources if x != "avito"]
-                    with estimate_market_lock:
-                        job = estimate_market_jobs.get(estimate_id)
-                        if job:
-                            _estimate_market_log_append(job, "Авито заблокировал доступ — продолжаю только по интернету")
-                new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
-                merged_raw = _merge_rows(prev, new_rows)
-                raw_path.parent.mkdir(parents=True, exist_ok=True)
-                merged_raw.to_excel(raw_path, index=False)
-                merged_df = _merge_uploaded_estimate_market_df(est_df, merged_raw)
-                merged_df.to_excel(merged_path, index=False)
-                detail = f"{len(offers)} ист." if offers else "ничего не найдено"
-                if err and not offers:
-                    detail += f" · {err[:120]}"
-                with estimate_market_lock:
-                    job = estimate_market_jobs.get(estimate_id)
-                    if job:
-                        _estimate_market_log_append(job, f"Готово: {seq}/{total} · {detail}")
-                if pause > 0 and seq < total:
-                    time.sleep(pause)
-        if new_rows:
-            merged_raw = _merge_rows(prev, new_rows)
-        else:
-            merged_raw = prev
-        if merged_raw is None or (hasattr(merged_raw, "empty") and merged_raw.empty and not raw_path.is_file()):
-            pd.DataFrame().to_excel(raw_path, index=False)
-        else:
-            merged_raw.to_excel(raw_path, index=False)
-        _merge_uploaded_estimate_market_df(est_df, merged_raw).to_excel(merged_path, index=False)
-        meta["market_city"] = city
-        meta["market_sources"] = ",".join(sources)
-        meta["market_selected_types"] = selected_types
-        meta["market_updated_at"] = datetime.now().strftime("%d.%m.%Y %H:%M")
-        from autobot import uploaded_estimates
-        updates = {key: meta[key] for key in ('market_city', 'market_sources', 'market_selected_types', 'market_updated_at')}
-        if not uploaded_estimates.update_market_meta(USER_ESTIMATES_DIR, estimate_id, updates):
-            from autobot.atomic_output import output_lock
-            with output_lock(_estimate_meta_path(estimate_id)):
-                current_meta = _load_estimate_meta(estimate_id)
-                if current_meta is None:
-                    raise RuntimeError("Смета удалена во время поиска.")
-                uploaded_estimates.write_json(_estimate_meta_path(estimate_id), dict(current_meta, **updates))
-        with estimate_market_lock:
-            job = estimate_market_jobs.get(estimate_id)
-            if job:
-                job["running"] = False
-                job["ok"] = True
-                job["progress"] = 100
-                job["stage"] = "Готово"
-                job["detail"] = f"Поиск рынка завершён · строк: {total_rows}"
-                job["done"] = total
-                job["total"] = total
-                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
-                job["has_raw"] = raw_path.is_file()
-                job["has_merged"] = merged_path.is_file()
-                _estimate_market_log_append(job, "Готово: файлы рынка сохранены")
-    except Exception as e:
-        with estimate_market_lock:
-            job = estimate_market_jobs.get(estimate_id)
-            if job:
-                job["running"] = False
-                job["ok"] = False
-                job["stage"] = "Ошибка"
-                job["detail"] = "Не удалось выполнить поиск рынка по этой смете"
-                job["error"] = str(e)[:500]
-                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
-                _estimate_market_log_append(job, f"Ошибка: {str(e)[:300]}")
-    finally:
-        _estimate_market_cleanup()
 
 
 ESTIMATES_TEMPLATE = """
@@ -8338,8 +8099,8 @@ def _render_estimates_page_v2():
             market_summary = "Рынок ещё не анализировали"
             market_summary_class = "metric-bad"
             market_progress_note = "Поиск цен ещё не запускался."
-        with estimate_market_lock:
-            running = bool((estimate_market_jobs.get(estimate_id) or {}).get("running"))
+        from autobot import uploaded_market
+        running = bool((_uploaded_market_call(uploaded_market.status, estimate_id) or {}).get('running'))
         if running:
             market_status_label = "Идёт поиск"
             market_status_class = "status-partial"
@@ -8911,92 +8672,52 @@ def tender_svodka_download_xlsx(tender_id: str):
 
 @app.route("/api/estimates/<estimate_id>/market-status")
 def api_estimate_market_status(estimate_id: str):
-    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    meta = _load_estimate_meta(estimate_id) or {}
-    with estimate_market_lock:
-        job = dict(estimate_market_jobs.get(estimate_id) or {})
-    payload = {
-        "ok": True,
-        "running": bool(job.get("running")),
-        "result_ok": bool(job.get("ok")),
-        "progress": int(job.get("progress") or 0),
-        "stage": str(job.get("stage") or ""),
-        "detail": str(job.get("detail") or ""),
-        "error": str(job.get("error") or ""),
-        "done": int(job.get("done") or 0),
-        "total": int(job.get("total") or 0),
-        "city": str(job.get("city") or meta.get("market_city") or ""),
-        "selected_types": _normalize_selected_estimate_types(job.get("selected_types") or meta.get("market_selected_types") or []),
-        "log_tail": list(job.get("log_lines") or []),
-        "started_at": job.get("started_at"),
-        "ended_at": job.get("ended_at"),
-        "has_raw": _estimate_market_raw_path(estimate_id).is_file(),
-        "has_merged": _estimate_market_merged_path(estimate_id).is_file(),
-        "market_revision": _estimate_market_revision(estimate_id),
-    }
-    return jsonify(payload)
+    from autobot import uploaded_market
+    meta = _load_estimate_meta(estimate_id)
+    if meta is None:
+        return jsonify({'ok': False, 'message': 'Смета не найдена.'}), 404
+    run_id = request.args.get('run_id')
+    job = _uploaded_market_call(uploaded_market.status, estimate_id, run_id=run_id) or {}
+    if run_id and not job:
+        return jsonify({'ok': False, 'message': 'Запуск ещё не найден.'}), 404
+    payload = dict(job, ok=True, result_ok=bool(job.get('ok')), running=bool(job.get('running')),
+        city=job.get('city', meta.get('market_city', '')), selected_types=job.get('selected_types', meta.get('market_selected_types', [])),
+        log_tail=job.get('log_lines', []), has_raw=_estimate_market_raw_path(estimate_id).is_file(),
+        has_merged=_estimate_market_merged_path(estimate_id).is_file(), market_revision=_estimate_market_revision(estimate_id),
+        available_sources=['web'])
+    payload.pop('log_lines', None)
+    response = jsonify(payload)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.route("/api/estimates/<estimate_id>/market-start", methods=["POST"])
 def api_estimate_market_start(estimate_id: str):
-    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    meta = _load_estimate_meta(estimate_id)
-    if not meta:
-        return jsonify({"ok": False, "message": "Смета не найдена."}), 404
-    rows = _load_estimate_rows(estimate_id)
-    if not rows:
-        return jsonify({"ok": False, "message": "У этой сметы нет строк для поиска рынка."}), 400
-    with estimate_market_lock:
-        cur = estimate_market_jobs.get(estimate_id)
-        if cur and cur.get("running"):
-            return jsonify({"ok": False, "message": "Поиск рынка уже выполняется."}), 409
-    data = request.get_json(silent=True) or {}
-    city = re.sub(r"\s+", " ", str(data.get("city") or "").strip())[:120]
-    selected_types = _normalize_selected_estimate_types(data.get("selected_types") or [])
-    filtered_rows = _filter_estimate_rows(rows, selected_types=selected_types)
-    if not filtered_rows:
-        return jsonify({"ok": False, "message": "По выбранным типам позиций нет строк для поиска цен."}), 400
-    sources = ["avito", "web"]
-    with estimate_market_lock:
-        estimate_market_jobs[estimate_id] = {
-            "running": True,
-            "ok": False,
-            "progress": 1,
-            "stage": "Старт",
-            "detail": "Запускаю поиск цен по строкам сметы",
-            "error": "",
-            "city": city,
-            "sources": ",".join(sources),
-            "selected_types": selected_types,
-            "stop_requested": False,
-            "done": 0,
-            "total": len(filtered_rows),
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "ended_at": None,
-            "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Старт поиска рынка" + (f" · город: {city}" if city else "")],
-        }
-    threading.Thread(
-        target=_run_estimate_market_worker,
-        kwargs={"estimate_id": estimate_id, "city": city, "sources": sources, "selected_types": selected_types},
-        daemon=True,
-    ).start()
-    return jsonify({"ok": True, "message": "Поиск рынка запущен."})
+    from autobot import uploaded_market
+    from autobot.market_web_worker import web_worker_enabled
+    if not web_worker_enabled():
+        return jsonify({'ok':False,'message':'Поиск на сервере отключён. Повторите после его включения.'}),503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Ожидаются условия поиска.'}), 400
+    if data.get('sources', ['web']) != ['web']:
+        return jsonify({'ok': False, 'message': 'Сейчас доступен поиск по сайтам поставщиков. Авито ещё не подключён.'}), 400
+    run, duplicate = _uploaded_market_call(uploaded_market.enqueue, estimate_id, city=data.get('city', ''),
+        selected_types=data.get('selected_types'), operation_id=data.get('operation_id'), root=USER_ESTIMATES_DIR)
+    return jsonify({'ok': True, 'accepted': True, 'run_id': run['run_id'], 'duplicate': duplicate,
+                    'message': 'Поиск принят. Задания сохраняются после закрытия страницы.'})
 
 
 @app.route("/api/estimates/<estimate_id>/market-stop", methods=["POST"])
 def api_estimate_market_stop(estimate_id: str):
-    estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    with estimate_market_lock:
-        cur = estimate_market_jobs.get(estimate_id)
-        if not cur:
-            return jsonify({"ok": False, "message": "Активный поиск для этой сметы не найден."}), 404
-        if not cur.get("running"):
-            return jsonify({"ok": True, "message": "Поиск уже остановлен."})
-        cur["stop_requested"] = True
-        cur["stage"] = "Останавливаю"
-        cur["detail"] = "Жду завершения текущей позиции и сохраняю уже найденные результаты"
-        _estimate_market_log_append(cur, "Запрошена остановка поиска")
-    return jsonify({"ok": True, "message": "Остановка поиска запрошена."})
+    from autobot import uploaded_market
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Некорректный запрос.'}), 400
+    count = _uploaded_market_call(uploaded_market.cancel, estimate_id, run_id=data.get('run_id'))
+    return jsonify({'ok': True, 'canceled': count, 'message': 'Активные позиции отменены. Сохранённые цены доступны.'})
 
 
 @app.route("/api/estimates/upload", methods=["POST"])

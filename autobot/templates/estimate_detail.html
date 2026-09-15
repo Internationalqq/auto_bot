@@ -9,7 +9,7 @@
   <title>{{ meta.title }} · Смета</title>
   <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
   <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
-  <link rel="stylesheet" href="/estimates/workspace.css?v=20260915-1" />
+  <link rel="stylesheet" href="/estimates/workspace.css?v=20260915-queue-1" />
 </head>
 <body class="autobot-page estimate-workspace-page">
   <header class="topbar autobot-section-bar">
@@ -82,6 +82,7 @@
         </div>
       </div>
       <p class="estimate-scope">Поиск работает по выбранным ниже типам позиций. Текстовый фильтр применяется только к таблице.</p>
+      <p class="estimate-scope">Сейчас ищем по сайтам поставщиков и подрядчиков. Поиск по Авито ещё не подключён. Задание сохраняется при закрытии страницы.</p>
       {% if scope_info.has_notice %}<div class="reconciliation-note needs-attention"><strong>{{ scope_info.title }}</strong><div>{{ scope_info.text }}</div></div>{% endif %}
       <div class="estimate-market-status" role="status" aria-live="polite"><div id="marketStatusMain">{% if has_market_raw or has_market_merged %}Сохранённые цены доступны во вкладках.{% else %}Поиск ещё не запускался.{% endif %}</div><div id="marketStatusDetail"></div></div>
       <details class="estimate-log" id="marketLogDetails" hidden><summary>Журнал поиска</summary><pre id="marketLogs"></pre></details>
@@ -353,6 +354,6 @@
     'activeTableView': active_table_view, 'crmPrefill': crm_prefill,
     'legacyCrmAllowed': legacy_crm_export_allowed, 'importCapability': estimate_import_capability
   }|tojson }}</script>
-  <script src="/estimates/workspace.js?v=20260915-1"></script>
+  <script src="/estimates/workspace.js?v=20260915-queue-1"></script>
 </body>
 </html>
