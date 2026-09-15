@@ -8,6 +8,22 @@ import autobot.tender_detail as tender_detail
 from autobot.market_analytics import COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
 
 
+def test_archive_failure_prevents_complete_estimate_status(tmp_path, monkeypatch):
+    tid = '0171200001926000664'
+    monkeypatch.setattr(tender_detail, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(tender_detail, 'latest_parser_health', lambda _: {})
+    pd.DataFrame([{COL_NAME: 'Поставка материала', COL_UNIT: 'м3', COL_QTY: 1,
+                   COL_UNIT_PRICE: 100, COL_SUM: 100}]).to_excel(tmp_path / f'ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx', index=False)
+    (tmp_path / f'ARCHIVES_{tid}.json').write_text(json.dumps({'failed_count': 1, 'archives': [
+        {'archive': 'docs.zip', 'status': 'failed', 'message': 'Архив ZIP повреждён'}]}), encoding='utf-8')
+    detail = tender_detail.build_tender_detail(tid, {'price_rub': 100}, {})
+    assert detail['estimate_check_class'] == 'warn'
+    assert 'docs.zip' in detail['estimate_check_detail']
+    assert 'не изменён' in detail['estimate_check_detail']
+    assert detail['archive_extraction']['failed_count'] == 1
+    assert not next(step for step in detail['steps'] if step['key'] == 'estimate')['done']
+
+
 def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypatch):
     tender_id = "0171200001926000664"
     monkeypatch.setattr(tender_detail, "REPORTS_DIR", tmp_path)

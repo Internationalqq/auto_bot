@@ -1282,85 +1282,32 @@ def _archive_output_dir(archive: Path, extracted_base: Path) -> Path:
 
 
 def extract_archives(archives: list[Path], extracted_base: Path) -> list[Path]:
-    extracted_files: list[Path] = []
-    seven_zip = get_7z_path()
-    for archive in archives:
-        out_dir = _archive_output_dir(archive, extracted_base)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        if archive.suffix.lower() == ".zip":
-            try:
-                with zipfile.ZipFile(archive, "r") as zf:
-                    zf.extractall(out_dir)
-                    extracted_files.extend([out_dir / n for n in zf.namelist()])
-            except zipfile.BadZipFile:
-                continue
-        elif archive.suffix.lower() == ".rar":
-            extracted = False
-            if seven_zip:
-                try:
-                    proc = subprocess.run(
-                        [seven_zip, "x", str(archive), f"-o{out_dir}", "-y"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                    if proc.returncode in (0, 1):
-                        extracted = True
-                        extracted_files.extend([p for p in out_dir.rglob("*") if p.is_file()])
-                except Exception:
-                    extracted = False
-
-            if not extracted:
-                try:
-                    with rarfile.RarFile(archive) as rf:
-                        rf.extractall(out_dir)
-                        extracted_files.extend([out_dir / n for n in rf.namelist()])
-                except Exception:
-                    continue
-    return extracted_files
+    return extract_archives_nested(archives, extracted_base)
 
 
 def archive_seeds_for_tender(downloads_dir: Path | None, extracted_tender_root: Path | None) -> list[Path]:
-    """Все zip/rar в папке скачивания и уже распакованного дерева (вложенные сметы)."""
-    paths: list[Path] = []
-    for root in (downloads_dir, extracted_tender_root):
-        if root is None or not root.exists():
-            continue
-        paths.extend(
-            p
-            for p in root.rglob("*")
-            if p.is_file() and p.suffix.lower() in (".zip", ".rar")
-        )
-    return unique_paths_preserve_order(paths)
+    """Only original current downloads; old derived trees cannot reset depth."""
+    from autobot.archive_extraction import ARCHIVE_EXTENSIONS
+    if downloads_dir is None or not downloads_dir.is_dir():
+        return []
+    return sorted(p for p in downloads_dir.iterdir()
+                  if p.is_file() and not p.is_symlink() and p.suffix.lower() in ARCHIVE_EXTENSIONS)
 
 
-def extract_archives_nested(archives: list[Path], extracted_base: Path, max_rounds: int = 32) -> list[Path]:
-    """
-    Распаковывает цепочку вложенных архивов (типично: doc_5.zip → «сметная документация.zip» → *.xlsx).
-    """
-    all_out: list[Path] = []
-    pending = [p for p in archives if p.is_file() and p.suffix.lower() in (".zip", ".rar")]
-    seen_keys: set[str] = set()
-    for _ in range(max_rounds):
-        if not pending:
-            break
-        batch: list[Path] = []
-        for p in pending:
-            try:
-                key = str(p.resolve())
-            except OSError:
-                key = str(p)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            batch.append(p)
-        if not batch:
-            break
-        out = extract_archives(batch, extracted_base)
-        all_out.extend(out)
-        pending = [p for p in out if p.is_file() and p.suffix.lower() in (".zip", ".rar")]
-    return all_out
+def extract_archives_nested(archives: list[Path], extracted_base: Path, max_rounds: int = 5,
+                            *, report_path: Path | None = None, require_complete: bool = False) -> list[Path]:
+    from autobot.archive_extraction import ArchiveRejected, Limits, extract_documents
+    result = extract_documents(archives, extracted_base, limits=Limits(depth=max(1, min(max_rounds, 5))))
+    if report_path is not None:
+        search_state.atomic_json(report_path, result)
+    failures = [row for row in result['archives'] if row['status'] != 'complete']
+    for failure in failures:
+        print(f"[archive] {failure['archive']}: {failure['message']}")
+    if result.get('message'):
+        print(f"[archive] {result['message']}")
+    if require_complete and result['failed_count']:
+        raise ArchiveRejected('documents_incomplete', 'Разбор документов не завершён. Предыдущий отчёт сохранён; причины указаны в карточке закупки.')
+    return [Path(item['path']) for row in result['archives'] if row['status'] == 'complete' for item in row['files']]
 
 
 def unique_paths_preserve_order(paths: list[Path]) -> list[Path]:
@@ -1484,7 +1431,7 @@ def extract_estimate_pdf_rows(
         rows.extend(extract_rows_from_pdf(pdf_path, tender))
         official_total = extract_pdf_estimate_total(pdf_path)
         if official_total is not None:
-            official_totals[pdf_path.name] = official_total
+            official_totals[str(pdf_path)] = official_total
     return rows, official_totals
 
 
@@ -1499,32 +1446,37 @@ def write_estimate_parse_manifest(
     reports_dir = out_paths["reports"]
     reports_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = reports_dir / f"ESTIMATE_PARSE_{tender_id}.json"
-    parsed_names = {
-        Path(str(row.get("source_file", ""))).name
-        for row in rows
-        if str(row.get("source_file", "")).strip()
-    }
+    from collections import Counter
+    parsed_sources = Counter(str(row.get('source_file') or '') for row in rows)
     selected_names = [path.name for path in pdf_files]
-    empty_names = [name for name in selected_names if name not in parsed_names]
-    totals = {
-        str(name): float(value)
-        for name, value in (official_totals or {}).items()
-        if to_float(value) is not None and float(value) > 0
-    }
+    name_counts = Counter(selected_names)
+    totals = {}
+    documents = []
+    for path in pdf_files:
+        source = str(path)
+        value = (official_totals or {}).get(source)
+        # Preserve the old helper contract only for an unambiguous basename.
+        if value is None and name_counts[path.name] == 1:
+            value = (official_totals or {}).get(path.name)
+        number = to_float(value)
+        if number is not None and math.isfinite(number) and number > 0:
+            totals[source] = number
+        documents.append({'source_file': source, 'name': path.name,
+                          'parsed_rows': parsed_sources[source], 'official_total_rub': totals.get(source)})
+    empty_names = [d['name'] for d in documents if not d['parsed_rows']]
     payload = {
         "tender_id": tender_id,
         "selected_pdf_count": len(selected_names),
         "parsed_pdf_count": len(selected_names) - len(empty_names),
         "empty_pdf_files": empty_names,
         "selected_pdf_files": selected_names,
+        "documents": documents,
         "official_total_files_count": len(totals),
-        "official_total_missing_files": [name for name in selected_names if name not in totals],
+        "official_total_missing_files": [d['name'] for d in documents if d['official_total_rub'] is None],
         "official_totals_rub": totals,
         "official_total_rub": round(sum(totals.values()), 2),
     }
-    tmp_path = manifest_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(manifest_path)
+    search_state.atomic_json(manifest_path, payload)
     return manifest_path
 
 
@@ -2863,9 +2815,6 @@ def _run_main(args, out_paths):
         category=UserWarning,
     )
     tg_cfg = telegram_config()
-    rar_enabled = configure_rar_backend()
-    if not rar_enabled:
-        print("Внимание: не найден backend для RAR (unrar/7z). RAR-архивы будут пропущены.")
     all_found: list[Tender] = []
 
     if args.from_tender_id and args.from_tender_url:
@@ -2896,7 +2845,8 @@ def _run_main(args, out_paths):
         tender_dl = out_paths["downloads"] / tender.tender_id
         ext_root = out_paths["extracted"] / tender.tender_id
         seeds = archive_seeds_for_tender(tender_dl, ext_root)
-        extracted = extract_archives_nested(seeds, out_paths["extracted"]) if seeds else []
+        extracted = extract_archives_nested(seeds, out_paths["extracted"],
+                                            report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
         excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
@@ -2962,17 +2912,15 @@ def _run_main(args, out_paths):
             publish_date=None,
         )
         base = out_paths["downloads"] / tid
-        downloaded_files = [p for p in base.rglob("*") if p.is_file()] if base.exists() else []
+        downloaded_files = [p for p in base.iterdir() if p.is_file() and not p.is_symlink()] if base.exists() else []
         existing_extracted_root = out_paths["extracted"] / tid
         seeds = archive_seeds_for_tender(base, existing_extracted_root)
-        extracted = extract_archives_nested(seeds, out_paths["extracted"]) if seeds else []
+        extracted = extract_archives_nested(seeds, out_paths["extracted"],
+                                            report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
         direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
         extracted_pdf = [p for p in extracted if p.exists() and is_pdf_file(p)]
-        if existing_extracted_root.exists():
-            extracted_excel.extend([p for p in existing_extracted_root.rglob("*") if p.is_file() and is_excel_file(p)])
-            extracted_pdf.extend([p for p in existing_extracted_root.rglob("*") if p.is_file() and is_pdf_file(p)])
         pdf_files = select_estimate_pdf_files(extracted_pdf + direct_pdf)
         estimate_excel_files = unique_paths_preserve_order(extracted_excel + direct_excel)
         if not estimate_excel_files and not pdf_files:
@@ -3255,7 +3203,18 @@ def _run_main(args, out_paths):
         tender_dl = out_paths["downloads"] / tender.tender_id
         ext_root = out_paths["extracted"] / tender.tender_id
         seeds = archive_seeds_for_tender(tender_dl, ext_root)
-        extracted = extract_archives_nested(seeds, out_paths["extracted"]) if seeds else []
+        from autobot.archive_extraction import ArchiveRejected
+        try:
+            extracted = extract_archives_nested(seeds, out_paths["extracted"],
+                report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
+        except ArchiveRejected as error:
+            print(f"[archive] {tender.tender_id}: {error}")
+            failed_downloads.append(tender.tender_id)
+            summary['counts']['document_failed'] = summary['counts'].get('document_failed', 0) + 1
+            search_state.save_summary(out_paths['root'], summary)
+            _save_search_checkpoint(out_paths, args, filtered=filtered, completed_ids=completed_ids,
+                                    new_ids=new_ids, search_total=search_total, completed=False)
+            continue
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
         extracted_excel = [p for p in extracted if p.exists() and is_excel_file(p)]
         direct_pdf = [p for p in downloaded_files if p.exists() and is_pdf_file(p)]
@@ -3350,7 +3309,7 @@ def _run_main(args, out_paths):
     print(f"Всего позиций из смет: {len(all_rows)}")
     if failed_downloads:
         summary.update(state='awaiting_resume' if _resume_enabled() else 'failed',
-                       message=f'Документы не получены для {len(failed_downloads)} закупок. ' + ('Они сохранены для отдельного продолжения.' if _resume_enabled() else 'Возобновление отключено; повторите скачивание из карточек закупок.'))
+                       message=f'Получение или разбор документов не завершены для {len(failed_downloads)} закупок. ' + ('Они сохранены для отдельного продолжения.' if _resume_enabled() else 'Возобновление отключено; повторите скачивание из карточек закупок.'))
     else:
         if getattr(args, '_checkpoint_run_id', None):
             _clear_search_checkpoint(out_paths)

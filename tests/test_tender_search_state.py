@@ -92,6 +92,27 @@ def test_explicit_resume_skips_completed_ids_and_retains_failed_download(isolate
     assert state.public_resume(isolated['root'])['remaining'] == 1
 
 
+def test_bad_archive_preserves_previous_report_and_resume_moves_to_other_tenders(isolated, monkeypatch):
+    path, _ = save_checkpoint(isolated)
+    monkeypatch.setattr(main, 'parse_args', lambda: arguments(resume_downloads=True))
+    monkeypatch.setattr(main, 'search_tenders', lambda *a, **kw: pytest.fail('resume searched EIS'))
+    first = isolated['downloads'] / '12345678' / 'bad.zip'
+    first.parent.mkdir()
+    first.write_bytes(b'broken archive')
+    previous = isolated['reports'] / 'ОТЧЕТ_ПО_СМЕТАМ_12345678.xlsx'
+    previous.write_bytes(b'previous report')
+    visited = []
+    monkeypatch.setattr(main, 'open_tender_and_download_archives',
+        lambda item, *_: visited.append(item.tender_id) or ([first] if item.tender_id == '12345678' else []))
+    main.main()
+    assert visited == ['12345678', '23456789']
+    assert previous.read_bytes() == b'previous report'
+    assert json.loads((isolated['reports'] / 'ARCHIVES_12345678.json').read_text(encoding='utf-8'))['failed_count'] == 1
+    assert state.checkpoint_for_resume(path)['completed_ids'] == []
+    summary = state.read_state(isolated['root'] / 'last_search_run.json')
+    assert summary['state'] == 'awaiting_resume' and summary['counts']['document_failed'] == 1
+
+
 @pytest.mark.parametrize('case', ['old', 'future', 'naive', 'missing_date', 'signature', 'completed', 'bad_rows', 'bad_parameters'])
 def test_invalid_resume_fails_closed_and_preserves_original(isolated, case):
     path, value = save_checkpoint(isolated)

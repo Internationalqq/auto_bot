@@ -108,6 +108,24 @@ def _estimate_parse_manifest(tender_id: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _archive_extraction_status(tender_id: str) -> dict[str, Any]:
+    path = REPORTS_DIR / f"ARCHIVES_{tender_id}.json"
+    if not path.is_file():
+        return {"checked": False, "failed_count": 0, "errors": []}
+    try:
+        if path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError('large archive report')
+        data = json.loads(path.read_text(encoding='utf-8'))
+        failures = int(data.get('failed_count', 0))
+        errors = [f"{_clean(row.get('archive'))}: {_clean(row.get('message'))}"
+                  for row in data.get('archives', []) if row.get('status') != 'complete'][:5]
+        if data.get('message'):
+            errors.append(_clean(data['message']))
+        return {"checked": True, "failed_count": failures, "errors": errors}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {"checked": False, "failed_count": 1, "errors": ["Не удалось прочитать результат распаковки"]}
+
+
 def _natural_tokens(value: Any) -> tuple[tuple[int, Any], ...]:
     return tuple(
         (1, int(part)) if part.isdigit() else (0, part)
@@ -527,9 +545,15 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         estimate_check_detail = f"Не найдено «ВСЕГО по смете»: {missing_label}. {estimate_check_detail}"
     if comparison_basis == "positions":
         estimate_check_detail = f"Официальные итоги ЛСР не найдены; контроль рассчитан по сумме распознанных позиций. {estimate_check_detail}"
+    archive_status = _archive_extraction_status(tender_id)
+    if archive_status['failed_count']:
+        estimate_check_class = "warn"
+        estimate_check_title = "Не все документы распакованы"
+        estimate_check_detail = ("Новый разбор не завершён; последний сохранённый отчёт не изменён. " + " · ".join(archive_status['errors'])
+                                 + ". Исходные архивы доступны во вкладке «Документы».")
     steps = (
         {"key": "documents", "label": "Документы", "done": bool(workflow.get("has_downloads"))},
-        {"key": "estimate", "label": "Смета", "done": estimate_path.is_file()},
+        {"key": "estimate", "label": "Смета", "done": estimate_path.is_file() and not archive_status['failed_count']},
         {"key": "market", "label": "Проверка цен", "done": market_path.is_file() and counts["verified"] > 0},
         {"key": "comparison", "label": "Сравнение", "done": comparison_path.is_file() and counts["verified"] > 0},
     )
@@ -573,6 +597,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         "estimate_files_selected": estimate_files_selected,
         "estimate_files_parsed": estimate_files_parsed,
         "estimate_empty_files": estimate_empty_files,
+        "archive_extraction": archive_status,
         "estimate_official_total": estimate_official_total,
         "estimate_official_total_fmt": _fmt_money(estimate_official_total),
         "estimate_official_files_count": estimate_official_files_count,

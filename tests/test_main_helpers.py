@@ -88,6 +88,20 @@ def test_write_estimate_parse_manifest_reports_empty_lsr(tmp_path):
     assert payload["official_total_rub"] == 1234.56
 
 
+def test_parse_manifest_keeps_same_named_pdf_sources_separate(tmp_path):
+    first, second = tmp_path / 'first' / 'ЛСР.pdf', tmp_path / 'second' / 'ЛСР.pdf'
+    path = write_estimate_parse_manifest('123', [first, second], [{'source_file': str(first)}],
+        {'reports': tmp_path / 'reports'}, {str(first): 1200, str(second): 1800})
+    data = json.loads(path.read_text(encoding='utf-8'))
+    assert data['parsed_pdf_count'] == 1
+    assert data['official_total_files_count'] == 2
+    assert data['official_total_rub'] == 3000
+    assert [d['parsed_rows'] for d in data['documents']] == [1, 0]
+    path = write_estimate_parse_manifest('123', [first, second], [],
+        {'reports': tmp_path / 'reports'}, {first.name: 100})
+    assert json.loads(path.read_text(encoding='utf-8'))['official_total_files_count'] == 0
+
+
 def test_build_tender_clean_df_sorts_files_and_pdf_pages_naturally():
     rows = [
         {"source_file": "11 - video - LSR.pdf", "sheet_name": "PDF, стр. 2", "work_name": "section eleven", "price_from_estimate_rub": 11},
