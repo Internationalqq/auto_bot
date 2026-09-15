@@ -4032,8 +4032,14 @@ def delete_estimate(estimate_id: str) -> None:
     if resolved_dir == resolved_root or resolved_root not in resolved_dir.parents:
         raise RuntimeError("Небезопасный путь удаления сметы.")
 
-    index_items = [x for x in _read_estimates_index() if str(x.get("id") or "") != estimate_id]
-    _write_estimates_index(index_items)
+    from autobot import uploaded_estimates
+    from autobot.atomic_output import output_lock
+    with output_lock(USER_ESTIMATES_INDEX):
+        _uploaded_store_call(uploaded_estimates.remove, estimate_id)
+        index_items = _read_legacy_estimates_index()
+        remaining = [x for x in index_items if str(x.get("id") or "") != estimate_id]
+        if len(remaining) != len(index_items):
+            _write_estimates_index(remaining)
     if est_dir.is_dir():
         shutil.rmtree(est_dir)
 
@@ -4915,19 +4921,36 @@ def _safe_upload_filename(filename: str) -> str:
     return f"{stem}{suffix}"
 
 
-def _read_estimates_index() -> list[dict]:
+def _uploaded_store_call(operation, *args):
+    from autobot.uploaded_estimates import StoreError
+    try:
+        return operation(USER_ESTIMATES_DIR, *args)
+    except StoreError:
+        abort(503, description="Хранилище смет временно недоступно. Повторите открытие позже.")
+
+
+def _read_legacy_estimates_index() -> list[dict]:
     if not USER_ESTIMATES_INDEX.is_file():
         return []
     try:
         data = json.loads(USER_ESTIMATES_INDEX.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        abort(503, description="Не удалось прочитать список существующих смет.")
+    if not isinstance(data, list):
+        abort(503, description="Повреждён список существующих смет.")
+    return data
+
+
+def _read_estimates_index() -> list[dict]:
+    from autobot import uploaded_estimates
+    current = _uploaded_store_call(uploaded_estimates.catalogue)
+    ids = {row['id'] for row in current}
+    return current + [row for row in _read_legacy_estimates_index() if str(row.get('id') or '') not in ids]
 
 
 def _write_estimates_index(items: list[dict]) -> None:
-    USER_ESTIMATES_DIR.mkdir(parents=True, exist_ok=True)
-    USER_ESTIMATES_INDEX.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    from autobot.uploaded_estimates import write_json
+    write_json(USER_ESTIMATES_INDEX, items)
 
 
 def _estimate_meta_path(estimate_id: str) -> Path:
@@ -4973,6 +4996,10 @@ def _estimate_market_progress_for_card(estimate_id: str, rows: list[dict] | None
 
 
 def _load_estimate_meta(estimate_id: str) -> dict | None:
+    from autobot import uploaded_estimates
+    stored = _uploaded_store_call(uploaded_estimates.meta, estimate_id)
+    if stored is not None:
+        return stored
     p = _estimate_meta_path(estimate_id)
     if not p.is_file():
         return None
@@ -4984,6 +5011,10 @@ def _load_estimate_meta(estimate_id: str) -> dict | None:
 
 
 def _load_estimate_rows(estimate_id: str) -> list[dict]:
+    from autobot import uploaded_estimates
+    stored = _uploaded_store_call(uploaded_estimates.rows, estimate_id)
+    if stored is not None:
+        return stored
     p = _estimate_rows_path(estimate_id)
     if not p.is_file():
         return []
@@ -5655,19 +5686,19 @@ def _estimate_upload_job_path(job_id: str) -> Path | None:
     return ESTIMATE_UPLOAD_JOBS_DIR / f"{clean_job_id}.json"
 
 
-def _estimate_upload_persist_locked(job: dict) -> None:
+def _estimate_upload_persist_locked(job: dict, *, strict: bool = False) -> None:
     """Persist upload state so a page or container reload can recover it."""
     target = _estimate_upload_job_path(str(job.get("job_id") or ""))
     if target is None:
         return
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_suffix(f".{threading.get_ident()}.tmp")
-        temp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(target)
+        from autobot.uploaded_estimates import write_json
+        write_json(target, job)
     except OSError:
         # Progress persistence must never abort OCR itself. The in-memory
         # status remains available until the process exits.
+        if strict:
+            raise
         return
 
 
@@ -5676,6 +5707,8 @@ def _estimate_upload_load_locked(job_id: str) -> dict | None:
     if target is None or not target.is_file():
         return None
     try:
+        if target.stat().st_size > 64 * 1024:
+            return None
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return None
@@ -5896,11 +5929,124 @@ def _estimate_upload_cleanup(max_jobs: int = 16) -> None:
             reverse=True,
         )
         keep = dict(items[:max_jobs])
+        keep.update((key, value) for key, value in items if value.get("running"))
         estimate_upload_jobs.clear()
         estimate_upload_jobs.update(keep)
 
 
+def _estimate_upload_complete(job_id, estimate_id, rows, reconciliation, *, restored=False):
+    with estimate_upload_lock:
+        job = estimate_upload_jobs.get(job_id)
+        if not job:
+            return
+        bits = [f"Строк: {len(rows)}", "смета сохранена"]
+        count = int(_float_or_none(reconciliation.get("excluded_adjustment_count")) or 0)
+        total = _float_or_none(reconciliation.get("excluded_adjustment_total"))
+        difference = _float_or_none(reconciliation.get("unallocated_total"))
+        if count:
+            bits.append(f"корректировки: {count} ({_fmt_money(total)})")
+        if difference is not None and abs(difference) > 0.01:
+            bits.append(f"разница итога: {_fmt_money(difference)}")
+        stamp = datetime.now().isoformat(timespec="seconds")
+        job.update(running=False, ok=True, progress=100, progress_estimated=False,
+                   stage="Готово", error="", detail=" · ".join(bits), estimate_id=estimate_id,
+                   ended_at=stamp, updated_at=stamp)
+        _estimate_upload_log_append(job, "Готово: " + ("восстановлена сохранённая смета" if restored else job["detail"]))
+        _estimate_upload_persist_locked(job)
+
+
+def _estimate_upload_failed(job_id, error):
+    with estimate_upload_lock:
+        job = estimate_upload_jobs.get(job_id)
+        if job is None:
+            return
+        stamp = datetime.now().isoformat(timespec="seconds")
+        job.update(running=False, ok=False, stage="Ошибка", detail="Не удалось завершить загрузку сметы",
+                   error=str(error)[:500], ended_at=stamp, updated_at=stamp, progress_estimated=False)
+        _estimate_upload_log_append(job, "Ошибка: " + str(error)[:300])
+        _estimate_upload_persist_locked(job)
+
+
 def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str, original_name: str, src_path: Path) -> None:
+    from autobot import uploaded_estimates
+    from autobot.atomic_output import output_lock
+    from autobot.estimate_parse_worker import snapshot
+    job_path = _estimate_upload_job_path(job_id)
+    if job_path is None:
+        return
+    try:
+        with output_lock(job_path.with_suffix('.run'), timeout=0):
+            try:
+                with estimate_upload_lock:
+                    job = _estimate_upload_load_locked(job_id) or estimate_upload_jobs.get(job_id)
+                    if not job or not job.get('running'):
+                        return
+                if (not re.fullmatch(r'[0-9a-f]{16,40}', estimate_id)
+                        or src_path.is_symlink()
+                        or src_path.resolve().parent != (USER_ESTIMATES_DIR / estimate_id).resolve()
+                        or not src_path.is_file()):
+                    raise RuntimeError("Исходный файл сметы недоступен после перезапуска.")
+                saved = uploaded_estimates.meta(USER_ESTIMATES_DIR, estimate_id)
+                if saved is not None:
+                    if snapshot([src_path])[0]['sha256'] != saved['source_sha256']:
+                        raise RuntimeError("Исходник сохранённой сметы изменился. Загрузите новую версию отдельным файлом.")
+                    positions = uploaded_estimates.rows(USER_ESTIMATES_DIR, estimate_id)
+                    if not positions or len(positions) != saved['row_count']:
+                        raise RuntimeError("Сохранённая смета неполна; требуется проверка хранилища.")
+                    _estimate_upload_complete(job_id, estimate_id, positions, saved.get('reconciliation') or {}, restored=True)
+                    return
+                with estimate_upload_lock:
+                    attempts = int(job.get('attempts') or 0)
+                    if attempts >= 3:
+                        raise RuntimeError("Три попытки обработки были прерваны. Исходник сохранён; повторите загрузку после проверки сервера.")
+                    job['attempts'] = attempts + 1
+                    job['error'] = ''
+                    if attempts:
+                        job.update(stage="Возобновляю обработку", detail="Продолжаю загрузку после перезапуска сервера")
+                        _estimate_upload_log_append(job, "Возобновление обработки, попытка " + str(attempts + 1))
+                    _estimate_upload_persist_locked(job, strict=True)
+                _execute_estimate_upload_worker(job_id, estimate_id=estimate_id, title_raw=title_raw,
+                                                original_name=original_name, src_path=src_path)
+            except Exception as error:
+                _estimate_upload_failed(job_id, error)
+    except TimeoutError:
+        # Another process owns this job. Only its writer can update progress.
+        pass
+    finally:
+        with estimate_upload_lock:
+            estimate_upload_workers.discard(job_id)
+
+
+def _start_estimate_upload_worker(job_id: str, *, recovering: bool = False) -> bool:
+    with estimate_upload_lock:
+        if job_id in estimate_upload_workers:
+            return False
+        job = _estimate_upload_load_locked(job_id) or estimate_upload_jobs.get(job_id)
+        if not job or not job.get('running'):
+            return False
+        source = Path(str(job.get('source_path') or ''))
+        if not source.is_absolute():
+            source = REPO_ROOT / source
+        kwargs = dict(job_id=job_id, estimate_id=str(job.get('target_estimate_id') or job.get('estimate_id') or ''),
+                      title_raw=str(job.get('title_raw') or ''), original_name=str(job.get('original_name') or source.name),
+                      src_path=source)
+        estimate_upload_workers.add(job_id)
+    try:
+        threading.Thread(target=_run_estimate_upload_worker, kwargs=kwargs, daemon=True).start()
+    except Exception as error:
+        with estimate_upload_lock:
+            estimate_upload_workers.discard(job_id)
+        from autobot.atomic_output import output_lock
+        try:
+            with output_lock(_estimate_upload_job_path(job_id).with_suffix('.run'), timeout=0):
+                _estimate_upload_failed(job_id, error)
+        except TimeoutError:
+            pass
+        return False
+    return True
+
+
+def _execute_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str, original_name: str, src_path: Path) -> None:
     heartbeat_stop = threading.Event()
     threading.Thread(
         target=_estimate_upload_heartbeat,
@@ -5942,35 +6088,9 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
         if reconciliation:
             meta["reconciliation"] = reconciliation
         validate_snapshot(parsed['sources'])
-        _estimate_rows_path(estimate_id).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
-        _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        index_items = [x for x in _read_estimates_index() if str(x.get("id") or "") != estimate_id]
-        index_items.insert(0, meta)
-        _write_estimates_index(index_items)
-        with estimate_upload_lock:
-            job = estimate_upload_jobs.get(job_id)
-            if job:
-                job["running"] = False
-                job["ok"] = True
-                job["progress"] = 100
-                job["stage"] = "Готово"
-                detail_bits = [f"Строк: {len(rows)}", "смета сохранена"]
-                adjustment_count = int(_float_or_none(reconciliation.get("excluded_adjustment_count")) or 0)
-                adjustment_total = _float_or_none(reconciliation.get("excluded_adjustment_total"))
-                unallocated_total = _float_or_none(reconciliation.get("unallocated_total"))
-                if adjustment_count:
-                    detail_bits.append(
-                        f"корректировки: {adjustment_count} ({_fmt_money(adjustment_total)})"
-                    )
-                if unallocated_total is not None and abs(unallocated_total) > 0.01:
-                    detail_bits.append(f"разница итога: {_fmt_money(unallocated_total)}")
-                job["detail"] = " · ".join(detail_bits)
-                job["estimate_id"] = estimate_id
-                job["ended_at"] = datetime.now().isoformat(timespec="seconds")
-                job["updated_at"] = job["ended_at"]
-                job["progress_estimated"] = False
-                _estimate_upload_log_append(job, f"Готово: {job['detail']}")
-                _estimate_upload_persist_locked(job)
+        from autobot import uploaded_estimates
+        uploaded_estimates.publish(USER_ESTIMATES_DIR, meta, rows)
+        _estimate_upload_complete(job_id, estimate_id, rows, reconciliation)
     except Exception as e:
         with estimate_upload_lock:
             job = estimate_upload_jobs.get(job_id)
@@ -5990,86 +6110,6 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
         with estimate_upload_lock:
             estimate_upload_workers.discard(job_id)
         _estimate_upload_cleanup()
-
-
-def _start_estimate_upload_worker(job_id: str, *, recovering: bool = False) -> bool:
-    """Start a new upload worker or resume one restored from persistent state."""
-    with estimate_upload_lock:
-        job = estimate_upload_jobs.get(job_id) or _estimate_upload_load_locked(job_id)
-        if not job or not job.get("running") or job_id in estimate_upload_workers:
-            return False
-
-        estimate_id = re.sub(
-            r"[^0-9a-fA-F-]",
-            "",
-            str(job.get("target_estimate_id") or job.get("estimate_id") or ""),
-        )[:40]
-        source_value = str(job.get("source_path") or "").strip()
-        source_path = Path(source_value)
-        if source_value and not source_path.is_absolute():
-            source_path = REPO_ROOT / source_path
-        try:
-            resolved_source = source_path.resolve()
-            resolved_root = USER_ESTIMATES_DIR.resolve()
-        except OSError:
-            resolved_source = source_path
-            resolved_root = USER_ESTIMATES_DIR
-
-        source_is_safe = bool(source_value) and resolved_root in resolved_source.parents
-        if not estimate_id or not source_is_safe or not resolved_source.is_file():
-            job["running"] = False
-            job["ok"] = False
-            job["stage"] = "Ошибка восстановления"
-            job["detail"] = "Исходный файл сметы не найден после перезапуска"
-            job["error"] = job["detail"]
-            job["ended_at"] = datetime.now().isoformat(timespec="seconds")
-            job["updated_at"] = job["ended_at"]
-            _estimate_upload_log_append(job, job["detail"])
-            _estimate_upload_persist_locked(job)
-            return False
-
-        if _estimate_meta_path(estimate_id).is_file() and _estimate_rows_path(estimate_id).is_file():
-            job["running"] = False
-            job["ok"] = True
-            job["progress"] = 100
-            job["progress_estimated"] = False
-            job["stage"] = "Готово"
-            job["detail"] = "Смета была сохранена до перезапуска"
-            job["estimate_id"] = estimate_id
-            job["ended_at"] = datetime.now().isoformat(timespec="seconds")
-            job["updated_at"] = job["ended_at"]
-            _estimate_upload_log_append(job, "Готово: восстановлен сохранённый результат")
-            _estimate_upload_persist_locked(job)
-            return False
-
-        if recovering:
-            job["stage"] = "Возобновляю обработку"
-            job["detail"] = "AutoBot перезапускался — повторно запускаю OCR исходного файла"
-            job["error"] = ""
-            job["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            _estimate_upload_log_append(job, "Обработка возобновлена после перезапуска AutoBot")
-            _estimate_upload_persist_locked(job)
-
-        estimate_upload_workers.add(job_id)
-        worker_kwargs = {
-            "job_id": job_id,
-            "estimate_id": estimate_id,
-            "title_raw": str(job.get("title_raw") or ""),
-            "original_name": str(job.get("original_name") or resolved_source.name),
-            "src_path": resolved_source,
-        }
-
-    try:
-        threading.Thread(
-            target=_run_estimate_upload_worker,
-            kwargs=worker_kwargs,
-            daemon=True,
-        ).start()
-    except Exception:
-        with estimate_upload_lock:
-            estimate_upload_workers.discard(job_id)
-        raise
-    return True
 
 
 def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[str], selected_types: list[str] | None = None) -> None:
@@ -6251,7 +6291,15 @@ def _run_estimate_market_worker(estimate_id: str, *, city: str, sources: list[st
         meta["market_sources"] = ",".join(sources)
         meta["market_selected_types"] = selected_types
         meta["market_updated_at"] = datetime.now().strftime("%d.%m.%Y %H:%M")
-        _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        from autobot import uploaded_estimates
+        updates = {key: meta[key] for key in ('market_city', 'market_sources', 'market_selected_types', 'market_updated_at')}
+        if not uploaded_estimates.update_market_meta(USER_ESTIMATES_DIR, estimate_id, updates):
+            from autobot.atomic_output import output_lock
+            with output_lock(_estimate_meta_path(estimate_id)):
+                current_meta = _load_estimate_meta(estimate_id)
+                if current_meta is None:
+                    raise RuntimeError("Смета удалена во время поиска.")
+                uploaded_estimates.write_json(_estimate_meta_path(estimate_id), dict(current_meta, **updates))
         with estimate_market_lock:
             job = estimate_market_jobs.get(estimate_id)
             if job:
@@ -10076,7 +10124,7 @@ def api_estimates_upload():
     original_name = _safe_upload_filename(f.filename)
     src_path = est_dir / original_name
     f.save(src_path)
-    title_raw = (request.form.get("title", "") or "").strip()
+    title_raw = (request.form.get("title", "") or "").strip()[:160]
     with estimate_upload_lock:
         estimate_upload_jobs[job_id] = {
             "job_id": job_id,
@@ -10098,8 +10146,13 @@ def api_estimates_upload():
             "elapsed_seconds": 0,
             "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Файл получен: {original_name}"],
         }
-        _estimate_upload_persist_locked(estimate_upload_jobs[job_id])
-    _start_estimate_upload_worker(job_id)
+        try:
+            _estimate_upload_persist_locked(estimate_upload_jobs[job_id], strict=True)
+        except OSError:
+            estimate_upload_jobs.pop(job_id, None)
+            return jsonify({"ok": False, "message": "Файл сохранён, но не удалось сохранить задание. Повторите загрузку позже."}), 503
+    if not _start_estimate_upload_worker(job_id):
+        return jsonify({"ok": False, "job_id": job_id, "message": "Файл сохранён, но обработчик не запустился. Повторите загрузку позже."}), 503
     return jsonify(
         {
             "ok": True,
@@ -10115,7 +10168,7 @@ def api_estimates_upload():
 @app.route("/api/estimates/upload-status/<job_id>")
 def api_estimates_upload_status(job_id: str):
     with estimate_upload_lock:
-        stored_job = estimate_upload_jobs.get(job_id) or _estimate_upload_load_locked(job_id)
+        stored_job = _estimate_upload_load_locked(job_id) or estimate_upload_jobs.get(job_id)
         job = dict(stored_job or {})
         worker_active = job_id in estimate_upload_workers
     if not job:

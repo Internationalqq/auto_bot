@@ -157,13 +157,14 @@ def test_upload_parent_checks_source_before_publishing_and_persists_version(tmp_
     parsed={'rows':[asdict(row)],'diagnostics':{},'sources':parser.snapshot([path])}
     monkeypatch.setattr(parser,'run_uploaded_parser',lambda *args,**kwargs:parsed)
     web_ui._run_estimate_upload_worker(job_id,estimate_id=estimate_id,title_raw='Проверка',original_name=path.name,src_path=path)
-    stored=json.loads((path.parent/'rows.json').read_text(encoding='utf-8'))
-    meta=json.loads((path.parent/'meta.json').read_text(encoding='utf-8'))
+    stored=web_ui._load_estimate_rows(estimate_id)
+    meta=web_ui._load_estimate_meta(estimate_id)
     assert stored[0]['position_id']==row.position_id
     assert stored[0]['estimate_version']==meta['source_sha256']==parsed['sources'][0]['sha256']
-    before=(path.parent/'rows.json').read_bytes()
+    before=stored
     path.write_bytes(b'changed after parsing')
     web_ui.estimate_upload_jobs[job_id].update(running=True,ok=False)
+    web_ui._estimate_upload_persist_locked(web_ui.estimate_upload_jobs[job_id],strict=True)
     web_ui._run_estimate_upload_worker(job_id,estimate_id=estimate_id,title_raw='Проверка',original_name=path.name,src_path=path)
     assert not web_ui.estimate_upload_jobs[job_id]['ok']
-    assert (path.parent/'rows.json').read_bytes()==before
+    assert web_ui._load_estimate_rows(estimate_id)==before

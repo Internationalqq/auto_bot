@@ -117,7 +117,7 @@ def test_upload_worker_persists_reconciliation_in_meta_and_status(tmp_path, monk
             src_path=source,
         )
 
-        meta = json.loads((source_dir / "meta.json").read_text(encoding="utf-8"))
+        meta = web_ui._load_estimate_meta(estimate_id)
         assert meta["reconciliation"] == _reconciliation()
         with web_ui.estimate_upload_lock:
             job = dict(web_ui.estimate_upload_jobs[job_id])
