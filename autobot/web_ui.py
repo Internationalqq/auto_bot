@@ -11261,6 +11261,25 @@ def api_parse_nmck_justification():
     return jsonify({"ok": True, **out})
 
 
+@app.route('/api/search-profiles', methods=['GET', 'POST'])
+def api_search_profiles():
+    from autobot.tender_search_profiles import load_profiles, save_profile, ProfileConflict
+    try:
+        if request.method == 'POST':
+            if request.content_length and request.content_length > 16384:
+                return jsonify({'ok': False, 'message': 'Слишком большой профиль поиска.'}), 413
+            result = save_profile(DATA_DIR, request.get_json(silent=True))
+        else:
+            result = load_profiles(DATA_DIR)
+        return jsonify({'ok': True, **result})
+    except ProfileConflict as error:
+        return jsonify({'ok': False, 'message': str(error)}), 409
+    except ValueError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 400
+    except (OSError, TimeoutError):
+        return jsonify({'ok': False, 'message': 'Не удалось сохранить или прочитать профили. Повторите попытку.'}), 503
+
+
 @app.route("/api/start-parse", methods=["POST"])
 def api_start_parse():
     if _merge_site_busy():
@@ -11280,6 +11299,19 @@ def api_start_parse():
         if not resume['available']:
             return jsonify({'ok': False, 'message': resume['reason']}), 409
         data = dict(resume['parameters'], catalog_only=False)
+        if 'search_filters' in resume:
+            data['search_filters'] = resume['search_filters']
+    filters = None
+    if 'search_filters' in data or 'search_profile' in data:
+        from autobot.tender_search_profiles import validate_filters, filters_for_profile
+        try:
+            if 'search_filters' in data and 'search_profile' in data:
+                raise ValueError('Укажите профиль или снимок условий, а не оба сразу.')
+            filters = (validate_filters(data['search_filters']) if 'search_filters' in data else
+                       filters_for_profile(DATA_DIR, data['search_profile']))
+        except ValueError as error:
+            return jsonify({'ok': False, 'message': str(error)}), 400
+        data = dict(data, **{key: filters[key] for key in ('max_pages', 'max_tenders', 'days_back')})
     try:
         max_pages = int(data.get("max_pages", 2))
         max_tenders = int(data.get("max_tenders", 15))
@@ -11301,10 +11333,12 @@ def api_start_parse():
     catalog_only = catalog_only_raw not in (False, 0, "0", "false", "False", "no", "off")
     if catalog_only:
         args.append('--catalog-only')
+    if filters is not None:
+        args.extend(['--search-filters-json', json.dumps(filters, ensure_ascii=False)])
     if mode == 'resume':
         from argparse import Namespace
         from autobot.main import _checkpoint_signature
-        expected = _checkpoint_signature(Namespace(max_pages=max_pages, max_tenders=max_tenders, days_back=days_back, catalog_only=False))
+        expected = _checkpoint_signature(Namespace(max_pages=max_pages, max_tenders=max_tenders, days_back=days_back, catalog_only=False, search_filters=filters))
         try:
             search_state.checkpoint_for_resume(DATA_DIR / 'search_resume_checkpoint.json', signature=expected)
         except ValueError as error:

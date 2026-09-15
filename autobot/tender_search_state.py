@@ -91,6 +91,11 @@ def checkpoint_for_resume(path, *, signature=None, now=None):
         for key, low, high in [('max_pages', 1, 20), ('max_tenders', 1, 100), ('days_back', 1, 365)]
     ):
         raise ValueError('Параметры сохранённого поиска повреждены.')
+    if 'search_filters' in value:
+        from autobot.tender_search_profiles import validate_filters
+        snapshot = validate_filters(value['search_filters'])
+        if any(snapshot[key] != parameters[key] for key in ('max_pages', 'max_tenders', 'days_back')):
+            raise ValueError('Снимок условий не соответствует параметрам сохранённого поиска.')
     tenders = value.get('filtered_tenders')
     completed = value.get('completed_ids')
     if (not isinstance(tenders, list) or not tenders or len(tenders) > 100 or
@@ -112,7 +117,7 @@ def public_resume(root):
         return {'available': False, 'reason': str(error)}
     pending = {str(item['tender_id']) for item in value['filtered_tenders']} - set(value['completed_ids'])
     return {'available': True, 'remaining': len(pending), 'parameters': value['parameters'],
-            'started_at': value['started_at']}
+            'started_at': value['started_at'], **({'search_filters': value['search_filters']} if 'search_filters' in value else {})}
 
 
 def start_summary(mode):

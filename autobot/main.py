@@ -220,19 +220,35 @@ def _resume_enabled() -> bool:
 
 
 def _checkpoint_signature(args: argparse.Namespace) -> str:
+    filters = _search_filters(args)
     payload = {
         "max_pages": int(args.max_pages),
         "max_tenders": int(args.max_tenders),
         "days_back": int(args.days_back),
-        "regions": REGIONS,
-        "keywords": KEYWORDS,
-        "price_min": PRICE_MIN,
-        "price_max": PRICE_MAX,
-        "needed_stage": NEEDED_STAGE,
+        "regions": filters['regions'],
+        "keywords": filters['keywords'],
+        "price_min": None if filters['price_min_kopecks'] is None else filters['price_min_kopecks'] / 100,
+        "price_max": None if filters['price_max_kopecks'] is None else filters['price_max_kopecks'] / 100,
+        "needed_stage": filters['needed_stage'],
         "catalog_only": bool(getattr(args, "catalog_only", False)),
     }
+    # Preserve the byte-for-byte signature of old integer-ruble boundaries.
+    for key in ('price_min', 'price_max'):
+        if payload[key] is not None and float(payload[key]).is_integer():
+            payload[key] = int(payload[key])
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _search_filters(args=None):
+    from autobot.tender_search_profiles import validate_filters
+    configured = getattr(args, 'search_filters', None)
+    if configured is not None:
+        return validate_filters(configured)
+    return {'regions': list(REGIONS), 'keywords': list(KEYWORDS),
+            'price_min_kopecks': int(PRICE_MIN * 100), 'price_max_kopecks': int(PRICE_MAX * 100),
+            'needed_stage': NEEDED_STAGE, 'days_back': getattr(args, 'days_back', 30),
+            'max_pages': getattr(args, 'max_pages', 2), 'max_tenders': getattr(args, 'max_tenders', 15)}
 
 
 def _search_checkpoint_path(out_paths: dict[str, Path]) -> Path:
@@ -244,7 +260,14 @@ def _load_search_checkpoint(out_paths: dict[str, Path], args: argparse.Namespace
         return None
     if not _resume_enabled():
         raise ValueError('Возобновление отключено настройкой SEARCH_RESUME.')
-    data = search_state.checkpoint_for_resume(_search_checkpoint_path(out_paths), signature=_checkpoint_signature(args))
+    data = search_state.checkpoint_for_resume(_search_checkpoint_path(out_paths))
+    if 'search_filters' in data and getattr(args, 'search_filters', None) is None:
+        from autobot.tender_search_profiles import validate_filters
+        args.search_filters = validate_filters(data['search_filters'])
+        for key in ('max_pages', 'max_tenders', 'days_back'):
+            setattr(args, key, args.search_filters[key])
+    if data.get('signature') != _checkpoint_signature(args):
+        raise ValueError('Фильтры изменились после сохранённого поиска. Начните новый поиск.')
     args._checkpoint_started_at = data['started_at']
     args._checkpoint_run_id = data['run_id']
     return data
@@ -270,6 +293,8 @@ def _save_search_checkpoint(
         'completed_ids': sorted({str(x).strip() for x in completed_ids if str(x).strip()}),
         'new_ids': sorted({str(x).strip() for x in new_ids if str(x).strip()}),
     }
+    if getattr(args, 'search_filters', None) is not None:
+        payload['search_filters'] = _search_filters(args)
     search_state.atomic_json(path, payload)
 
 
@@ -608,8 +633,9 @@ def _tender_from_search_card(card, region):
     )
 
 
-def search_tenders(region: str, keyword: str, max_pages: int = 3, *, diagnostics=None, deadline=None) -> list[Tender]:
+def search_tenders(region: str, keyword: str, max_pages: int = 3, *, diagnostics=None, deadline=None, filters=None) -> list[Tender]:
     results = []
+    settings = filters if filters is not None else _search_filters()
     stats = diagnostics if diagnostics is not None else search_state.start_summary('fresh')['source']
     if deadline is not None and time.monotonic() >= deadline:
         stats['budget_exhausted'] = True
@@ -628,9 +654,12 @@ def search_tenders(region: str, keyword: str, max_pages: int = 3, *, diagnostics
                     'searchString': f'{region} {keyword}', 'morphology': 'on',
                     'search-filter': 'Дате размещения', 'pageNumber': page_no, 'sortDirection': 'false',
                     'recordsPerPage': '_10', 'showLotsInfoHidden': 'false', 'sortBy': 'UPDATE_DATE',
-                    'fz44': 'on', 'fz223': 'on', 'af': 'on', 'priceFromGeneral': str(PRICE_MIN),
-                    'priceToGeneral': str(PRICE_MAX), 'currencyIdGeneral': '-1',
+                    'fz44': 'on', 'fz223': 'on', 'af': 'on', 'currencyIdGeneral': '-1',
                 }
+                for key, parameter in (('price_min_kopecks', 'priceFromGeneral'), ('price_max_kopecks', 'priceToGeneral')):
+                    if settings[key] is not None:
+                        amount = settings[key]
+                        params[parameter] = f'{amount // 100}.{amount % 100:02d}'
                 params.update(STAGE_QUERY_FLAGS)
                 url = f'{BASE_URL}?{urlencode(params)}'
                 stats['pages_requested'] += 1
@@ -799,17 +828,22 @@ def refresh_cached_open_tender_stages(out_paths: dict[str, Path]) -> list[tuple[
     return changes
 
 
-def tender_filter_reasons(tender: Tender, days_back: int) -> list[str]:
+def tender_filter_reasons(tender: Tender, days_back: int, *, filters=None) -> list[str]:
     reasons = []
+    settings = filters if filters is not None else _search_filters()
     stage = (tender.stage or '').strip()
     if not stage:
         reasons.append('stage_unknown')
-    elif NEEDED_STAGE.casefold() not in stage.casefold():
+    elif settings['needed_stage'].casefold() not in stage.casefold():
         reasons.append('stage')
     if tender.price_rub is None or not math.isfinite(tender.price_rub):
         reasons.append('price_unknown')
-    elif not PRICE_MIN <= tender.price_rub <= PRICE_MAX:
-        reasons.append('price')
+    else:
+        from decimal import Decimal
+        amount = Decimal(str(tender.price_rub)) * 100
+        low, high = settings['price_min_kopecks'], settings['price_max_kopecks']
+        if (low is not None and amount < low) or (high is not None and amount > high):
+            reasons.append('price')
     if not tender.publish_date:
         reasons.append('date_unknown')
     else:
@@ -2710,7 +2744,25 @@ def parse_args():
         help="Путь к файлу: записать новые tender_id по одному на строку (для pipeline после прогона)",
     )
     parser.add_argument('--resume-downloads', action='store_true', help='Продолжить незавершённое скачивание из поиска не старше 24 часов; обычный запуск всегда ищет заново')
+    parser.add_argument('--search-profile', default='', help='ID сохранённого профиля; его условия задают все параметры поиска')
+    parser.add_argument('--search-filters-json', default='', help='Полный снимок условий поиска JSON')
     args = parser.parse_args()
+    if args.search_profile and (args.search_filters_json or args.resume_downloads):
+        parser.error('--search-profile нельзя совмещать со снимком условий или продолжением')
+    try:
+        from autobot.tender_search_profiles import filters_for_profile, validate_filters
+        args.search_filters = None
+        if args.search_profile:
+            args.search_filters = filters_for_profile(Path('data'), args.search_profile)
+        elif args.search_filters_json:
+            if len(args.search_filters_json.encode('utf-8')) > 16384:
+                raise ValueError('Слишком большой снимок условий поиска.')
+            args.search_filters = validate_filters(json.loads(args.search_filters_json))
+        if args.search_filters is not None:
+            for key in ('max_pages', 'max_tenders', 'days_back'):
+                setattr(args, key, args.search_filters[key])
+    except (ValueError, TypeError) as error:
+        parser.error(str(error))
     for key, high in [('max_pages', 20), ('max_tenders', 100), ('days_back', 365)]:
         if not 1 <= getattr(args, key) <= high:
             parser.error(f'{key}: допустимо от 1 до {high}')
@@ -2866,13 +2918,14 @@ def _run_main(args, out_paths):
         except ValueError:
             seconds = 600
         deadline = time.monotonic() + seconds
-        for region in REGIONS:
-            for kw in KEYWORDS:
+        filters = _search_filters(args)
+        for region in filters['regions']:
+            for kw in filters['keywords']:
                 if time.monotonic() >= deadline:
                     summary['source']['budget_exhausted'] = True
                     break
                 try:
-                    found = search_tenders(region, kw, max_pages=args.max_pages, diagnostics=summary['source'], deadline=deadline)
+                    found = search_tenders(region, kw, max_pages=args.max_pages, diagnostics=summary['source'], deadline=deadline, filters=filters)
                 except PlaywrightError as error:
                     search_state.record_source_error(summary['source'], f'Не удалось запустить браузер ЕИС: {type(error).__name__}')
                     found = []
@@ -2883,7 +2936,7 @@ def _run_main(args, out_paths):
         unique = dedupe_tenders(all_found)
         filtered = []
         for tender in unique:
-            reasons = tender_filter_reasons(tender, days_back=args.days_back)
+            reasons = tender_filter_reasons(tender, days_back=args.days_back, filters=filters)
             if not reasons:
                 filtered.append(tender)
             for reason in reasons:
@@ -3187,12 +3240,10 @@ def main():
             stack.enter_context(output_lock(out_paths['root'] / 'eis_search', timeout=0.1))
         except TimeoutError:
             raise SystemExit('Поиск ЕИС уже выполняется в другом процессе; дождитесь завершения.')
+        if getattr(args, 'resume_downloads', False):
+            _load_search_checkpoint(out_paths, args)
         args._search_summary = search_state.start_summary('resume' if getattr(args, 'resume_downloads', False) else 'fresh')
-        args._search_summary['filters'] = {
-            'regions': list(REGIONS), 'keywords': list(KEYWORDS), 'needed_stage': NEEDED_STAGE,
-            'price_min_kopecks': int(PRICE_MIN * 100), 'price_max_kopecks': int(PRICE_MAX * 100),
-            'days_back': args.days_back, 'max_pages': args.max_pages, 'max_tenders': args.max_tenders,
-        }
+        args._search_summary['filters'] = _search_filters(args)
         search_state.save_summary(out_paths['root'], args._search_summary)
         try:
             return _run_main(args, out_paths)

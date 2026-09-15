@@ -54,3 +54,5 @@ data/agent_market_worker.token
 /data/eis_search.lock
 /data/last_search_run.json
 /data/search_runs/
+/data/search_profiles.json
+/data/search_profiles.json.lock
