@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import uuid
 import warnings
+import time
 import zipfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
@@ -39,6 +40,7 @@ from autobot.market_analytics import estimate_block_qty_from_unit, unit_has_area
 from autobot.source_file_versions import store_downloaded_source_file
 from autobot.telegram_notify import send_message, telegram_config
 from autobot.tender_notifications import safe_notify_new_tender
+from autobot import business_time, tender_search_state as search_state
 
 
 BASE_URL = "https://zakupki.gov.ru/epz/order/extendedsearch/results.html"
@@ -244,61 +246,44 @@ def _search_checkpoint_path(out_paths: dict[str, Path]) -> Path:
 
 
 def _load_search_checkpoint(out_paths: dict[str, Path], args: argparse.Namespace) -> dict | None:
+    if not getattr(args, 'resume_downloads', False):
+        return None
     if not _resume_enabled():
-        return None
-    path = _search_checkpoint_path(out_paths)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    if data.get("signature") != _checkpoint_signature(args):
-        return None
-    if data.get("completed"):
-        return None
-    tenders = data.get("filtered_tenders")
-    if not isinstance(tenders, list) or not tenders:
-        return None
+        raise ValueError('Возобновление отключено настройкой SEARCH_RESUME.')
+    data = search_state.checkpoint_for_resume(_search_checkpoint_path(out_paths), signature=_checkpoint_signature(args))
+    args._checkpoint_started_at = data['started_at']
+    args._checkpoint_run_id = data['run_id']
     return data
 
 
 def _save_search_checkpoint(
-    out_paths: dict[str, Path],
-    args: argparse.Namespace,
-    *,
-    filtered: list[Tender],
-    completed_ids: set[str],
-    new_ids: set[str],
-    search_total: int,
-    completed: bool = False,
+    out_paths: dict[str, Path], args: argparse.Namespace, *, filtered: list[Tender],
+    completed_ids: set[str], new_ids: set[str], search_total: int, completed: bool = False,
 ) -> None:
-    if not _resume_enabled():
+    if not _resume_enabled() or getattr(args, 'catalog_only', False) or not filtered:
         return
+    path = _search_checkpoint_path(out_paths)
+    if not getattr(args, '_checkpoint_run_id', None):
+        search_state.archive_checkpoint(path)
+        args._checkpoint_run_id = uuid.uuid4().hex
+        args._checkpoint_started_at = (getattr(args, '_search_summary', {}) or {}).get('started_at') or search_state.now_iso()
     payload = {
-        "signature": _checkpoint_signature(args),
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "completed": bool(completed),
-        "search_total": int(search_total),
-        "filtered_tenders": [asdict(t) for t in filtered],
-        "completed_ids": sorted({str(x).strip() for x in completed_ids if str(x).strip()}),
-        "new_ids": sorted({str(x).strip() for x in new_ids if str(x).strip()}),
+        'schema_version': 2, 'run_id': args._checkpoint_run_id,
+        'signature': _checkpoint_signature(args), 'started_at': args._checkpoint_started_at,
+        'saved_at': search_state.now_iso(), 'completed': bool(completed),
+        'parameters': {key: int(getattr(args, key)) for key in ('max_pages', 'max_tenders', 'days_back')},
+        'search_total': int(search_total), 'filtered_tenders': [asdict(t) for t in filtered],
+        'completed_ids': sorted({str(x).strip() for x in completed_ids if str(x).strip()}),
+        'new_ids': sorted({str(x).strip() for x in new_ids if str(x).strip()}),
     }
-    _search_checkpoint_path(out_paths).write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    search_state.atomic_json(path, payload)
 
 
 def _clear_search_checkpoint(out_paths: dict[str, Path]) -> None:
     path = _search_checkpoint_path(out_paths)
-    try:
-        if path.exists():
-            path.unlink()
-    except OSError:
-        pass
+    if path.exists():
+        search_state.archive_checkpoint(path)
+        path.unlink()
 
 
 def get_tender_price_from_cache(tender_id: str, out_paths: dict[str, Path]) -> float | None:
@@ -584,106 +569,103 @@ def parse_tender_card_metadata(text: str, *, tender_id: str = "", url: str = "")
 
 def is_recent(date_str: str | None, days_back: int) -> bool:
     if not date_str:
-        return True
+        return False
     try:
-        date_obj = datetime.strptime(date_str, "%d.%m.%Y")
-    except ValueError:
-        return True
-    return date_obj >= datetime.now() - timedelta(days=days_back)
+        published = datetime.strptime(date_str, '%d.%m.%Y').date()
+        today = datetime.fromisoformat(business_time.today_iso()).date()
+    except (ValueError, TypeError):
+        return False
+    return today - timedelta(days=days_back) <= published <= today
 
 
-def search_tenders(region: str, keyword: str, max_pages: int = 3) -> list[Tender]:
-    results: list[Tender] = []
+def _tender_from_search_card(card, region):
+    text = card.inner_text(timeout=3000)
+    links = card.locator('a')
+    title, href = '', ''
+    for j in range(min(links.count(), 5)):
+        title_text = links.nth(j).inner_text(timeout=2000).strip()
+        link = links.nth(j).get_attribute('href')
+        if title_text and link and '/epz/order/notice' in link:
+            title, href = title_text, link
+            break
+    if not title and links.count() > 0:
+        title = links.first.inner_text(timeout=2000).strip()
+        href = links.first.get_attribute('href') or ''
+    tender_id = get_tender_id(text + ' ' + href)
+    if not tender_id or not href:
+        return None
+    full_url = normalize_href(href)
+    metadata = parse_tender_card_metadata(text, tender_id=tender_id, url=full_url)
+    return Tender(
+        tender_id=tender_id, title=str(metadata.get('object_name') or title or f'Тендер {tender_id}'),
+        url=full_url, region=region, stage=parse_stage_from_card_text(text), price_rub=parse_price(text),
+        publish_date=metadata.get('publish_date') or parse_publish_date(text),
+        customer_name=metadata.get('customer_name') or '', updated_date=metadata.get('updated_date') or None,
+        law=metadata.get('law') or '', purchase_method=metadata.get('purchase_method') or '',
+    )
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+
+def search_tenders(region: str, keyword: str, max_pages: int = 3, *, diagnostics=None, deadline=None) -> list[Tender]:
+    results = []
+    stats = diagnostics if diagnostics is not None else search_state.start_summary('fresh')['source']
+    if deadline is not None and time.monotonic() >= deadline:
+        stats['budget_exhausted'] = True
+        return []
+    consecutive_errors = 0
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
         page = _new_eis_page(browser)
-
-        for page_no in range(1, max_pages + 1):
-            params = {
-                "searchString": f"{region} {keyword}",
-                "morphology": "on",
-                "search-filter": "Дате размещения",
-                "pageNumber": page_no,
-                "sortDirection": "false",
-                "recordsPerPage": "_10",
-                "showLotsInfoHidden": "false",
-                "sortBy": "UPDATE_DATE",
-                "fz44": "on",
-                "fz223": "on",
-                "af": "on",
-                "priceFromGeneral": str(PRICE_MIN),
-                "priceToGeneral": str(PRICE_MAX),
-                "currencyIdGeneral": "-1",
-            }
-            params.update(STAGE_QUERY_FLAGS)
-            url = f"{BASE_URL}?{urlencode(params)}"
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-                page.wait_for_timeout(1500)
-            except (PlaywrightTimeoutError, PlaywrightError) as e:
-                print(
-                    f"Поиск: {region} / {keyword} стр.{page_no}: не открылась страница zakupki "
-                    f"({type(e).__name__}: {str(e)[:200]}). Частая причина — VPN/блокировка ЕИС."
-                )
-                continue
-
-            cards = page.locator("div.search-registry-entry-block, div.registry-entry__form")
-            count = cards.count()
-            if count == 0:
-                print(
-                    f"Поиск: {region} / {keyword} стр.{page_no}: страница открылась, но карточек тендеров на странице нет "
-                    f"(селектор пустой — возможна смена вёрстки или пустая выдача)."
-                )
-                continue
-
-            for i in range(count):
-                card = cards.nth(i)
-                text = card.inner_text(timeout=3000)
-
-                links = card.locator("a")
-                title = ""
-                href = ""
-                for j in range(min(links.count(), 5)):
-                    t = links.nth(j).inner_text(timeout=2000).strip()
-                    h = links.nth(j).get_attribute("href")
-                    if t and h and "/epz/order/notice" in h:
-                        title = t
-                        href = h
+        try:
+            for page_no in range(1, max_pages + 1):
+                remaining = 60 if deadline is None else deadline - time.monotonic()
+                if remaining <= 0:
+                    stats['budget_exhausted'] = True
+                    break
+                params = {
+                    'searchString': f'{region} {keyword}', 'morphology': 'on',
+                    'search-filter': 'Дате размещения', 'pageNumber': page_no, 'sortDirection': 'false',
+                    'recordsPerPage': '_10', 'showLotsInfoHidden': 'false', 'sortBy': 'UPDATE_DATE',
+                    'fz44': 'on', 'fz223': 'on', 'af': 'on', 'priceFromGeneral': str(PRICE_MIN),
+                    'priceToGeneral': str(PRICE_MAX), 'currencyIdGeneral': '-1',
+                }
+                params.update(STAGE_QUERY_FLAGS)
+                url = f'{BASE_URL}?{urlencode(params)}'
+                stats['pages_requested'] += 1
+                try:
+                    page.goto(url, wait_until='domcontentloaded', timeout=max(1, min(60000, int(remaining * 1000))))
+                    page.wait_for_timeout(min(1500, max(0, int((deadline - time.monotonic()) * 1000))) if deadline else 1500)
+                    stats['pages_loaded'] += 1
+                    cards = page.locator('div.search-registry-entry-block, div.registry-entry__form')
+                    count = cards.count()
+                    consecutive_errors = 0
+                    if count == 0:
+                        body = page.locator('body').inner_text(timeout=3000).casefold()
+                        known_empty = any(marker in body for marker in (
+                            'по вашему запросу ничего не найдено', 'поиск не дал результатов', 'по заданным параметрам ничего не найдено'))
+                        stats['empty_pages' if known_empty else 'unknown_pages'] += 1
+                        print(f'Поиск: {region} / {keyword}: ' + ('ЕИС показала пустую выдачу.' if known_empty else 'карточки не распознаны; отсутствие закупок не подтверждено.'))
                         break
-                if not title and links.count() > 0:
-                    title = links.first.inner_text(timeout=2000).strip()
-                    href = links.first.get_attribute("href") or ""
-
-                stage = parse_stage_from_card_text(text)
-
-                price = parse_price(text)
-                publish_date = parse_publish_date(text)
-                tender_id = get_tender_id(text + " " + href)
-
-                if not tender_id or not href:
-                    continue
-
-                full_url = normalize_href(href)
-                card_meta = parse_tender_card_metadata(text, tender_id=tender_id, url=full_url)
-                object_name = str(card_meta.get("object_name") or "").strip()
-
-                results.append(
-                    Tender(
-                        tender_id=tender_id,
-                        title=object_name or title or f"Тендер {tender_id}",
-                        url=full_url,
-                        region=region,
-                        stage=stage,
-                        price_rub=price,
-                        publish_date=card_meta.get("publish_date") or publish_date,
-                        customer_name=card_meta.get("customer_name") or "",
-                        updated_date=card_meta.get("updated_date") or None,
-                        law=card_meta.get("law") or "",
-                        purchase_method=card_meta.get("purchase_method") or "",
-                    )
-                )
-        browser.close()
+                    stats['cards_seen'] += count
+                    for i in range(count):
+                        if deadline is not None and time.monotonic() >= deadline:
+                            stats['budget_exhausted'] = True
+                            break
+                        try:
+                            tender = _tender_from_search_card(cards.nth(i), region)
+                            if tender is None:
+                                search_state.record_source_error(stats, 'Карточка без номера закупки или ссылки', kind='card_errors')
+                            else:
+                                results.append(tender)
+                        except (PlaywrightError, ValueError) as error:
+                            search_state.record_source_error(stats, f'Карточка: {type(error).__name__}', kind='card_errors')
+                except PlaywrightError as error:
+                    search_state.record_source_error(stats, f'{region} / {keyword}, стр. {page_no}: {type(error).__name__}')
+                    print(f'Поиск: {region} / {keyword} стр. {page_no}: ЕИС недоступна ({type(error).__name__}).')
+                    consecutive_errors += 1
+                    if consecutive_errors >= 2:
+                        break
+        finally:
+            browser.close()
     return dedupe_tenders(results)
 
 
@@ -799,17 +781,34 @@ def refresh_cached_open_tender_stages(out_paths: dict[str, Path]) -> list[tuple[
     return changes
 
 
+def tender_filter_reasons(tender: Tender, days_back: int) -> list[str]:
+    reasons = []
+    stage = (tender.stage or '').strip()
+    if not stage:
+        reasons.append('stage_unknown')
+    elif NEEDED_STAGE.casefold() not in stage.casefold():
+        reasons.append('stage')
+    if tender.price_rub is None or not math.isfinite(tender.price_rub):
+        reasons.append('price_unknown')
+    elif not PRICE_MIN <= tender.price_rub <= PRICE_MAX:
+        reasons.append('price')
+    if not tender.publish_date:
+        reasons.append('date_unknown')
+    else:
+        try:
+            published = datetime.strptime(tender.publish_date, '%d.%m.%Y').date()
+            today = datetime.fromisoformat(business_time.today_iso()).date()
+            if published > today:
+                reasons.append('date_future')
+            elif published < today - timedelta(days=days_back):
+                reasons.append('date_old')
+        except (ValueError, TypeError):
+            reasons.append('date_unknown')
+    return reasons
+
+
 def tender_matches_filters(tender: Tender, days_back: int) -> bool:
-    # Раньше при пустом stage условие «if tender.stage and …» пропускало проверку этапа —
-    # в выдачу попадали тендеры с любым этапом. Нужен непустой этап и явное «Подача заявок».
-    st = (tender.stage or "").strip()
-    if not st or NEEDED_STAGE.lower() not in st.lower():
-        return False
-    if tender.price_rub is not None and not (PRICE_MIN <= tender.price_rub <= PRICE_MAX):
-        return False
-    if not is_recent(tender.publish_date, days_back):
-        return False
-    return True
+    return not tender_filter_reasons(tender, days_back)
 
 
 def collect_doc_links(page) -> list[tuple[str, str]]:
@@ -2815,7 +2814,19 @@ def parse_args():
         default="",
         help="Путь к файлу: записать новые tender_id по одному на строку (для pipeline после прогона)",
     )
-    return parser.parse_args()
+    parser.add_argument('--resume-downloads', action='store_true', help='Продолжить незавершённое скачивание из поиска не старше 24 часов; обычный запуск всегда ищет заново')
+    args = parser.parse_args()
+    for key, high in [('max_pages', 20), ('max_tenders', 100), ('days_back', 365)]:
+        if not 1 <= getattr(args, key) <= high:
+            parser.error(f'{key}: допустимо от 1 до {high}')
+    if args.resume_downloads and (args.catalog_only or args.from_tender_id or args.from_downloaded_tender_id):
+        parser.error('--resume-downloads нельзя совмещать с каталогом или отдельным тендером')
+    if bool(args.from_tender_id) != bool(args.from_tender_url):
+        parser.error('--from-tender-id и --from-tender-url указываются вместе')
+    for value in (args.from_tender_id, args.from_downloaded_tender_id):
+        if value and not re.fullmatch(r'\d{8,25}', value.strip()):
+            parser.error('Номер закупки должен содержать от 8 до 25 цифр')
+    return args
 
 
 def _stdio_utf8_on_windows() -> None:
@@ -2829,15 +2840,13 @@ def _stdio_utf8_on_windows() -> None:
             pass
 
 
-def main():
+def _run_main(args, out_paths):
     _stdio_utf8_on_windows()
     warnings.filterwarnings(
         "ignore",
         message=r"Workbook contains no default style",
         category=UserWarning,
     )
-    args = parse_args()
-    out_paths = ensure_dirs()
     tg_cfg = telegram_config()
     rar_enabled = configure_rar_backend()
     if not rar_enabled:
@@ -2986,6 +2995,7 @@ def main():
         print(f"Done (exit 0). Tender {tid}: {len(clean_df)} positions -> XLSX + HTML.")
         return
 
+    summary = args._search_summary
     checkpoint = _load_search_checkpoint(out_paths, args)
     resumed_from_checkpoint = False
     completed_ids: set[str] = set()
@@ -3020,15 +3030,36 @@ def main():
             print(f"Новые в этом запуске: {new_in_run}")
             print(f"Уже были в системе: {already_in_system}")
     else:
-        print("Поиск тендеров...")
+        print('Новый поиск тендеров в ЕИС; сохранённое скачивание не подменяет выдачу.')
+        try:
+            seconds = max(60, min(3600, int(os.environ.get('EIS_SEARCH_TIMEOUT_SEC', '600'))))
+        except ValueError:
+            seconds = 600
+        deadline = time.monotonic() + seconds
         for region in REGIONS:
             for kw in KEYWORDS:
-                found = search_tenders(region, kw, max_pages=args.max_pages)
+                if time.monotonic() >= deadline:
+                    summary['source']['budget_exhausted'] = True
+                    break
+                try:
+                    found = search_tenders(region, kw, max_pages=args.max_pages, diagnostics=summary['source'], deadline=deadline)
+                except PlaywrightError as error:
+                    search_state.record_source_error(summary['source'], f'Не удалось запустить браузер ЕИС: {type(error).__name__}')
+                    found = []
+                search_state.save_summary(out_paths['root'], summary)
                 all_found.extend(found)
                 print(f"- {region} / {kw}: {len(found)} найдено")
         search_total = len(all_found)
         unique = dedupe_tenders(all_found)
-        filtered = [t for t in unique if tender_matches_filters(t, days_back=args.days_back)]
+        filtered = []
+        for tender in unique:
+            reasons = tender_filter_reasons(tender, days_back=args.days_back)
+            if not reasons:
+                filtered.append(tender)
+            for reason in reasons:
+                summary['rejections'][reason] = summary['rejections'].get(reason, 0) + 1
+        summary['counts']['matched'] = len(filtered)
+        summary['counts']['limited'] = max(0, len(filtered) - args.max_tenders)
         filtered = filtered[: args.max_tenders]
         cached = load_cached_tenders(out_paths)
         cached_ids = {str(x.get("tender_id", "")).strip() for x in cached if str(x.get("tender_id", "")).strip()}
@@ -3049,8 +3080,22 @@ def main():
             completed=False,
         )
 
+    summary['counts'].update(found=search_total, unique=len(unique), selected=len(filtered),
+                             known=already_in_system, new=new_in_run, processed=len(completed_ids))
+    if resumed_from_checkpoint:
+        summary['counts']['matched'] = len(filtered)
+        summary.update(state='downloading', message=f'Продолжается сохранённое скачивание: осталось {len(filtered) - len(completed_ids)}.')
+    else:
+        search_state.finish_discovery(summary)
+    print(summary['message'])
+    if summary['rejections']:
+        print('Причины отсева: ' + json.dumps(summary['rejections'], ensure_ascii=False))
+    search_state.save_summary(out_paths['root'], summary)
+    if summary['state'] == 'unavailable':
+        raise RuntimeError(summary['message'])
+
     stage_changes: list[tuple[str, str, str]] = []
-    if os.environ.get("REFRESH_CACHED_STAGES", "1").strip().lower() not in ("0", "false", "no", "off"):
+    if not args.catalog_only and os.environ.get("REFRESH_CACHED_STAGES", "1").strip().lower() not in ("0", "false", "no", "off"):
         try:
             stage_changes = refresh_cached_open_tender_stages(out_paths)
         except Exception as e:
@@ -3065,7 +3110,6 @@ def main():
             f"Каталог обновлён: найдено по текущим фильтрам {len(filtered)}, "
             f"новых карточек {added_count}. Документы и рынок не запускались."
         )
-        _clear_search_checkpoint(out_paths)
         return
 
     if new_ids and not tg_cfg:
@@ -3153,8 +3197,13 @@ def main():
         return
 
     all_rows: list[dict] = []
+    if filtered:
+        summary.update(state='downloading', message=f'Получаем документы: осталось {len(remaining)} из {len(filtered)} закупок.')
+        search_state.save_summary(out_paths['root'], summary)
+    completed_before = len(completed_ids)
+    failed_downloads = []
     for idx, tender in enumerate(remaining, start=1):
-        absolute_idx = len(completed_ids) + idx
+        absolute_idx = completed_before + idx
         print(f"[{absolute_idx}/{len(filtered)}] {tender.tender_id}: скачивание документов")
         downloaded_files = open_tender_and_download_archives(tender, out_paths["downloads"])
         if not downloaded_files:
@@ -3173,7 +3222,11 @@ def main():
                     sum_positions=0.0,
                     top_work_lines=["(документы не скачались — проверь доступ к ЕИС)"],
                 )
-            completed_ids.add(tender.tender_id)
+            failed_downloads.append(tender.tender_id)
+            summary['counts']['download_failed'] = len(failed_downloads)
+            summary.update(state='awaiting_resume' if _resume_enabled() else 'failed',
+                           message=f'Не получены документы: {len(failed_downloads)} закупок. ' + ('Доступно отдельное продолжение скачивания.' if _resume_enabled() else 'Возобновление отключено; повторите скачивание из карточек закупок.'))
+            search_state.save_summary(out_paths['root'], summary)
             _save_search_checkpoint(
                 out_paths,
                 args,
@@ -3250,6 +3303,10 @@ def main():
                 top_work_lines=_top_work_snippets_from_clean_df(clean_df),
             )
         completed_ids.add(tender.tender_id)
+        summary['counts']['processed'] = len(completed_ids)
+        summary['counts']['downloaded'] = summary['counts'].get('downloaded', 0) + 1
+        summary['counts']['recognized'] = summary['counts'].get('recognized', 0) + int(bool(tender_rows))
+        search_state.save_summary(out_paths['root'], summary)
         _save_search_checkpoint(
             out_paths,
             args,
@@ -3276,7 +3333,45 @@ def main():
     combined_df.to_excel(combined_path, index=False)
     print(f"Готово. Общий отчет по сметам: {combined_path}")
     print(f"Всего позиций из смет: {len(all_rows)}")
-    _clear_search_checkpoint(out_paths)
+    if failed_downloads:
+        summary.update(state='awaiting_resume' if _resume_enabled() else 'failed',
+                       message=f'Документы не получены для {len(failed_downloads)} закупок. ' + ('Они сохранены для отдельного продолжения.' if _resume_enabled() else 'Возобновление отключено; повторите скачивание из карточек закупок.'))
+    else:
+        if getattr(args, '_checkpoint_run_id', None):
+            _clear_search_checkpoint(out_paths)
+        if resumed_from_checkpoint:
+            summary.update(state='completed', message='Сохранённое скачивание завершено; результаты разбора доступны в карточках.')
+        else:
+            search_state.finish_discovery(summary)
+        summary['message'] += f" Документы получены: {summary['counts'].get('downloaded', 0)}; смет с распознанными строками: {summary['counts'].get('recognized', 0)}."
+    search_state.save_summary(out_paths['root'], summary)
+
+
+def main():
+    args = parse_args()
+    out_paths = ensure_dirs()
+    if args.from_tender_id or args.from_downloaded_tender_id:
+        return _run_main(args, out_paths)
+    from autobot.atomic_output import output_lock
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(output_lock(out_paths['root'] / 'eis_search', timeout=0.1))
+        except TimeoutError:
+            raise SystemExit('Поиск ЕИС уже выполняется в другом процессе; дождитесь завершения.')
+        args._search_summary = search_state.start_summary('resume' if getattr(args, 'resume_downloads', False) else 'fresh')
+        args._search_summary['filters'] = {
+            'regions': list(REGIONS), 'keywords': list(KEYWORDS), 'needed_stage': NEEDED_STAGE,
+            'price_min_kopecks': int(PRICE_MIN * 100), 'price_max_kopecks': int(PRICE_MAX * 100),
+            'days_back': args.days_back, 'max_pages': args.max_pages, 'max_tenders': args.max_tenders,
+        }
+        search_state.save_summary(out_paths['root'], args._search_summary)
+        try:
+            return _run_main(args, out_paths)
+        except Exception as error:
+            args._search_summary.update(state='failed', message=str(error)[:500])
+            search_state.save_summary(out_paths['root'], args._search_summary)
+            raise
 
 
 if __name__ == "__main__":

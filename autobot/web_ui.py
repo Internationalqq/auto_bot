@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from autobot.paths import REPO_ROOT
+from autobot.paths import DATA_DIR, REPO_ROOT
 import io
 import gzip
 import hashlib
@@ -11227,6 +11227,17 @@ def api_start_parse():
         if parse_state["running"]:
             return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Ожидается JSON-объект'}), 400
+    mode = data.get('search_mode', 'fresh')
+    if mode not in ('fresh', 'resume'):
+        return jsonify({'ok': False, 'message': 'search_mode: fresh или resume'}), 400
+    if mode == 'resume':
+        from autobot import tender_search_state as search_state
+        resume = search_state.public_resume(DATA_DIR)
+        if not resume['available']:
+            return jsonify({'ok': False, 'message': resume['reason']}), 409
+        data = dict(resume['parameters'], catalog_only=False)
     try:
         max_pages = int(data.get("max_pages", 2))
         max_tenders = int(data.get("max_tenders", 15))
@@ -11247,17 +11258,26 @@ def api_start_parse():
     catalog_only_raw = data.get("catalog_only", True)
     catalog_only = catalog_only_raw not in (False, 0, "0", "false", "False", "no", "off")
     if catalog_only:
-        args.append("--catalog-only")
+        args.append('--catalog-only')
+    if mode == 'resume':
+        from argparse import Namespace
+        from autobot.main import _checkpoint_signature
+        expected = _checkpoint_signature(Namespace(max_pages=max_pages, max_tenders=max_tenders, days_back=days_back, catalog_only=False))
+        try:
+            search_state.checkpoint_for_resume(DATA_DIR / 'search_resume_checkpoint.json', signature=expected)
+        except ValueError as error:
+            return jsonify({'ok': False, 'message': str(error)}), 409
+        args.append('--resume-downloads')
     worker = threading.Thread(
         target=_run_main_worker,
-        kwargs={"cli_args": args, "task": "поиск закупок для каталога" if catalog_only else "поиск новых закупок"},
+        kwargs={"cli_args": args, "task": "продолжение скачивания документов" if mode == "resume" else "поиск закупок для каталога" if catalog_only else "поиск новых закупок"},
         daemon=True,
     )
     with parse_lock:
         if parse_state["running"]:
             return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
         parse_state["running"] = True
-        parse_state["task"] = "поиск закупок для каталога" if catalog_only else "запуск поиска новых закупок"
+        parse_state["task"] = "продолжение скачивания документов" if mode == "resume" else "поиск закупок для каталога" if catalog_only else "запуск поиска новых закупок"
         parse_state["command"] = ""
         parse_state["started_at"] = datetime.now().isoformat(timespec="seconds")
         parse_state["ended_at"] = None
@@ -11328,6 +11348,9 @@ def api_parse_status():
             "log_lines_count": len(parse_state["log_lines"]),
             "log_tail": parse_state["log_lines"][-80:],
         }
+    from autobot import tender_search_state as search_state
+    payload['search_summary'] = search_state.public_summary(DATA_DIR, running=payload['running'])
+    payload['search_resume'] = search_state.public_resume(DATA_DIR)
     return jsonify(payload)
 
 

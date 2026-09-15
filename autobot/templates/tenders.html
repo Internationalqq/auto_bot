@@ -44,12 +44,15 @@
           <span class="btn-icon btn-icon-chart" aria-hidden="true"></span>
           Проанализировать рынок
         </button>
+        <button class="btn ghost" type="button" data-global-action="resume-search" id="resumeSearchButton" hidden>Продолжить скачивание документов</button>
         <button class="btn primary" type="button" data-global-action="start-search">
           <span class="btn-icon btn-icon-search" aria-hidden="true"></span>
           Найти новые закупки
         </button>
       </div>
     </section>
+
+    <p id="lastSearchSummary" class="muted" role="status" hidden></p>
 
     <section class="tender-scan-card" aria-labelledby="tenderScanTitle">
       <div class="tender-scan-copy">
@@ -732,6 +735,21 @@
         if (!parseResp.ok || !mergeResp.ok) throw new Error("Сервис прогресса временно недоступен");
         const parse = await parseResp.json();
         const merge = await mergeResp.json();
+        const resume = parse.search_resume || {};
+        const resumeButton = document.getElementById('resumeSearchButton');
+        if (resumeButton) {
+          resumeButton.hidden = !resume.available;
+          resumeButton.textContent = 'Продолжить скачивание · ' + Number(resume.remaining || 0) + ' закупок';
+        }
+        const lastSearch = document.getElementById('lastSearchSummary');
+        const searchSummary = parse.search_summary || {};
+        if (lastSearch) {
+          lastSearch.hidden = !searchSummary.message;
+          const names = {stage_unknown:'этап не распознан', stage:'другой этап', price_unknown:'цена не распознана', price:'другой бюджет', date_unknown:'дата не распознана', date_old:'старые закупки', date_future:'неверная будущая дата'};
+          const reasons = Object.entries(searchSummary.rejections || {}).map(([key, value]) => (names[key] || key) + ': ' + Number(value)).join('; ');
+          lastSearch.textContent = 'Последний поиск: ' + (searchSummary.message || '') + (reasons ? ' Отсев: ' + reasons + '.' : '');
+        }
+
 
         if (merge.running) {
           wasRunning = true;
@@ -966,12 +984,13 @@
       window.location.href = card.getAttribute("data-href");
     });
 
-    document.querySelector("[data-global-action='start-search']")?.addEventListener("click", async function() {
+    async function startCatalogueSearch(mode) {
       if (actionLocked) return;
       setActionsLocked(true);
-      showLive("Ищем до 100 закупок", "Добавляем подходящие карточки в каталог без анализа рынка.");
+      showLive(mode === 'resume' ? 'Продолжаем скачивание документов' : 'Ищем до 100 закупок',
+        mode === 'resume' ? 'Берём только незавершённые закупки сохранённого поиска.' : 'Добавляем подходящие карточки в каталог без анализа рынка.');
       try {
-        await postJson("/api/start-parse", { max_pages: 10, max_tenders: 100, days_back: 60, catalog_only: true });
+        await postJson('/api/start-parse', mode === 'resume' ? {search_mode:'resume'} : {search_mode:'fresh', max_pages:10, max_tenders:100, days_back:60, catalog_only:true});
         wakeLiveStatusPolling(0);
       } catch (e) {
         setActionsLocked(false);
@@ -979,7 +998,9 @@
         if (liveKicker) liveKicker.textContent = "Не удалось запустить";
         liveSub.textContent = e.message || String(e);
       }
-    });
+    }
+    document.querySelector("[data-global-action='start-search']")?.addEventListener('click', () => startCatalogueSearch('fresh'));
+    document.querySelector("[data-global-action='resume-search']")?.addEventListener('click', () => startCatalogueSearch('resume'));
 
     document.querySelector("[data-global-action='choose-market']")?.addEventListener("click", function() {
       if (actionLocked) return;
