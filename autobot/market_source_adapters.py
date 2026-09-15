@@ -538,6 +538,10 @@ def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, 
         same_unit = [fact for fact in suitable if units_compatible(fact.unit, target)]
         if same_unit:
             suitable = same_unit
+    from autobot.market_evidence_policy import price_terms_reason
+    exact = [fact for fact in suitable if not price_terms_reason({'evidence': fact.evidence})]
+    if exact:
+        suitable = exact
     if not suitable:
         return None
     return max(suitable, key=rank)

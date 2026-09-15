@@ -246,7 +246,7 @@ class MarketStrategyTests(unittest.TestCase):
 
         self.assertIn('"плитка керамическая"', plan.queries[0].casefold())
         self.assertIn("₽/м²", plan.queries[0])
-        self.assertIn("поставщик", plan.queries[1])
+        self.assertIn("поставщик", plan.queries[2])
 
     def test_crushed_stone_fraction_is_kept_in_compact_query(self) -> None:
         plan = build_search_plan("Щебень строительный фракция 20-40", "м3", "ФСБЦ")

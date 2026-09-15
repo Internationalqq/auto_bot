@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,9 +120,32 @@ _SOURCE_PAGE_CACHE_VERSION = "2"
 _AVITO_GUARD_PATH = _MARKET_CACHE_DIR / "avito_guard.json"
 _AVITO_LOG_PATH = REPO_ROOT / "data" / "logs" / "avito_playwright.jsonl"
 _MARKET_SEARCH_LOG_PATH = REPO_ROOT / "data" / "logs" / "market_search_candidates.jsonl"
-_SEARCH_CACHE_VERSIONS = {"web": "9", "avito": "2", "avito_index": "1"}
+_SEARCH_CACHE_VERSIONS = {"web": "10", "avito": "2", "avito_index": "1"}
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _DOMAIN_RATE_LOCK = threading.Lock()
+_SEARCH_DEADLINE: ContextVar[float | None] = ContextVar('market_search_deadline', default=None)
+
+
+class SearchBudgetExceeded(TimeoutError):
+    pass
+
+
+def _bounded_setting(name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(os.environ.get(name, str(default)))))
+    except (ValueError, TypeError):
+        return default
+
+
+def _remaining_timeout(default: float) -> float:
+    deadline = _SEARCH_DEADLINE.get()
+    if deadline is None:
+        return default
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SearchBudgetExceeded('Лимит времени поиска исчерпан; частичный результат сохранён')
+    return min(default, remaining)
+
 
 _SEARCH_ENGINE_HOSTS = (
     "bing.com", "duckduckgo.com", "google.com", "yandex.ru", "ya.ru",
@@ -424,21 +448,25 @@ def _search_cache_path(source: str, query: str, region: str) -> Path:
     return _MARKET_CACHE_DIR / source / f"{key}.json"
 
 
-def _load_search_cache(source: str, query: str, region: str) -> list[MarketOffer] | None:
-    path = _search_cache_path(source, query, region)
-    payload = _read_json(path)
-    created_at = float(payload.get("created_at") or 0)
-    if str(source or "").casefold() == "avito":
-        ttl_sec = max(
-            24 * 60 * 60,
-            int(os.environ.get("MARKET_AVITO_CACHE_TTL_SEC", str(30 * 24 * 60 * 60)) or 30 * 24 * 60 * 60),
-        )
-    else:
-        ttl_sec = max(3600, int(os.environ.get("MARKET_CACHE_TTL_SEC", str(7 * 24 * 60 * 60)) or 7 * 24 * 60 * 60))
-    if not created_at or time.time() - created_at > ttl_sec:
+def _load_search_cache(source: str, query: str, region: str, *, required_results: int = 1) -> list[MarketOffer] | None:
+    from autobot.market_evidence_policy import observed_timestamp
+    payload = _read_json(_search_cache_path(source, query, region))
+    created_at = observed_timestamp(payload.get('created_at'))
+    raw_offers = payload.get('offers')
+    if not isinstance(raw_offers, list) or not created_at:
         return None
-    raw_offers = payload.get("offers")
-    if not isinstance(raw_offers, list):
+    age = time.time() - created_at
+    if not raw_offers:
+        ttl_sec = _bounded_setting('MARKET_EMPTY_CACHE_TTL_SEC', 180, 30, 900)
+    elif str(source or '').casefold() == 'avito':
+        ttl_sec = _bounded_setting('MARKET_AVITO_CACHE_TTL_SEC', 30 * 86400, 86400, 90 * 86400)
+    else:
+        ttl_sec = _bounded_setting('MARKET_CACHE_TTL_SEC', 7 * 86400, 3600, 30 * 86400)
+    try:
+        requested = int(payload.get('requested_results', len(raw_offers)))
+    except (TypeError, ValueError):
+        return None
+    if age < -900 or age > ttl_sec or requested < required_results:
         return None
     fields = set(MarketOffer.__dataclass_fields__)
     offers: list[MarketOffer] = []
@@ -452,17 +480,16 @@ def _load_search_cache(source: str, query: str, region: str) -> list[MarketOffer
     return offers
 
 
-def _save_search_cache(source: str, query: str, region: str, offers: list[MarketOffer]) -> None:
-    if not offers:
-        return
+def _save_search_cache(source: str, query: str, region: str, offers: list[MarketOffer], *, requested_results: int | None = None) -> None:
     _write_json(
         _search_cache_path(source, query, region),
         {
-            "created_at": time.time(),
-            "source": source,
-            "query": query,
-            "region": region,
-            "offers": [asdict(offer) for offer in offers],
+            'created_at': time.time(),
+            'source': source,
+            'query': query,
+            'region': region,
+            'requested_results': max(1, requested_results if requested_results is not None else len(offers)),
+            'offers': [asdict(offer) for offer in offers],
         },
     )
 
@@ -677,6 +704,7 @@ class AvitoBrowserFetcher:
 
     def fetch_source_page(self, url: str) -> str:
         """Limited browser fallback for a supplier page that plain HTTP could not inspect."""
+        _remaining_timeout(30)
         if not self.enabled or self.source_browser_max <= 0:
             self.last_error = "Playwright fallback для источников отключён"
             return ""
@@ -689,14 +717,16 @@ class AvitoBrowserFetcher:
             return ""
         wait_for = self.source_browser_interval_sec - (time.time() - self.source_browser_last_at)
         if wait_for > 0:
+            if _remaining_timeout(wait_for + 0.01) <= wait_for:
+                raise SearchBudgetExceeded('Лимит времени поиска исчерпан перед открытием браузера')
             time.sleep(wait_for)
         self.source_browser_count += 1
         self.source_browser_last_at = time.time()
         try:
             page = self._ensure_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=min(self.timeout_ms, 30_000))
+            page.goto(url, wait_until="domcontentloaded", timeout=max(1, int(_remaining_timeout(min(self.timeout_ms, 30_000) / 1000) * 1000)))
             try:
-                page.wait_for_load_state("networkidle", timeout=7_000)
+                page.wait_for_load_state("networkidle", timeout=max(1, int(_remaining_timeout(7) * 1000)))
             except Exception:
                 pass
             page.wait_for_timeout(800)
@@ -1049,6 +1079,7 @@ def _compact_query(work_name: str) -> str:
 
 
 def _session_get(url: str, timeout: int = 25) -> str:
+    _remaining_timeout(timeout)
     host = urlparse(url).netloc.casefold().split(":", 1)[0]
     try:
         min_interval = max(0.0, float(os.environ.get("MARKET_DOMAIN_MIN_INTERVAL_SEC", "0.8") or 0.8))
@@ -1059,6 +1090,8 @@ def _session_get(url: str, timeout: int = 25) -> str:
             previous = _DOMAIN_LAST_REQUEST_AT.get(host, 0.0)
             wait_for = min_interval - (time.monotonic() - previous)
             if wait_for > 0:
+                if _remaining_timeout(wait_for + 0.01) <= wait_for:
+                    raise SearchBudgetExceeded('Лимит времени поиска исчерпан перед обращением к источнику')
                 time.sleep(wait_for)
             _DOMAIN_LAST_REQUEST_AT[host] = time.monotonic()
     proxy = (os.environ.get("MARKET_PROXY") or "").strip()
@@ -1071,7 +1104,7 @@ def _session_get(url: str, timeout: int = 25) -> str:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.7,en;q=0.5",
         },
         proxies=proxies,
-        timeout=timeout,
+        timeout=_remaining_timeout(timeout),
     )
     r.raise_for_status()
     if not r.encoding or str(r.encoding).casefold() in {"iso-8859-1", "latin-1"}:
@@ -1773,7 +1806,7 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
     seen: set[str] = set()
     last_err = ""
     connection_failed = False
-    configured = (os.environ.get("MARKET_SEARCH_BACKENDS") or "brave,mojeek,startpage").split(",")
+    configured = (os.environ.get("MARKET_SEARCH_BACKENDS") or "yandex,startpage,brave,mojeek").split(",")
     backends = [backend.strip().casefold() for backend in configured if backend.strip()]
     try:
         backend_limit = max(1, min(4, int(os.environ.get("MARKET_SEARCH_BACKEND_LIMIT", "2") or 2)))
@@ -1787,11 +1820,11 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
     for backend in backends[:backend_limit]:
         for region in configured_regions[:2]:
             try:
-                with DDGS(timeout=ddgs_timeout) as ddgs:
+                with DDGS(timeout=_remaining_timeout(ddgs_timeout)) as ddgs:
                     items = ddgs.text(
                         query,
                         region=region,
-                        max_results=max(max_results, 10),
+                        max_results=max(10, min(max_results, 20)),
                         backend=backend,
                     )
                 for item in items:
@@ -1815,15 +1848,11 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
                             discovery_engine=f"DDGS/{backend}",
                         )
                     )
-                    if len(offers) >= max_results:
-                        return _dedupe_and_sort(offers, max_results=max_results), ""
             except Exception as e:
                 last_err = f"{backend}: {type(e).__name__}: {e}"[:300]
                 folded_error = str(e).casefold()
                 connection_failed = connection_failed or "connect" in folded_error or "timeout" in folded_error or "ssl" in folded_error
                 continue
-        if offers:
-            break
     if not offers and connection_failed:
         _DDGS_BLOCKED_UNTIL = time.monotonic() + 5 * 60
     return _dedupe_and_sort(offers, max_results=max_results), last_err
@@ -2064,12 +2093,13 @@ def search_market(
     errors: list[str] = []
     # Сначала ищем прямые страницы поставщиков и подрядчиков. Авито остаётся
     # резервом и не получает запрос, если обычный веб уже дал кандидатов.
+    max_results = max(1, min(40, int(max_results)))
     if "web" in sources:
         try:
-            web_offers = _load_search_cache("web", query, region)
+            web_offers = _load_search_cache("web", query, region, required_results=max_results)
             if web_offers is None:
-                web_offers = search_web(query, region=region, max_results=max(3, min(5, max_results)))
-                _save_search_cache("web", query, region, web_offers)
+                web_offers = search_web(query, region=region, max_results=max_results)
+                _save_search_cache("web", query, region, web_offers, requested_results=max_results)
             offers.extend(web_offers)
         except Exception as e:
             errors.append(f"Интернет: {type(e).__name__}: {e}")
@@ -2218,6 +2248,7 @@ def _fetch_source_page(
     except Exception as exc:
         http_error = f"{type(exc).__name__}: {exc}"[:400]
 
+    _remaining_timeout(timeout)
     if _source_browser_enabled() and browser_fetcher is not None and browser_fetcher.enabled:
         browser_html = browser_fetcher.fetch_source_page(url)
         if browser_html:
@@ -2403,6 +2434,7 @@ def _enrich_offer_from_page(
         and browser_fetcher is not None
         and browser_fetcher.enabled
     ):
+        _remaining_timeout(30)
         browser_html = browser_fetcher.fetch_source_page(offer.url)
         if browser_html:
             if len(browser_html) > html_limit:
@@ -2638,7 +2670,6 @@ def research_position_market(
 ) -> tuple[list[MarketOffer], MarketSearchPlan, str]:
     """Discover and verify offers for one position without writing a report."""
     plan = build_search_plan(name, unit, basis_code, section, region)
-    queries = list(plan.queries) or [_compact_query(name)]
     row = pd.Series(
         {
             COL_NAME: name,
@@ -2648,55 +2679,104 @@ def research_position_market(
             "Регион поиска": region,
         }
     )
-    selected_sources = sources or ["web", "avito"]
-    primary_sources = [source for source in selected_sources if source != "avito"] or selected_sources
-    checked: list[MarketOffer] = []
-    errors: list[str] = []
-    for query in queries[:2]:
-        found, found_error = search_market(
-            query,
-            region="" if plan.queries else region,
-            sources=primary_sources,
-            max_results=max_results,
-            browser_fetcher=browser_fetcher,
-        )
-        verified_batch = _verify_offers(
-            row,
-            found,
-            plan,
-            browser_fetcher=browser_fetcher,
-            reference_offers=checked,
-        )
-        checked = _apply_market_consensus_guard(
-            _dedupe_and_sort(checked + verified_batch, max_results=max_results)
-        )
-        if found_error:
-            errors.append(found_error)
-        if sum(1 for offer in checked if offer.verification == "verified") >= min(3, max_results):
-            break
-    if "avito" in selected_sources and "web" in selected_sources and not any(
-        offer.verification == "verified" for offer in checked
-    ):
-        found, found_error = search_market(
-            queries[0],
-            region="" if plan.queries else region,
-            sources=["avito"],
-            max_results=max_results,
-            browser_fetcher=browser_fetcher,
-        )
-        avito_batch = _verify_offers(
-            row,
-            found,
-            plan,
-            browser_fetcher=browser_fetcher,
-            reference_offers=checked,
-        )
-        checked = _apply_market_consensus_guard(
-            _dedupe_and_sort(checked + avito_batch, max_results=max_results)
-        )
-        if found_error:
-            errors.append(found_error)
-    return checked, plan, "; ".join(dict.fromkeys(errors))
+    checked, error = _research_row_market(
+        row, plan, sources=sources or ['web', 'avito'], max_results=max_results,
+        browser_fetcher=browser_fetcher,
+    )
+    return checked, plan, error
+
+
+def _diverse_market_offers(offers: list[MarketOffer], limit: int) -> list[MarketOffer]:
+    from autobot.market_evidence_policy import independent_source_key
+    ordered = _dedupe_and_sort(offers, max_results=max(1, len(offers)))
+    primary, remaining, seen = [], [], set()
+    for offer in ordered:
+        key = independent_source_key(vars(offer))
+        if offer.verification == 'verified' and key and key not in seen:
+            primary.append(offer)
+            seen.add(key)
+        else:
+            remaining.append(offer)
+    return (primary + remaining)[:limit]
+
+
+def _research_row_market(
+    row: pd.Series, plan: MarketSearchPlan, *, sources: list[str], max_results: int,
+    browser_fetcher: AvitoBrowserFetcher | None = None,
+    initial_offers: list[MarketOffer] | None = None,
+    avito_collect_only: bool = False,
+) -> tuple[list[MarketOffer], str]:
+    """One bounded discovery/verification loop for a row and the whole tender.
+
+    The deadline prevents new requests; an in-flight browser/library request
+    still has its own timeout. Only unique URLs consume the page budget.
+    """
+    from autobot.market_evidence_policy import independent_source_key
+    max_results = max(1, min(40, int(max_results)))
+    page_limit = _bounded_setting('MARKET_POSITION_MAX_PAGES', 12, 1, 40)
+    query_limit = _bounded_setting('MARKET_POSITION_MAX_QUERIES', 3, 1, 4)
+    seconds = _bounded_setting('MARKET_POSITION_TIMEOUT_SEC', 90, 10, 300)
+    target = min(max_results, _bounded_setting('MARKET_INDEX_MIN_SOURCES', 3, 1, 10))
+    pool = list(initial_offers or [])
+    if not plan.can_auto_price:
+        return pool, plan.warning
+    queries = list(plan.queries) or [_compact_query(str(row.get(COL_NAME, '')))]
+    if avito_collect_only and sources == ['avito']:
+        query_limit = 1
+    primary_sources = [source for source in sources if source != 'avito'] or sources
+    attempts = [(query, primary_sources) for query in queries[:query_limit]]
+    if 'avito' in sources and 'web' in sources:
+        attempts.append((queries[0], ['avito']))
+    seen = {_canonical_offer_url(offer.url) for offer in pool if offer.url}
+    pages, query_count, errors = 0, 0, []
+    deadline = min(_SEARCH_DEADLINE.get() or float('inf'), time.monotonic() + seconds)
+    token = _SEARCH_DEADLINE.set(deadline)
+    def confirmed_count():
+        return len({independent_source_key(vars(offer)) for offer in pool
+                    if offer.verification == 'verified' and independent_source_key(vars(offer))})
+    try:
+        for query, selected_sources in attempts:
+            if confirmed_count() >= target:
+                break
+            if selected_sources == ['avito'] and 'web' in sources and confirmed_count():
+                continue
+            if pages >= page_limit:
+                break
+            _remaining_timeout(seconds)
+            query_count += 1
+            found, error = search_market(
+                query, region='' if plan.queries else str(row.get('Регион поиска', '') or ''),
+                sources=selected_sources,
+                max_results=min(page_limit, max(6, max_results * 3)),
+                browser_fetcher=browser_fetcher,
+            )
+            if error:
+                errors.append(error)
+            for offer in found:
+                url = _canonical_offer_url(offer.url)
+                if not url or url in seen:
+                    continue
+                if pages >= page_limit or confirmed_count() >= target:
+                    break
+                _remaining_timeout(seconds)
+                seen.add(url)
+                pages += 1
+                checked = _verify_offers(row, [offer], plan, browser_fetcher=browser_fetcher,
+                                         avito_collect_only=avito_collect_only, reference_offers=pool)
+                pool = _apply_market_consensus_guard(
+                    _dedupe_and_sort(pool + checked, max_results=max(1, len(pool) + len(checked)))
+                )
+        if pages >= page_limit and confirmed_count() < target:
+            errors.append(f'Проверено {pages} разных страниц; лимит позиции исчерпан')
+    except SearchBudgetExceeded as error:
+        errors.append(str(error))
+    finally:
+        _SEARCH_DEADLINE.reset(token)
+    _append_market_search_log('position_complete', name=str(row.get(COL_NAME, '')),
+                             queries=query_count, pages=pages, independent_sources=confirmed_count(),
+                             page_limit=page_limit, seconds_limit=seconds)
+    return _diverse_market_offers(pool, max_results), '; '.join(dict.fromkeys(errors))
+
 
 
 def _friendly_market_error(err: str) -> str:
@@ -3686,67 +3766,11 @@ def run_tender(
             else:
                 offers = [] if avito_collect_only else _offers_from_local_index(row, max_results=max_results, region=region)
                 indexed_reused += sum(1 for offer in offers if offer.index_hit)
-                errors: list[str] = []
-                primary_sources = [source for source in sources if source != "avito"] or sources
-                query_limit = 1 if avito_collect_only and sources == ["avito"] else 2
-                verified_from_index = sum(1 for offer in offers if offer.verification == "verified")
-                try:
-                    minimum_index_sources = max(1, int(os.environ.get("MARKET_INDEX_MIN_SOURCES", "3") or 3))
-                except ValueError:
-                    minimum_index_sources = 3
-                index_target = min(max_results, minimum_index_sources)
-                queries_to_run = plan.queries[:query_limit] if verified_from_index < index_target else ()
-                for planned_query in queries_to_run:
-                    found, found_err = search_market(
-                        planned_query,
-                        region="",
-                        sources=primary_sources,
-                        max_results=max_results,
-                        browser_fetcher=browser,
-                    )
-                    checked = _verify_offers(
-                        row,
-                        found,
-                        plan,
-                        browser_fetcher=browser,
-                        avito_collect_only=avito_collect_only,
-                        reference_offers=offers,
-                    )
-                    offers = _apply_market_consensus_guard(
-                        _dedupe_and_sort(offers + checked, max_results=max_results)
-                    )
-                    if found_err:
-                        errors.append(found_err)
-                    if sum(1 for offer in offers if offer.verification == "verified") >= max_results:
-                        break
-                if "avito" in sources and "web" in sources and not any(
-                    offer.verification == "verified" for offer in offers
-                ) and plan.queries:
-                    found, found_err = search_market(
-                        plan.queries[0],
-                        region="",
-                        sources=["avito"],
-                        max_results=max_results,
-                        browser_fetcher=browser,
-                    )
-                    offers = _dedupe_and_sort(
-                        offers + _verify_offers(
-                            row,
-                            found,
-                            plan,
-                            browser_fetcher=browser,
-                            avito_collect_only=avito_collect_only,
-                            reference_offers=offers,
-                        ),
-                        max_results=max_results,
-                    )
-                    offers = _apply_market_consensus_guard(offers)
-                    if found_err:
-                        errors.append(found_err)
-                offers = _apply_market_consensus_guard(
-                    _dedupe_and_sort(offers, max_results=max_results)
+                offers, err = _research_row_market(
+                    row, plan, sources=sources, max_results=max_results,
+                    browser_fetcher=browser, initial_offers=offers,
+                    avito_collect_only=avito_collect_only,
                 )
-                err = "; ".join(dict.fromkeys(errors))
             if avito_collect_only and not offers and _avito_safe_error_is_fatal(err):
                 detail = f"бережный сбор остановлен без изменения этой позиции: {_friendly_market_error(err)}"
                 append_market_web_event(tid, "done", seq, total, work_name=work_name, detail=detail)

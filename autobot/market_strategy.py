@@ -507,10 +507,16 @@ def build_search_plan(
     safe_title = title.replace('"', " ").strip()
     exact_title = f'"{safe_title}"' if safe_title else title
     broad_unit = f"за {unit_norm}" if unit_norm else "в рублях"
+    discovery_title = title
+    if position.bucket == 'materials' and 'бетон' in _fold(title):
+        # Broader discovery only; the original row still owns verification.
+        # Supplier cards usually omit the estimate adjective «тяжёлый».
+        discovery_title = re.sub(r'\bтяж[её]л\w*\s*', '', title, flags=re.I).strip()
 
     if position.bucket == "materials":
         queries = (
             f"{exact_title} цена прайс {price_marker}{place}".strip(),
+            f"{discovery_title}{place} цена {broad_unit}".strip(),
             f"{title} купить поставщик цена {broad_unit}{place}".strip(),
         )
         return MarketSearchPlan(
@@ -522,6 +528,7 @@ def build_search_plan(
     if position.bucket == "works":
         queries = (
             f"{exact_title} стоимость работ прайс {price_marker}{place}".strip(),
+            f"{title}{place} цена {broad_unit}".strip(),
             f"{title} подрядчик стоимость работы {broad_unit}{place}".strip(),
         )
         return MarketSearchPlan(

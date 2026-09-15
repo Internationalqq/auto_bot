@@ -76,6 +76,8 @@ def price_terms_reason(offer: dict) -> str:
     if re.search(r'/(?:articles?|blog|news|stati|novosti)(?:/|$)', path):
         return 'Цена из статьи: требуется предложение поставщика'
     evidence = text(offer.get('evidence') or offer.get('snippet')).casefold()
+    if re.search(r'(?:/|за\s+)\s*км\b', evidence) and re.search(r'\bм\s*[3³]\b', evidence):
+        return 'Тариф зависит от объёма и километража; это не цена за один м³'
     amount = r'\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?'
     currency = r'(?:₽|руб\w*\.?|р\.)'
     if re.search(r'\b(?:от|около|примерно|до)\s*' + amount + r'\s*' + currency, evidence):
