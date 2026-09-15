@@ -19,6 +19,17 @@ def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
 
 
+def normalize_source_unit(value: Any) -> str:
+    """Normalize typography while preserving the document's unit and scale."""
+    raw = _clean(value).casefold().replace("²", "2").replace("³", "3").replace("m", "м").strip(" .")
+    match = re.match(r"^(1000|100|10)\s*(?=[а-яa-z])", raw)
+    prefix = match.group(1) + ' ' if match else ''
+    base = raw[match.end():] if match else raw
+    aliases = {'кв.м':'м2', 'кв. м':'м2', 'куб.м':'м3', 'куб. м':'м3',
+               'пог.м':'м', 'пог. м':'м', 'комплект':'компл', 'тонна':'т'}
+    return prefix + aliases.get(base, base)
+
+
 def _rectangular(rows: Iterable[Sequence[Any]]) -> list[list[str]]:
     result = [[_clean(cell) for cell in row] for row in rows]
     result = [row for row in result if any(row)]
@@ -81,12 +92,11 @@ def _number_in_column(words: Sequence[dict[str, object]], left: float, right: fl
     read the leading digit ``5`` as ``§``.  Joining only the tokens located in
     one physical column is safe and avoids mixing a price with a quantity.
     """
-    tokens = [
-        str(item["text"]).replace("§", "5")
-        for item in sorted(words, key=lambda item: float(item["left"]))
-        if left <= float(item["left"]) < right
-        and (str(item["text"]).replace("§", "5").strip() or "").strip()
-    ]
+    tokens = []
+    for item in sorted(words, key=lambda item: float(item['left'])):
+        token = str(item['text']).replace('§', '5').strip(' ()[]{}|;:')
+        if left <= float(item['left']) < right and re.fullmatch(r'[-+]?\d[\d\s.,]*', token):
+            tokens.append(token)
     return _to_number(" ".join(tokens)) if tokens else None
 
 
@@ -365,11 +375,7 @@ class PdfEstimateAdapter:
             raise PdfEstimateAdapterError("Не удалось выделить позиции сметы из OCR PDF") from error
         finally:
             document.close()
-        unique: dict[tuple[str, str], dict[str, object]] = {}
-        for record in records:
-            key = (str(record["code"]), str(record["name"]).casefold())
-            unique.setdefault(key, record)
-        return list(unique.values())
+        return records
 
     @staticmethod
     def _position_records_from_words(
@@ -379,7 +385,26 @@ class PdfEstimateAdapter:
         section_words=None,
     ) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []
+        # Repeated OCR tokens at the same coordinates are one observation.
+        # Identical codes/names at different anchors are separate quantities.
+        unique_words = {}
+        for word in words:
+            key = tuple(word.get(field) for field in ('page', 'left', 'top', 'width', 'height', 'text'))
+            unique_words.setdefault(key, word)
+        words = list(unique_words.values())
         section_starts, section_ends = _section_markers_from_words(section_words or words)
+        position_total_lines = []
+        for word in words:
+            if not str(word['text']).casefold().startswith(('всего', 'итого')):
+                continue
+            center = float(word['top']) + float(word['height']) / 2
+            label = ' '.join(str(item['text']) for item in sorted(words, key=lambda item: float(item['left']))
+                if float(word['left']) <= float(item['left']) <= float(word['left']) + page_width * .15
+                and abs(float(item['top']) + float(item['height']) / 2 - center) <= 12)
+            if re.search(r'\b(?:всего|итого)\s+(?:по|no)\s+позици[ияю]\b', label, re.IGNORECASE):
+                # Keep the label's own coordinate. Averaging it with far-right
+                # values from a skewed scan can select the next position sum.
+                position_total_lines.append(center)
         code_column_limit = page_width * 0.18
         anchors = sorted(
             (
@@ -389,6 +414,31 @@ class PdfEstimateAdapter:
             ),
             key=lambda item: float(item["top"]) + float(item["height"]) / 2,
         )
+        def anchor_id(word):
+            return f"pdf:ocr:{int(word.get('page') or 0)}:{float(word['top']):g}:{float(word['left']):g}"
+
+        def anchor_number(word):
+            center = float(word['top']) + float(word['height']) / 2
+            preceding = sorted((item for item in words if float(item['left']) < float(word['left'])
+                and abs(float(item['top']) + float(item['height']) / 2 - center) <= 35),
+                key=lambda item: float(item['left']))
+            return next((str(item['text']) for item in preceding
+                if re.fullmatch(r'\d{1,3}(?:\.\d+)?', str(item['text']))), '')
+
+        # Standard LSR adds resources such as 11.1 inside position 11. An
+        # indented fractional number with its preceding parent is evidence of
+        # that relationship; it must not terminate or duplicate the parent sum.
+        parents = {}
+        primary_anchors = []
+        for anchor in anchors:
+            number = anchor_number(anchor)
+            parent = primary_anchors[-1] if primary_anchors else None
+            base_number = number.split('.')[0] if '.' in number else ''
+            if (parent is not None and base_number and anchor_number(parent) == base_number
+                    and float(anchor['left']) > float(parent['left']) + page_width * .015):
+                parents[anchor_id(anchor)] = anchor_id(parent)
+            else:
+                primary_anchors.append(anchor)
         for word in words:
             code = str(word["text"])
             left = float(word["left"])
@@ -427,46 +477,27 @@ class PdfEstimateAdapter:
             # present.  Its fixed x-range survives skew much better than a
             # search for the first number after the unit.
             qty = _number_in_column(same_line, page_width * 0.55, quantity_column_right)
-            if qty is None or qty <= 0:
-                qty = next(
-                    (
-                        _to_number(str(item["text"]))
-                        for item in same_line[(unit_index + 1) if unit_index is not None else (code_index + 1):]
-                        if float(item["left"]) >= value_column_left
-                        and float(item["left"]) < quantity_column_right
-                        and _to_number(str(item["text"])) is not None
-                        and float(_to_number(str(item["text"])) or 0) > 0
-                    ),
-                    None,
-                )
-            if qty is None:
-                # A quantity cell may be blank in a scan for a single item;
-                # never let the following price column masquerade as quantity.
-                qty = 1.0 if unit_index is not None else None
-            if qty is None:
-                continue
+            # A base quantity in the preceding column is not the final
+            # quantity with coefficients. Missing values remain unknown.
             # The last column holds the current total.  It is the most stable
             # price signal in a scan; the unit price is calculated from it.
             # When the total is unreadable, retain a directly OCRed price.
             total = _number_in_column(same_line, page_width * 0.90, page_width * 1.01)
-            if total is None:
+            if anchor_id(word) not in parents:
                 # Complex work positions occupy several printed rows.  Their
                 # total is on a separate "Всего по позиции" line before the
                 # following position code, rather than next to the title.
                 next_anchor_y = next(
                     (
                         float(item["top"]) + float(item["height"]) / 2
-                        for item in anchors
+                        for item in primary_anchors
                         if float(item["top"]) + float(item["height"]) / 2 > center_y + 35
                     ),
                     float("inf"),
                 )
-                total_lines = []
-                for item in words:
-                    item_y = float(item["top"]) + float(item["height"]) / 2
-                    item_text = _clean(str(item["text"])).casefold()
-                    if center_y + 35 < item_y < next_anchor_y - 8 and item_text.startswith(("всего", "итого")):
-                        total_lines.append(item_y)
+                # Only a position total belongs to this anchor. In particular,
+                # the final position cannot consume the whole estimate total.
+                total_lines = [y for y in position_total_lines if center_y + 35 < y < next_anchor_y - 8]
                 for total_y in total_lines:
                     # In a scanned LSR the numeric total is usually printed
                     # just *above* the "Всего по позиции" text.  Do not use a
@@ -492,7 +523,7 @@ class PdfEstimateAdapter:
                     detected = _number_in_column(total_line, page_width * 0.90, page_width * 1.01)
                     if detected is not None:
                         total = detected
-            unit_price = (total / qty) if total is not None and qty > 0 else _number_in_column(
+            unit_price = (total / qty) if total is not None and qty is not None and qty > 0 else _number_in_column(
                 same_line, page_width * 0.63, page_width * 0.90
             )
             position = next(
@@ -505,6 +536,8 @@ class PdfEstimateAdapter:
             )
             records.append(
                 {
+                    "position_id": anchor_id(word),
+                    "parent_position_id": parents.get(anchor_id(word), ''),
                     "page": int(word.get("page") or 0),
                     "position": position,
                     "code": code,
@@ -516,7 +549,12 @@ class PdfEstimateAdapter:
                     "section": _section_for_position(center_y, section_starts, section_ends),
                 }
             )
-        return records
+        by_id = {record['position_id']: record for record in records}
+        for record in records:
+            parent = by_id.get(record['parent_position_id'])
+            if parent is not None:
+                parent.setdefault('resources', []).append(record)
+        return [record for record in records if record['parent_position_id'] not in by_id]
 
     @staticmethod
     def _usable(rows: Sequence[Sequence[str]]) -> bool:

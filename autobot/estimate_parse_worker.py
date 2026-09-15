@@ -131,6 +131,9 @@ def parse_files(excel_files, pdf_files, tender, limits):
                 if len(rows) > limits.rows:
                     raise EstimateParseRejected('Распознано слишком много строк; результат требует отдельного разбора.')
                 documents.append({'source_file': str(path), 'kind': kind, 'rows': len(part),
+                                  'missing_quantity_rows': sum(row.get('qty') is None for row in part),
+                                  'missing_unit_rows': sum(not str(row.get('unit') or '').strip() for row in part),
+                                  'missing_amount_rows': sum(row.get('price_from_estimate_rub') is None for row in part),
                                   'state': 'skipped' if skipped else 'fallback' if any(
                                       row.get('extract_source') == 'PDF fallback' for row in part) else 'parsed' if part else 'unrecognized'})
             except EstimateParseRejected as error:

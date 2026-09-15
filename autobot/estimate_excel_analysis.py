@@ -43,6 +43,7 @@ class EstimateRow:
     excel_row: int | None = None
     section: str = ""
     source: str = ""
+    position_id: str = ""
 
 
 @dataclass
@@ -485,7 +486,7 @@ def _read_pdf_sparse_position_rows(
     progress_cb: ProgressCallback | None = None,
 ) -> list[EstimateRow]:
     """Extract LSR rows by OCR coordinates when the table grid is fragmented."""
-    from autobot.pdf_estimate_adapter import pdf_to_position_records
+    from autobot.pdf_estimate_adapter import pdf_to_position_records, normalize_source_unit
 
     def _pdf_progress(percent: int, stage: str, detail: str = "") -> None:
         # The OCR adapter owns the 38-77% segment of the full upload pipeline.
@@ -493,12 +494,12 @@ def _read_pdf_sparse_position_rows(
         _progress(progress_cb, mapped, stage, detail)
 
     rows: list[EstimateRow] = []
-    for record in pdf_to_position_records(path, progress_cb=_pdf_progress):
+    for record_index, record in enumerate(pdf_to_position_records(path, progress_cb=_pdf_progress), start=1):
         name = _clean_text(record.get("name"))
         qty = _num(record.get("qty"))
-        if len(name) < 4 or qty is None or qty <= 0:
+        if len(name) < 4 or (qty is not None and qty <= 0):
             continue
-        unit, qty = _normalize_lsr_unit_and_qty(_clean_text(record.get("unit")), qty)
+        unit = normalize_source_unit(_clean_text(record.get("unit")))
         rows.append(
             EstimateRow(
                 idx=len(rows) + 1,
@@ -512,34 +513,10 @@ def _read_pdf_sparse_position_rows(
                 sheet=f"PDF, стр. {int(record.get('page') or 0)}",
                 section="Распознано из PDF",
                 source="pdf-ocr-sparse",
+                position_id=_clean_text(record.get('position_id')) or f"pdf:ocr:{int(record.get('page') or 0)}:row{record_index}",
             )
         )
     return _dedupe_rows(rows)
-
-
-def _normalize_lsr_unit_and_qty(unit: str, qty: float) -> tuple[str, float]:
-    """Convert LSR's enlarged units to the units shown to the user.
-
-    LSRs commonly store work in ``100 м2``/``100 м`` and reinforcement in
-    tonnes.  Keeping that notation after OCR makes ordinary quantities look
-    one hundred or one thousand times smaller than they really are.
-    """
-    normalized = _clean_text(unit).casefold().replace("²", "2").replace("³", "3")
-    normalized = normalized.replace("m", "м")
-    multipliers = {
-        "100 м2": ("м2", 100.0),
-        "100м2": ("м2", 100.0),
-        "100 м3": ("м3", 100.0),
-        "100м3": ("м3", 100.0),
-        "100 м": ("м", 100.0),
-        "100м": ("м", 100.0),
-        "100 шт": ("шт", 100.0),
-        "100шт": ("шт", 100.0),
-        "т": ("кг", 1000.0),
-    }
-    return multipliers.get(normalized, (unit, qty)) if normalized not in multipliers else (
-        multipliers[normalized][0], qty * multipliers[normalized][1]
-    )
 
 
 def _guess_header_idx(df: pd.DataFrame) -> int | None:
@@ -578,6 +555,9 @@ def _dedupe_rows(rows: list[EstimateRow]) -> list[EstimateRow]:
             round(float(row.total or 0), 2),
             row.sheet,
             row.excel_row,
+            row.item_no,
+            row.basis_code,
+            row.position_id,
         )
         if key in seen:
             continue

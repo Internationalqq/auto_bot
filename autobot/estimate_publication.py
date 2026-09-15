@@ -117,12 +117,15 @@ def parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_path
                 with _staging(reports) as staging:
                     preview_paths = {**out_paths, 'reports': staging}
                     report, frame = main.write_tender_estimate_report(tender, result['rows'], preview_paths)
-                    if frame.empty:
-                        raise EstimateParseRejected('После проверки не осталось позиций сметы. Предыдущий отчёт сохранён.')
+                    if frame.empty or not frame['Сумма, руб'].notna().any():
+                        raise EstimateParseRejected('После проверки не осталось позиций с определённой суммой. Предыдущий отчёт сохранён.')
                     html = main.write_tender_estimate_html(tender, frame, preview_paths)
                     control = main.write_estimate_parse_manifest(tender.tender_id, pdf_files, result['rows'], preview_paths, result['official_totals'])
                     payload = json.loads(control.read_text(encoding='utf-8'))
                     payload.update(parse_sources=result['sources'], parse_documents=result['documents'],
+                                   parse_resources=[{'source_file':row['source_file'], 'position_id':row.get('position_id'),
+                                       'resources':row['resources']} for row in result['rows'] if row.get('resources')],
+                                   unresolved_amount_rows=[row for row in result['rows'] if row.get('price_from_estimate_rub') is None],
                                    selected_excel_count=len(excel_files), parsed_row_count=len(frame))
                     atomic_json(control, payload)
                     warnings = []
@@ -132,6 +135,8 @@ def parse_and_publish(tender, excel_files, pdf_files, downloaded_files, out_path
                             warnings.append(name + ': файл прочитан, сметные строки не определены.')
                         elif document['state'] == 'fallback':
                             warnings.append(name + ': использован запасной текстовый разбор PDF; строки требуют проверки.')
+                        elif any(document.get(key) for key in ('missing_quantity_rows', 'missing_unit_rows', 'missing_amount_rows')):
+                            warnings.append(name + ': не определены количество, единица или сумма части позиций; проверьте исходную смету.')
                     state.update(state='complete', warnings=warnings, rows=len(frame),
                                  finished_at=datetime.now(timezone.utc).isoformat(), sources=result['sources'])
                     completed = staging / journal.name

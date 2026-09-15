@@ -2202,33 +2202,9 @@ def _iter_pdf_lines(path: Path, *, strict: bool = False) -> Iterable[str]:
 
 
 def _normalize_pdf_unit_qty(unit: object, qty: object, name: object = "", basis_code: object = "") -> tuple[str, float | None]:
-    """Приводит укрупнённые единицы ЛСР (100 м2, 100 м) к рыночным единицам."""
-    raw = _cell_text(unit).casefold().replace("²", "2").replace("³", "3").replace("m", "м")
-    raw = re.sub(r"\s+", " ", raw).strip(" .")
-    number = to_float(qty)
-    multiplier = 1.0
-    match = re.match(r"^(1000|100|10)\s*", raw)
-    if match:
-        multiplier = float(match.group(1))
-        raw = raw[match.end():].strip()
-    aliases = {
-        "м2": ("м2", "кв.м", "кв. м"),
-        "м3": ("м3", "куб.м", "куб. м"),
-        "м": ("м", "пог.м", "пог. м"),
-        "шт": ("шт", "компл", "комплект"),
-        "кг": ("кг",),
-        "т": ("т", "тонна"),
-    }
-    normalized = next((canonical for canonical, values in aliases.items() if raw in values), raw)
-    # OCR часто читает латинскую M без индекса. Для сыпучих материалов это почти всегда м3.
-    folded_name = _cell_text(name).casefold()
-    folded_basis = _cell_text(basis_code).casefold()
-    if normalized == "м" and any(word in folded_name for word in ("щебень", "песок", "смесь", "грунт", "бетон")):
-        if any(code in folded_basis for code in ("фсбц", "фссц", "тсц", "ссц")):
-            normalized = "м3"
-    if number is not None:
-        number *= multiplier
-    return normalized, number
+    """Сохраняет масштаб исходной ЛСР; рынок пересчитывает его отдельно."""
+    from autobot.pdf_estimate_adapter import normalize_source_unit
+    return normalize_source_unit(_cell_text(unit)), to_float(qty)
 
 
 def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
@@ -2236,7 +2212,7 @@ def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
     from autobot.pdf_estimate_adapter import pdf_to_position_records
 
     rows: list[dict] = []
-    for record in pdf_to_position_records(path):
+    for record_index, record in enumerate(pdf_to_position_records(path), start=1):
         work_name = _cell_text(record.get("name"))
         if len(work_name) < 8 or len(work_name) > 500:
             continue
@@ -2246,7 +2222,7 @@ def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
         total = to_float(record.get("total"))
         if total is None and unit_price is not None and qty is not None:
             total = unit_price * qty
-        if total is None or total <= 0 or total > 5_000_000_000:
+        if total is not None and (total <= 0 or total > 5_000_000_000):
             continue
         page = int(to_float(record.get("page")) or 0)
         rows.append(
@@ -2257,6 +2233,8 @@ def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
                 "tender_url": tender.url,
                 "source_file": str(path),
                 "extract_source": "PDF OCR LSR",
+                "position_id": _cell_text(record.get('position_id')) or f'pdf:ocr:{page}:row{record_index}',
+                "resources": record.get('resources', []),
                 "item_no": _cell_text(record.get("position")),
                 "basis_code": basis_code,
                 "sheet_name": f"PDF, стр. {page}" if page else "PDF",
@@ -2286,7 +2264,7 @@ def extract_rows_from_pdf(path: Path, tender: Tender, *, strict: bool = False) -
 
     rows: list[dict] = []
     lines = _iter_pdf_lines(path, strict=True) if strict else _iter_pdf_lines(path)
-    for line in lines:
+    for line_number, line in enumerate(lines, start=1):
         m = PDF_LINE_PRICE_RE.match(line)
         if not m:
             continue
@@ -2307,6 +2285,7 @@ def extract_rows_from_pdf(path: Path, tender: Tender, *, strict: bool = False) -
                 "tender_url": tender.url,
                 "source_file": str(path),
                 "extract_source": "PDF fallback",
+                "position_id": f'pdf:text:{line_number}',
                 "item_no": None,
                 "work_name": work_name,
                 "unit": "",
@@ -2316,11 +2295,7 @@ def extract_rows_from_pdf(path: Path, tender: Tender, *, strict: bool = False) -
                 "price_from_estimate_rub": price,
             }
         )
-    uniq: dict[tuple[str, str, float], dict] = {}
-    for row in rows:
-        key = (row["source_file"], row["work_name"], round(float(row["price_from_estimate_rub"]), 2))
-        uniq[key] = row
-    return list(uniq.values())
+    return rows
 
 
 def write_outputs(tenders: list[Tender], rows: list[dict], out_paths: dict[str, Path]) -> Path:
@@ -2409,6 +2384,8 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
             ]
         )
     df = pd.DataFrame(rows)
+    if 'position_id' in df.columns:
+        source_columns.append('position_id')
     for col in source_columns:
         if col not in df.columns:
             df[col] = None
@@ -2437,16 +2414,19 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
             "price_from_estimate_rub": "Сумма, руб",
         }
     )
-    clean_df = clean_df.dropna(subset=["Название работы/услуги", "Сумма, руб"])
+    clean_df = clean_df.dropna(subset=["Название работы/услуги"])
     clean_df["Название работы/услуги"] = clean_df["Название работы/услуги"].astype(str).str.strip()
     clean_df = clean_df[clean_df["Название работы/услуги"].str.len() >= 6]
     clean_df = clean_df[~clean_df["Название работы/услуги"].str.lower().str.contains("|".join(SKIP_ROW_HINTS), regex=True)]
-    clean_df = clean_df[clean_df["Сумма, руб"] > 0]
+    # A recognized PDF position without its amount is still part of the scope.
+    # Keep the gap visible so price coverage cannot become falsely complete.
+    clean_df = clean_df[clean_df["Сумма, руб"].isna() | (clean_df["Сумма, руб"] > 0)]
     # Убираем только точные повторы одной физической строки. Повторяющиеся
     # работы с теми же названием, количеством и суммой на других строках ЛСР
     # сохраняем: это реальные самостоятельные позиции.
     clean_df = clean_df.drop_duplicates(
-        subset=["Файл ЛСР", "Лист", "Строка Excel", "Название работы/услуги", "Сумма, руб"],
+        subset=["Файл ЛСР", "Лист", "Строка Excel", "№ п/п", "Название работы/услуги", "Сумма, руб"]
+            + (['position_id'] if 'position_id' in clean_df.columns else []),
         keep="first",
     )
     # Одинаковые позиции в разных ЛСР или в разных строках одной ЛСР не должны
