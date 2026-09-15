@@ -291,6 +291,25 @@ def _verdict(estimate_unit: float | None, market_unit: float | None) -> tuple[st
     return "Сопоставимо со сметой", "warn"
 
 
+def _primary_action(*, has_downloads, download_blocked, parse_blocked, archive_failed,
+                    total_positions, verified, needs_review):
+    """Choose the next user action from data, never infer profitability from files."""
+    if download_blocked or not has_downloads:
+        return {"key": "download", "title": "Нужны документы", "label": "Повторить скачивание" if download_blocked else "Скачать документы",
+                "detail": "Загрузите комплект из ЕИС. Сохранённый отчёт доступен ниже, если он уже был создан."}
+    if parse_blocked or archive_failed or not total_positions:
+        return {"key": "extract", "title": "Нужен разбор сметы", "label": "Повторить разбор" if parse_blocked or archive_failed else "Извлечь смету",
+                "detail": "Перечитайте сохранённые документы и проверьте результат извлечения."}
+    if needs_review:
+        return {"key": "positions", "title": "Проверьте распознанные позиции", "label": "Проверить позиции",
+                "detail": "Есть пропуски или замечания к разбору. Сверьте строки и исходные файлы перед расчётом."}
+    if verified < total_positions:
+        return {"key": "market", "title": "Нужны подтверждённые цены", "label": "Найти недостающие цены",
+                "detail": f"С подтверждённой ценой {verified} из {total_positions} позиций. Неподтверждённые предложения остаются на проверке."}
+    return {"key": "positions", "title": "Сравните цены и условия", "label": "Открыть позиции",
+            "detail": "По всем распознанным позициям есть цены. Для решения об участии проверьте состав и условия тендера."}
+
+
 def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
     market_path = _market_path(tender_id)
@@ -551,6 +570,14 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         {"key": "market", "label": "Проверка цен", "done": market_path.is_file() and counts["verified"] > 0},
         {"key": "comparison", "label": "Сравнение", "done": comparison_path.is_file() and counts["verified"] > 0},
     )
+    primary_action = _primary_action(
+        has_downloads=bool(workflow.get("has_downloads")), download_blocked=document_download['blocked'],
+        parse_blocked=document_parse['blocked'], archive_failed=bool(archive_status['failed_count']),
+        total_positions=total_positions, verified=counts['verified'],
+        needs_review=bool(document_parse['warnings'] or viability.rows_without_amount
+                          or estimate_files_selected > estimate_files_parsed
+                          or any(p['quantity'] is None or p['unit'] in {'', '—'} for p in positions)),
+    )
     market_health = latest_parser_health(tender_id)
     if market_health:
         market_health["offer_rate_pct"] = round(float(market_health.get("offer_rate") or 0) * 100)
@@ -571,6 +598,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         "publish_date": _clean(metadata.get("publish_date")),
         "updated_date": _clean(metadata.get("updated_date")),
         "eis_url": _clean(workflow.get("eis_url") or metadata.get("url")),
+        "primary_action": primary_action,
         "next_action": _clean(workflow.get("next_action")),
         "status_label": _clean(workflow.get("status_label")),
         "status_detail": _clean(workflow.get("status_detail")),

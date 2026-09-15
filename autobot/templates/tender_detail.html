@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-controls-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-detail-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-1" />
   <script defer src="/assets/js/tender_economics.js?v=20260915-1"></script>
@@ -17,9 +17,9 @@
       <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
     </a>
     <nav class="topnav" aria-label="Разделы">
-      <a class="topnav-primary" href="/estimates">Мои сметы</a>
+      <a class="topnav-primary" href="/estimates">Сметы</a>
       <a class="topnav-primary is-active" href="/tenders" aria-current="page">Тендеры</a>
-      <a href="/research">Найти цену</a>
+      <a href="/research">Поиск позиции</a>
     </nav>
   </header>
 
@@ -90,6 +90,39 @@
 
     {% if tender.active_tab == "overview" %}
 
+    <section class="action-panel" id="nextAction" aria-label="Следующее действие">
+      <div>
+        <small>Следующий шаг AutoBot</small>
+        <strong>{{ tender.primary_action.title }}</strong>
+        <span>{{ tender.primary_action.detail }}</span>
+      </div>
+      <div class="action-buttons">
+        {% if tender.primary_action.key == 'download' %}
+        <button class="btn primary" type="button" data-refresh-documents>{{ tender.primary_action.label }}</button>
+        {% elif tender.primary_action.key == 'extract' %}
+        <button class="btn primary" type="button" data-rebuild-report>{{ tender.primary_action.label }}</button>
+        {% elif tender.primary_action.key == 'market' %}
+        <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="0">{{ tender.primary_action.label }}</button>
+        {% else %}
+        <a class="btn primary" href="#positions">{{ tender.primary_action.label }}</a>
+        {% endif %}
+        <details class="action-more">
+          <summary class="btn ghost">Ещё <span aria-hidden="true">⌄</span></summary>
+          <div class="action-more-menu">
+            <button type="button" data-refresh-documents>Обновить документы из ЕИС</button>
+            {% if tender.has_estimate %}
+            <button type="button" data-rebuild-report>Перечитать смету</button>
+            {% if tender.primary_action.key != 'market' %}<button type="button" id="runMarketBtn" data-reset-market="0">Найти недостающие цены</button>{% endif %}
+            {% endif %}
+            {% if tender.has_estimate %}<button type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>{% endif %}
+            {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>{% endif %}
+            {% if tender.has_estimate %}<button type="button" id="addTenderToCrmBtn">Добавить в объект CRM</button>{% endif %}
+            <a href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть в ЕИС ↗</a>
+          </div>
+        </details>
+      </div>
+    </section>
+
     <section class="market-coverage" aria-label="Полнота проверки цен">
       <div class="coverage-heading"><h2>Что уже известно по ценам</h2><span>Разница со сметой ещё не прибыль</span></div>
       <dl>
@@ -100,28 +133,7 @@
       <p>Расчёт по распознанным позициям на {{ tender.estimate_total_fmt }}. {% if tender.rows_without_amount %}У {{ tender.rows_without_amount }} поз. не определена сумма — полнота пока неизвестна.{% else %}Для прибыли ещё нужны доставка, накладные, резерв и цена предложения.{% endif %}</p>
     </section>
     <div data-tender-economics data-tender-id="{{ tender.tender_id }}" hidden></div>
-    <section class="action-panel">
-      <div>
-        <small>Следующий шаг AutoBot</small>
-        <strong>{{ tender.status_label or "Проверить данные" }}</strong>
-        <span>{{ tender.status_detail or "Откройте позиции и проверьте готовность данных." }}</span>
-      </div>
-      <div class="action-buttons">
-        <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="0">
-          {{ "Найти недостающие цены" if tender.has_market else "Найти рыночные цены" }}
-        </button>
-        <details class="action-more">
-          <summary class="btn ghost">Ещё <span aria-hidden="true">⌄</span></summary>
-          <div class="action-more-menu">
-            <button type="button" data-refresh-documents>Обновить документы из ЕИС</button>
-            {% if tender.has_estimate %}<button type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>{% endif %}
-            {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>{% endif %}
-            {% if tender.has_estimate %}<button type="button" id="addTenderToCrmBtn">Добавить в объект CRM</button>{% endif %}
-            <a href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">Открыть в ЕИС ↗</a>
-          </div>
-        </details>
-      </div>
-    </section>
+
 
     <details class="tender-command-center" aria-label="Инструменты анализа тендера">
       <summary>Источники и журнал <span class="command-center-state" id="commandCenterState">Обновляю состояние…</span></summary>
@@ -304,7 +316,7 @@
       </details>
     </section>
 
-    <section class="positions-card">
+    <section class="positions-card" id="positions" tabindex="-1">
       <header class="positions-head">
         <div><h2>Позиции сметы</h2><p><b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
         <label class="position-search"><span aria-hidden="true"></span><input id="positionSearch" type="search" placeholder="Найти работу, материал или шифр" autocomplete="off" /></label>
@@ -361,7 +373,7 @@
       </div>
       <div class="no-results" id="noPositionResults" hidden>По этому фильтру позиций нет.</div>
       {% else %}
-      <div class="empty-state"><strong>Смета ещё не извлечена</strong><p>Запустите обработку тендера — AutoBot скачает документы и попробует найти локальные сметы.</p><button class="btn primary" type="button" id="runEmptyTender">Начать обработку</button></div>
+      <div class="empty-state"><strong>Позиций пока нет</strong><p>Начните с документов в блоке «Следующий шаг».</p><a class="btn ghost" href="#nextAction">К следующему шагу</a></div>
       {% endif %}
     </section>
 
@@ -1022,7 +1034,7 @@
       documentRefreshStatus.textContent = rebuild ? "Запускаю разбор сохранённых документов…" : "Запускаю загрузку документов…";
       documentRefreshStatus.focus();
       try {
-        const response = await fetch(rebuild ? "/api/rebuild-report" : "/api/tenders/" + encodeURIComponent(TENDER_ID) + "/refresh-documents", {
+        const response = await fetch(rebuild ? "/api/reports/rebuild" : "/api/tenders/" + encodeURIComponent(TENDER_ID) + "/refresh-documents", {
           method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(rebuild ? {tender_id:TENDER_ID} : {})
         });
         const data = await response.json();
@@ -1067,7 +1079,6 @@
 
     marketButton?.addEventListener("click", function() { postRun(marketButton.dataset.resetMarket === "1", 0); });
     marketSampleButton?.addEventListener("click", function() { postRun(false, 10); });
-    document.getElementById("runEmptyTender")?.addEventListener("click", function() { postRun(false, 0); });
     avitoSafeButton?.addEventListener("click", async function() {
       const keys = selectedAgentKeys();
       avitoAgentQueuePosting = true;
@@ -1122,7 +1133,7 @@
         const auditLink = document.getElementById("sourcePreviewAudit");
         if (auditLink) {
           auditLink.hidden = !button.dataset.sourceAudit;
-          auditLink.href = button.dataset.sourceAudit ? ("/market-audit?record=" + encodeURIComponent(button.dataset.sourceAudit)) : "#";
+          auditLink.href = button.dataset.sourceAudit ? ("/tenders/market-audit?record=" + encodeURIComponent(button.dataset.sourceAudit)) : "#";
         }
         sourceDrawer.hidden = false;
         window.requestAnimationFrame(function() { sourceDrawer.classList.add("is-open"); });
@@ -1143,7 +1154,7 @@
     }
 
     async function chooseCrmProject() {
-      const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+      const response = await fetch("/api/tenders/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
       const data = await response.json().catch(function() { return {}; });
       if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
       const projects = Array.isArray(data.projects) ? data.projects : [];

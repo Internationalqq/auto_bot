@@ -2212,7 +2212,7 @@ INDEX_TEMPLATE = """
       if (!confirm("Повторно извлечь смету для закупки " + tid + " из уже скачанных документов?\\n\\nРыночные цены обновляться не будут.")) return;
       applyToolbarDisabled(true, false);
       try {
-        const r = await fetch("/api/rebuild-report", {
+        const r = await fetch("/api/reports/rebuild", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tender_id: tid }),
@@ -2234,7 +2234,7 @@ INDEX_TEMPLATE = """
       if (!confirm("Повторно извлечь смету для закупки " + t + " из уже скачанных документов?\\n\\nРыночные цены обновляться не будут.")) return;
       applyToolbarDisabled(true, false);
       try {
-        const r = await fetch("/api/rebuild-report", {
+        const r = await fetch("/api/reports/rebuild", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tender_id: t }),
@@ -2258,7 +2258,7 @@ INDEX_TEMPLATE = """
       )) return;
       applyToolbarDisabled(true, false);
       try {
-        const r = await fetch("/api/rebuild-all-reports", { method: "POST" });
+        const r = await fetch("/api/reports/rebuild-all", { method: "POST" });
         const data = await r.json();
         if (!data.ok) {
           alert(data.message || "Не удалось запустить повторное извлечение смет");
@@ -4079,15 +4079,15 @@ TENDERS_STATUS_LABELS = {
     "extract_estimate": "Нужна смета",
     "find_market_prices": "Нужны цены",
     "build_comparison": "Нужно сравнение",
-    "review": "Готово",
+    "review": "Есть сравнение",
 }
 
 TENDERS_STATUS_DETAILS = {
     "download_documents": "Документы еще не скачаны.",
     "extract_estimate": "Документы есть, смета еще не извлечена.",
-    "find_market_prices": "Смета готова, рынок еще не собран.",
-    "build_comparison": "Цены есть, итоговая страница еще не готова.",
-    "review": "Сравнение готово к просмотру.",
+    "find_market_prices": "Есть файл сметы. Нужны подтверждённые цены.",
+    "build_comparison": "Есть результаты поиска. Соберите таблицу для проверки.",
+    "review": "Проверьте источники, полноту сметы и условия участия.",
 }
 
 TENDERS_STATUS_CLASS = {
@@ -4095,7 +4095,7 @@ TENDERS_STATUS_CLASS = {
     "extract_estimate": "status-attention",
     "find_market_prices": "status-work",
     "build_comparison": "status-work",
-    "review": "status-ready",
+    "review": "status-work",
 }
 
 TENDERS_STATUS_ORDER = {
@@ -4123,8 +4123,8 @@ TENDERS_RUN_TITLES = {
 }
 
 TENDERS_RUN_DETAILS = {
-    "download_documents": "Система скачает документы, извлечет смету и продолжит подготовку результата.",
-    "extract_estimate": "Система перечитает документы, извлечет смету и продолжит подготовку результата.",
+    "download_documents": "Загружаем комплект из ЕИС и извлекаем смету.",
+    "extract_estimate": "Разбираем сохранённые документы. Прежний отчёт сохранится при ошибке.",
     "find_market_prices": "Система найдет рыночные цены и соберет сравнение.",
     "build_comparison": "Система обновит итоговую таблицу и страницу результата.",
     "review": "Сравнение уже готово.",
@@ -4200,6 +4200,14 @@ def _tenders_items() -> tuple[list[dict], dict[str, int]]:
         item["main_button_label"] = TENDERS_MAIN_ACTION_LABELS.get(action, item.get("next_action_label") or "Продолжить")
         item["main_run_title"] = TENDERS_RUN_TITLES.get(action, "Продолжаем закупку")
         item["main_run_detail"] = TENDERS_RUN_DETAILS.get(action, "Система выполнит следующий недостающий шаг.")
+        if item.get("document_download_blocked"):
+            item["status_label"] = "Загрузка не завершена"
+            item["status_detail"] = "Повторите скачивание комплекта из ЕИС. Прежний отчёт сохранён."
+            item["main_button_label"] = "Повторить скачивание"
+        elif item.get("document_parse_blocked") and action == "extract_estimate":
+            item["status_label"] = "Разбор не завершён"
+            item["status_detail"] = "Повторите разбор сохранённых документов. Подробности — в карточке."
+            item["main_button_label"] = "Повторить разбор"
         item["can_export_crm"] = bool(item.get("has_estimate"))
     items.sort(
         key=lambda x: (
@@ -4249,7 +4257,7 @@ def _render_tenders_board():
         {"key": "extract_estimate", "label": "Сметы", "count": counts.get("extract_estimate", 0)},
         {"key": "find_market_prices", "label": "Цены", "count": counts.get("find_market_prices", 0)},
         {"key": "build_comparison", "label": "Сравнения", "count": counts.get("build_comparison", 0)},
-        {"key": "review", "label": "Готово", "count": counts.get("review", 0)},
+        {"key": "review", "label": "Есть сравнение", "count": counts.get("review", 0)},
     ]
 
     def _filter_counts(key: str, empty_label: str = "") -> list[dict]:
@@ -4383,7 +4391,7 @@ SIMPLE_INDEX_TEMPLATE = """
               {% if t.has_estimate %}
               <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one', '{{ t.tender_id }}', 'Запускаю поиск цен…')">Запустить поиск цен</button>
               <button class="btn secondary" type="button" onclick="runAction('/api/generate-merge-site-one-rerun-market', '{{ t.tender_id }}', 'Перезапускаю поиск…')">Перезапустить</button>
-              <button class="btn secondary" type="button" onclick="runAction('/api/rebuild-report', '{{ t.tender_id }}', 'Пересобираю карточку…')">Пересобрать карточку</button>
+              <button class="btn secondary" type="button" onclick="runAction('/api/reports/rebuild', '{{ t.tender_id }}', 'Пересобираю карточку…')">Пересобрать карточку</button>
               {% else %}
               <button class="btn secondary" type="button" disabled>Сначала нужна смета</button>
               {% endif %}
@@ -4560,6 +4568,7 @@ def tender_economics_source(tender_id: str):
     return response
 
 
+@app.route("/tenders/market-audit")
 @app.route("/market-audit")
 def market_audit_view():
     """Read-only viewer for immutable market evidence captured during verification."""
@@ -8182,155 +8191,7 @@ RESEARCH_TEMPLATE = """
     </section>
   </div>
 
-  <script>
-    function money(v) {
-      const num = Number(v || 0);
-      if (!Number.isFinite(num) || num <= 0) return "цена не указана";
-      return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(num) + " ₽";
-    }
-
-    function fillExample() {
-      const q = document.getElementById("researchQueries");
-      const c = document.getElementById("researchCity");
-      if (q) q.value = "Кабель ВВГнг 3х2,5 | м\nУкладка тротуарной плитки | м2";
-    }
-
-    function renderResearch(data) {
-      const root = document.getElementById("researchResults");
-      const status = document.getElementById("researchStatus");
-      if (!root || !status) return;
-      root.replaceChildren();
-      const items = Array.isArray(data.results) ? data.results : [];
-      status.textContent = data.message || (items.length ? "Готово." : "Ничего не найдено.");
-      if (!items.length) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "Нет результатов.";
-        root.appendChild(empty);
-        return;
-      }
-      for (const item of items) {
-        const card = document.createElement("div");
-        card.className = "result-card";
-        const h = document.createElement("h3");
-        h.textContent = String(item.query || "");
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        const prices = Array.isArray(item.offers) ? item.offers.filter(x => x.verified).map(x => Number(x.price || 0)).filter(x => Number.isFinite(x) && x > 0) : [];
-        const verifiedCount = Array.isArray(item.offers) ? item.offers.filter(x => x.verified).length : 0;
-        const candidateCount = Array.isArray(item.offers) ? item.offers.filter(x => !x.verified).length : 0;
-        const cityText = item.region ? (" · город: " + item.region) : "";
-        meta.textContent = (item.position_label ? item.position_label + (item.unit ? " · ед.: " + item.unit : "") + " · " : "") + "проверено: " + verifiedCount + " · кандидатов: " + candidateCount + cityText + (prices.length ? (" · диапазон: " + money(Math.min(...prices)) + " — " + money(Math.max(...prices))) : "");
-        card.appendChild(h);
-        card.appendChild(meta);
-        if (item.strategy || item.warning) {
-          const strategy = document.createElement("div");
-          strategy.className = "strategy-note";
-          strategy.textContent = [item.strategy, item.warning].filter(Boolean).join(" · ");
-          card.appendChild(strategy);
-        }
-        const offersWrap = document.createElement("div");
-        offersWrap.className = "offers";
-        const offers = Array.isArray(item.offers) ? item.offers : [];
-        if (!offers.length) {
-          const empty = document.createElement("div");
-          empty.className = "offer";
-          empty.textContent = item.errors || "Ничего не найдено.";
-          offersWrap.appendChild(empty);
-        } else {
-          for (const offer of offers) {
-            const box = document.createElement("div");
-            box.className = "offer " + (offer.verified ? "is-verified" : "is-candidate");
-            const top = document.createElement("div");
-            top.className = "offer-top";
-            const source = document.createElement("span");
-            source.className = "offer-source";
-            source.textContent = (offer.verified ? "✓ Проверен · " : "? Кандидат · ") + String(offer.source || "Источник");
-            const price = document.createElement("span");
-            price.className = "offer-price" + (offer.verified ? "" : " is-candidate");
-            price.textContent = offer.verified ? money(offer.price) : "не принято в расчёт";
-            top.appendChild(source);
-            top.appendChild(price);
-            const link = document.createElement("a");
-            link.href = String(offer.url || "#");
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            link.textContent = String(offer.title || offer.url || "Открыть источник");
-            box.appendChild(top);
-            box.appendChild(link);
-            if (offer.snippet) {
-              const sn = document.createElement("div");
-              sn.className = "offer-snippet";
-              sn.textContent = String(offer.snippet);
-              box.appendChild(sn);
-            }
-            const verification = document.createElement("div");
-            verification.className = "verification";
-            const adapter = offer.adapter ? (" · адаптер: " + offer.adapter) : "";
-            const unit = offer.matched_unit ? (" · единица: " + offer.matched_unit) : "";
-            verification.textContent = (offer.verified ? "Цена подтверждена" : "Источник отклонён") + " · " + String(offer.reason || "Нет доказательства на прямой странице") + adapter + unit;
-            box.appendChild(verification);
-            offersWrap.appendChild(box);
-          }
-        }
-        if (item.errors && offers.length) {
-          const warn = document.createElement("div");
-          warn.className = "meta";
-          warn.textContent = "Ограничения поиска: " + item.errors;
-          card.appendChild(warn);
-        }
-        card.appendChild(offersWrap);
-        root.appendChild(card);
-      }
-    }
-
-    async function runResearch() {
-      const btn = document.getElementById("researchRunBtn");
-      const status = document.getElementById("researchStatus");
-      const queries = document.getElementById("researchQueries");
-      const city = document.getElementById("researchCity");
-      if (!queries) return;
-      if (!String(queries.value || "").trim()) {
-        if (status) status.textContent = "Добавьте хотя бы одну позицию для поиска.";
-        queries.focus();
-        return;
-      }
-      if (btn) btn.disabled = true;
-      document.body.classList.add("research-is-running");
-      const buttonLabel = btn ? btn.querySelector("[data-research-button-label]") : null;
-      if (buttonLabel) buttonLabel.textContent = "Ищем предложения…";
-      if (status) status.textContent = "Ищу кандидатов и проверяю цены на прямых страницах…";
-      try {
-        const resp = await fetch("/api/research-items", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            queries: String(queries.value || ""),
-            city: city ? String(city.value || "").trim() : ""
-          })
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          if (status) status.textContent = data.message || "Не удалось выполнить поиск.";
-          return;
-        }
-        renderResearch(data);
-      } catch (e) {
-        if (status) status.textContent = "Не удалось выполнить поиск.";
-      } finally {
-        if (btn) btn.disabled = false;
-        document.body.classList.remove("research-is-running");
-        if (buttonLabel) buttonLabel.textContent = "Найти цены";
-      }
-    }
-
-    document.getElementById("researchQueries")?.addEventListener("keydown", function(event) {
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        runResearch();
-      }
-    });
-  </script>
+  <script src="/research/client.js?v=20260915-1"></script>
 </body>
 </html>
 """
@@ -8974,7 +8835,7 @@ ESTIMATE_DETAIL_TEMPLATE = """
           if (!estimateCrmLegacyAllowed) {
             throw new Error("Откройте AutoBot внутри PM.bi, чтобы выбрать доступный объект.");
           }
-          const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+          const response = await fetch("/api/tenders/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
           data = await response.json().catch(function() { return {}; });
           if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
         }
@@ -9594,6 +9455,12 @@ def research_page():
     )
 
 
+@app.get("/research/client.js")
+def research_client_script():
+    return app.send_static_file("research.js")
+
+
+@app.route("/research/items", methods=["POST"])
 @app.route("/api/research-items", methods=["POST"])
 def api_research_items():
     data = request.get_json(silent=True) or {}
@@ -11418,6 +11285,7 @@ def _start_document_job(tender_id, cli_args, task, success_code=200):
     return jsonify({'ok': True, 'tender_id': tender_id, 'run_id': run_id}), success_code
 
 
+@app.route("/api/reports/rebuild", methods=["POST"])
 @app.route("/api/rebuild-report", methods=["POST"])
 def api_rebuild_report():
     data = request.get_json(silent=True) or {}
@@ -11433,6 +11301,7 @@ def api_rebuild_report():
     return _start_document_job(tid, ['--from-downloaded-tender-id', tid], f'повторное извлечение сметы {tid}')
 
 
+@app.route("/api/reports/rebuild-all", methods=["POST"])
 @app.route("/api/rebuild-all-reports", methods=["POST"])
 def api_rebuild_all_reports():
     if _merge_site_busy():
@@ -11563,6 +11432,7 @@ def api_estimate_crm_import_payload(estimate_id: str):
     return response
 
 
+@app.route("/api/tenders/crm/projects")
 @app.route("/api/crm/projects")
 def api_crm_projects():
     try:
@@ -12479,6 +12349,7 @@ def api_workflow_overview():
     return jsonify(build_workflow_payload(include_storage=include_storage))
 
 
+@app.route("/api/tenders/storage-overview")
 @app.route("/api/storage-overview")
 def api_storage_overview():
     return jsonify({"storage": [item.to_dict() for item in build_storage_overview()]})

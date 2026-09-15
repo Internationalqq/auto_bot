@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,9 @@ class TenderWorkflowStatus:
     has_report_site: bool
     next_action: str
     next_action_label: str
-    is_ready: bool
+    is_ready: bool  # Compatibility: saved comparison files, not a decision about the tender.
+    document_download_blocked: bool = False
+    document_parse_blocked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -69,6 +72,8 @@ def _has_any_file(path: Path) -> bool:
             continue
         for child in children:
             try:
+                if child.is_symlink() or child.name.startswith(".") or child.name in {"download_log.json", "desktop.ini"}:
+                    continue
                 if child.is_file():
                     return True
                 if child.is_dir():
@@ -133,6 +138,17 @@ def build_tender_workflow_overview(
             has_report_site=has_report_site,
         )
 
+        download_blocked = parse_blocked = False
+        if re.fullmatch(r"\d{8,25}", tid):
+            from autobot.document_bundle import display_status as download_status
+            from autobot.estimate_publication import display_status as parse_status
+            download_blocked = download_status(reports_dir, tid)['blocked']
+            parse_blocked = parse_status(reports_dir, tid)['blocked']
+        if download_blocked:
+            next_action, next_action_label = "download_documents", "Повторить скачивание"
+        elif parse_blocked and has_downloads:
+            next_action, next_action_label = "extract_estimate", "Повторить разбор"
+
         items.append(
             TenderWorkflowStatus(
                 tender_id=tid,
@@ -150,6 +166,8 @@ def build_tender_workflow_overview(
                 next_action=next_action,
                 next_action_label=next_action_label,
                 is_ready=next_action == "review",
+                document_download_blocked=download_blocked,
+                document_parse_blocked=parse_blocked,
             )
         )
     return items

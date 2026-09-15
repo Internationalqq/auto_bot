@@ -67,10 +67,10 @@ button { color: inherit; }
 .dates b, .region b { display: block; font-size: 15px; }
 .region { margin-top: 0; }
 
-.action-panel { margin-top: 12px; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 12px; }
-.action-panel > div:first-child { display: grid; gap: 4px; }
-.action-panel small { color: var(--blue); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
-.action-panel strong { color: #1d3150; font-size: 19px; }.action-panel span { max-width: 680px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+.action-panel { margin-top: 12px; scroll-margin-top: 76px; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 12px; }
+.action-panel > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.action-panel small { color: var(--muted); font-size: 12px; font-weight: 550; }
+.action-panel strong { color: var(--ink); font-size: 17px; overflow-wrap: anywhere; }.action-panel span { max-width: 680px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 .market-health-alert { margin-top: 14px; padding: 16px 20px; display: grid; grid-template-columns: minmax(210px, .55fr) 1fr; gap: 18px; align-items: center; border: 1px solid #f0c7a7; border-radius: 12px; background: #fff8f2; color: #70401d; }
 .market-health-alert div { display: grid; gap: 3px; }.market-health-alert small { color: #a65d26; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }.market-health-alert strong { font-size: 15px; }.market-health-alert p { min-width: 0; overflow-wrap: anywhere; margin: 0; color: #80512f; font-size: 13px; line-height: 1.5; }
 .action-buttons { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
@@ -213,7 +213,7 @@ button.metric { color: inherit; cursor: pointer; font: inherit; }.metric:hover, 
 .agent-run-offers > div { margin-top: 8px; display: grid; gap: 5px; }.agent-run-offer { min-width: 0; padding: 8px 9px; display: grid; grid-template-columns: 125px minmax(0, 1fr) auto; align-items: center; gap: 10px; background: #f8fafc; border: 1px solid #e4eaf1; border-radius: 8px; }.agent-run-offer > div { display: grid; gap: 2px; }.agent-run-offer small { color: #718299; font-size: 8px; font-weight: 900; text-transform: uppercase; }.agent-run-offer.is-verified small { color: #087344; }.agent-run-offer.is-candidate small { color: #9a640e; }.agent-run-offer strong { color: #263d59; font-size: 11px; font-variant-numeric: tabular-nums; }.agent-run-offer > span { min-width: 0; overflow: hidden; color: #687990; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.agent-run-offer > a { color: #176dcc; font-size: 9px; font-weight: 800; text-decoration: none; white-space: nowrap; }
 .agent-run-journal { margin-top: 13px; padding-top: 11px; border-top: 1px solid #e5eaf1; }.agent-run-journal > summary { width: max-content; color: #64758c; cursor: pointer; font-size: 10px; font-weight: 800; list-style: none; }.agent-run-journal > summary::-webkit-details-marker { display: none; }.agent-run-journal > summary::before { content: "+"; margin-right: 6px; color: #176dcc; }.agent-run-journal[open] > summary::before { content: "−"; }.agent-run-journal > summary span { margin-left: 4px; color: #98a4b4; font-weight: 600; }.agent-run-journal > p { margin: 10px 0 7px; color: #78879b; font-size: 10px; }.avito-agent-jobs { margin-top: 7px; }
 
-.positions-card { margin-top: 18px; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.positions-card { scroll-margin-top: 76px; margin-top: 18px; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
 .positions-head { min-height: 78px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
 .positions-head h2 { margin: 0 0 4px; font-size: 20px; }.positions-head p { margin: 0; color: var(--muted); font-size: 12px; }
 .position-search { width: min(390px, 48%); display: flex; align-items: center; gap: 10px; padding: 0 13px; background: var(--soft); border: 1px solid #d8e0eb; border-radius: 9px; }
@@ -414,8 +414,14 @@ body.feature-modal-open { overflow: hidden; }
 }
 
 @media (max-width: 700px) {
-  .topbar { padding: 13px 16px; align-items: flex-start; flex-direction: column; gap: 10px; }.topnav { width: 100%; overflow-x: auto; }.topnav a { padding: 8px 10px; white-space: nowrap; }
-  .page { width: min(100% - 22px, 1500px); padding-top: 16px; }.eis-main, .eis-side { padding: 14px; }.eis-side { grid-template-columns: 1fr; }.dates { margin-top: 12px; }.number-line { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .topbar { padding: 10px 12px; align-items: center; gap: 8px; }
+  .brand-copy small { display: none; }.brand-copy strong { font-size: 13px; }.brand-back { width: 28px; height: 28px; }
+  .topnav { max-width: calc(100% - 90px); min-width: 0; overflow-x: auto; gap: 4px; }
+  .topnav a, .topnav a.topnav-primary { min-height: 36px; padding: 8px; white-space: nowrap; font-size: 11px; }
+  .page { width: min(100% - 22px, 1500px); padding-top: 14px; }.eis-main, .eis-side { padding: 14px; }
+  .eis-side { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .eis-side .publication-dates { grid-column: 1 / -1; order: 3; }
+  .number-line { align-items: center; gap: 8px; }.number-line a { font-size: 14px; }.number-line span { font-size: 11px; }
   .action-panel { padding: 18px; }.action-buttons { width: 100%; }.action-buttons > .btn { flex: 1; }.action-more { flex: 0 0 auto; }.action-more-menu { right: 0; }
   .tender-command-center { padding: 17px; }.tender-command-center > header { align-items: flex-start; flex-direction: column; gap: 10px; }.command-center-state { align-self: flex-start; }.command-tool-grid { grid-template-columns: 1fr; }.command-tool { min-height: 78px; }
   .estimate-check { padding: 18px; }.estimate-check > header, .estimate-check footer { align-items: flex-start; flex-direction: column; gap: 10px; }.estimate-check footer p { text-align: left; }

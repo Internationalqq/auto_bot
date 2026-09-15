@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-profiles-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-board-1" />
   <script defer src="{{ url_for('search_profiles_script') }}?v=20260915-2"></script>
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендеры</title>
@@ -36,15 +36,9 @@
   <main class="page">
     <section class="workspace-head">
       <div>
-        <div class="eyebrow"><span aria-hidden="true"></span> Пульт закупок</div>
         <h1>Тендеры <em>{{ overview.total }}</em></h1>
-        <p class="workspace-sub">AutoBot показывает следующий шаг по каждой закупке и сам собирает недостающие данные.</p>
       </div>
       <div class="head-actions">
-        <button class="btn secondary" type="button" data-global-action="choose-market" {% if overview.total < 1 %}disabled{% endif %}>
-          <span class="btn-icon btn-icon-chart" aria-hidden="true"></span>
-          Проанализировать рынок
-        </button>
         <button class="btn ghost" type="button" data-global-action="resume-search" id="resumeSearchButton" hidden>Продолжить скачивание документов</button>
         <button class="btn primary" type="button" data-global-action="start-search">
           <span class="btn-icon btn-icon-search" aria-hidden="true"></span>
@@ -55,15 +49,9 @@
 
     <p id="lastSearchSummary" class="muted" role="status" hidden></p>
 
-    <section class="tender-scan-card" aria-labelledby="tenderScanTitle">
-      <div class="tender-scan-copy">
-        <span class="tender-scan-mark" aria-hidden="true"><i></i></span>
-        <div>
-          <div class="eyebrow">Точечная проверка</div>
-          <h2 id="tenderScanTitle">Сканировать конкретный тендер</h2>
-          <p>Вставьте ссылку из ЕИС или номер закупки — AutoBot скачает документы, найдёт смету и подготовит результат.</p>
-        </div>
-      </div>
+    <details class="tender-scan-card">
+      <summary>Добавить по ссылке или номеру</summary>
+      <p class="tender-scan-description">Скачаем документы из ЕИС и попробуем извлечь смету.</p>
       <form class="tender-scan-form" id="tenderScanForm" novalidate>
         <label class="tender-scan-input">
           <span class="search-icon" aria-hidden="true"></span>
@@ -79,14 +67,14 @@
         </label>
         <button class="btn primary tender-scan-button" type="submit" data-scan-tender>
           <span class="btn-icon btn-icon-scan" aria-hidden="true"></span>
-          Запустить сканирование
+          Добавить тендер
         </button>
       </form>
       <div class="tender-scan-foot">
         <span id="tenderScanHint">Подойдёт ссылка ЕИС или номер: <b>11 цифр для 223-ФЗ</b>, <b>19 цифр для 44-ФЗ</b>.</span>
         <span class="tender-scan-status" id="tenderScanStatus" aria-live="polite"></span>
       </div>
-    </section>
+    </details>
 
     <section class="live-panel is-idle" id="livePanel" aria-live="polite">
       <div class="live-main">
@@ -110,38 +98,36 @@
 
     <section class="summary-grid" aria-label="Сводка">
       <a class="metric{% if selected_action == 'all' %} is-selected{% endif %}" href="/tenders">
-        <span class="metric-icon metric-icon-all" aria-hidden="true"></span>
         <span class="metric-copy"><small>Все закупки</small><strong>{{ overview.total }}</strong></span>
       </a>
       <a class="metric metric-work{% if selected_action == 'needs_work' %} is-selected{% endif %}" href="/tenders?action=needs_work">
-        <span class="metric-icon metric-icon-work" aria-hidden="true"></span>
         <span class="metric-copy"><small>Требуют действий</small><strong>{{ overview.needs_work }}</strong></span>
       </a>
       <a class="metric metric-prices{% if selected_action == 'find_market_prices' %} is-selected{% endif %}" href="/tenders?action=find_market_prices">
-        <span class="metric-icon metric-icon-prices" aria-hidden="true"></span>
         <span class="metric-copy"><small>Нужны цены</small><strong>{{ overview.needs_prices }}</strong></span>
       </a>
       <a class="metric metric-ready{% if selected_action == 'review' %} is-selected{% endif %}" href="/tenders?action=review">
-        <span class="metric-icon metric-icon-ready" aria-hidden="true"></span>
-        <span class="metric-copy"><small>Готовы к решению</small><strong>{{ overview.ready }}</strong></span>
+        <span class="metric-copy"><small>Есть сравнение</small><strong>{{ overview.ready }}</strong></span>
       </a>
     </section>
 
     <section class="tender-tools" aria-label="Поиск и фильтры">
       <label class="tender-search">
         <span class="search-icon" aria-hidden="true"></span>
-        <input type="search" id="tenderSearch" placeholder="Объект, заказчик, номер или регион" autocomplete="off" />
+        <input type="search" id="tenderSearch" aria-label="Поиск в каталоге" placeholder="Объект, заказчик, номер или регион" autocomplete="off" />
         <kbd>Ctrl K</kbd>
       </label>
-      <label class="exact-search-toggle"><input type="checkbox" id="exactTenderSearch" /> Искать точно, как в запросе</label>
     </section>
 
     <div class="eis-results-head">
       <div>
-        <h2>Результаты</h2>
         <span><strong id="visibleTenderCount">{{ items|length }}</strong> закупок</span>
       </div>
-      <label class="tender-sort">Сортировать по:
+      <button class="btn secondary" type="button" data-global-action="choose-market" {% if overview.total < 1 %}disabled{% endif %}>
+          <span class="btn-icon btn-icon-chart" aria-hidden="true"></span>
+          Цены для выбранных
+        </button>
+      <label class="tender-sort">Порядок:
         <select id="tenderSort">
           <option value="workflow">Следующему действию</option>
           <option value="updated-desc">Дате обновления</option>
@@ -166,10 +152,6 @@
 
     <div class="tender-results-layout">
       <div class="tender-results-main">
-        <div class="list-summary">
-          <span>Карточка ЕИС и следующий шаг AutoBot в одном месте</span>
-        </div>
-
         <section class="tender-list" id="tenderList" aria-label="Список тендеров">
       {% if items %}
         {% for t in items %}
@@ -205,22 +187,21 @@
               </div>
 
               <div class="eis-field eis-object">
-                <span>Объект закупки</span>
                 {% if t.object_name %}
                 <a class="card-title-link" href="{{ t.result_url }}"><h2>{{ t.object_name }}</h2></a>
                 {% else %}
-                <p class="eis-empty">Данные появятся после следующего сканирования ЕИС</p>
+                <a class="card-title-link" href="{{ t.result_url }}"><h2>{{ t.title }}</h2></a>
                 {% endif %}
               </div>
 
-              <div class="eis-field eis-customer">
-                <span>Заказчик</span>
+              <details class="eis-field eis-customer">
+                <summary>Заказчик</summary>
                 {% if t.customer_name %}
                 <strong>{{ t.customer_name }}</strong>
                 {% else %}
                 <p class="eis-empty">Заказчик пока не получен из ЕИС</p>
                 {% endif %}
-              </div>
+              </details>
             </div>
 
             <aside class="eis-card-side">
@@ -228,25 +209,15 @@
                 <span>Начальная цена</span>
                 <strong>{{ t.price_fmt }}</strong>
               </div>
-              <div class="eis-dates">
+              <details class="eis-publication"><summary>Даты публикации</summary><div class="eis-dates">
                 <span><small>Размещено</small><strong>{{ t.publish_date or "—" }}</strong></span>
                 <span><small>Обновлено</small><strong>{{ t.updated_date or "—" }}</strong></span>
-              </div>
+              </div></details>
               <div class="eis-region"><small>Регион</small><strong>{{ t.region or "Без региона" }}</strong></div>
             </aside>
           </div>
 
           <div class="autobot-workflow">
-            <div class="workflow-progress">
-              <div class="workflow-caption">Готовность AutoBot</div>
-              <div class="step-strip" aria-label="Готовность">
-                <span class="{% if t.has_downloads %}is-done{% endif %}"><i aria-hidden="true"></i>Документы</span>
-                <span class="{% if t.has_estimate %}is-done{% endif %}"><i aria-hidden="true"></i>Смета</span>
-                <span class="{% if t.has_market_sources %}is-done{% endif %}"><i aria-hidden="true"></i>Цены</span>
-                <span class="{% if t.has_comparison or t.has_report_site %}is-done{% endif %}"><i aria-hidden="true"></i>Сравнение</span>
-              </div>
-            </div>
-
             <div class="next-box">
               <span><small>Следующий шаг</small><strong>{{ t.status_detail }}</strong></span>
               <div class="row-actions">
@@ -256,7 +227,7 @@
                 <button
                   class="btn primary"
                   type="button"
-                  data-tender-action="continue"
+                  data-tender-action="{{ 'download' if t.next_action == 'download_documents' else 'rebuild' if t.next_action == 'extract_estimate' else 'continue' }}"
                   data-tender-id="{{ t.tender_id }}"
                   data-run-title="{{ t.main_run_title }}"
                   data-run-detail="{{ t.main_run_detail }}"
@@ -283,6 +254,15 @@
                 </details>
               </div>
             </div>
+            <details class="workflow-progress">
+              <summary>Файлы обработки</summary>
+              <div class="step-strip" aria-label="Сохранённые файлы; наличие файла не подтверждает качество данных">
+                <span class="{% if t.has_downloads %}is-done{% endif %}"><i aria-hidden="true"></i>Документы</span>
+                <span class="{% if t.has_estimate %}is-done{% endif %}"><i aria-hidden="true"></i>Смета</span>
+                <span class="{% if t.has_market_sources %}is-done{% endif %}"><i aria-hidden="true"></i>Цены</span>
+                <span class="{% if t.has_comparison or t.has_report_site %}is-done{% endif %}"><i aria-hidden="true"></i>Сравнение</span>
+              </div>
+            </details>
           </div>
         </article>
         {% endfor %}
@@ -295,19 +275,20 @@
       <div class="empty-state search-empty" id="searchEmpty" hidden>
         <span class="empty-icon" aria-hidden="true"></span>
         <h2>Ничего не найдено</h2>
-        <p>Попробуйте изменить запрос или очистить поиск.</p>
+        <p>Тендеры не испарились — попробуйте изменить запрос или фильтры.</p>
         <button class="btn secondary" type="button" id="clearTenderSearch">Очистить поиск</button>
       </div>
         </section>
       </div>
 
-      <aside class="tender-filter-panel" aria-label="Параметры поиска">
+      <aside class="tender-filter-panel" aria-label="Фильтры каталога">
         <button class="filter-panel-toggle" type="button" id="toggleTenderFilters" aria-expanded="true" aria-controls="tenderFilterBody">
-          <span>Параметры поиска</span><i aria-hidden="true"></i>
+          <span>Фильтры каталога</span><i aria-hidden="true"></i>
         </button>
         <div class="tender-filter-body" id="tenderFilterBody">
+    <label class="exact-search-toggle"><input type="checkbox" id="exactTenderSearch" /> Искать точно, как в запросе</label>
           <section class="filter-block">
-            <h3>Готовность AutoBot</h3>
+            <h3>Следующий шаг</h3>
             <div class="filters workflow-filter-links" aria-label="Фильтр по следующему шагу">
               {% for f in filters %}
               <a class="filter-chip{% if selected_action == f.key %} is-active{% endif %}" href="/tenders{% if f.key != 'all' %}?action={{ f.key }}{% endif %}">
@@ -927,7 +908,7 @@
     }
 
     async function chooseCrmProject() {
-      const response = await fetch("/api/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
+      const response = await fetch("/api/tenders/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
       const data = await response.json().catch(function() { return {}; });
       if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
       const projects = Array.isArray(data.projects) ? data.projects : [];
@@ -951,9 +932,10 @@
     async function runTenderAction(kind, tenderId, runTitle, runDetail) {
       if (!tenderId || actionLocked) return;
       const map = {
+        "download": ["/api/tenders/" + encodeURIComponent(tenderId) + "/refresh-documents", "Скачиваем документы", {}],
         "continue": ["/api/generate-merge-site-one", runTitle || "Продолжаем тендер", { tender_id: tenderId }],
         "rerun-market": ["/api/generate-merge-site-one-rerun-market", "Ищем цены заново", { tender_id: tenderId }],
-        "rebuild": ["/api/rebuild-report", "Перечитываем смету", { tender_id: tenderId }],
+        "rebuild": ["/api/reports/rebuild", "Перечитываем смету", { tender_id: tenderId }],
         "crm": ["/api/export-to-crm", "Отправляем в CRM", { tender_id: tenderId }]
       };
       const spec = map[kind];
@@ -1242,7 +1224,7 @@
       this.disabled = true;
       this.textContent = "Считаю...";
       try {
-        const resp = await fetch("/api/storage-overview", { cache: "no-store" });
+        const resp = await fetch("/api/tenders/storage-overview", { cache: "no-store" });
         const data = await resp.json();
         grid.innerHTML = (data.storage || []).map(function(item) {
           return '<div class="storage-item"><span>' + item.name + '</span><strong>' + item.mb + ' МБ</strong><small>' + item.files + ' файлов</small></div>';
