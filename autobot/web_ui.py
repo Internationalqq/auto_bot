@@ -162,6 +162,56 @@ def reject_cross_site_mutation():
     return None
 
 
+@app.before_request
+def protect_report_publication():
+    from flask import g
+    from autobot.estimate_publication_recovery import consistent_report, PublicationRecoveryRequired
+    consumers = {'tender_detail_page', 'tender_economics_source',
+                 'tender_estimate_download_xlsx', 'tender_market_sources_download_xlsx',
+                 'tender_svodka_download_xlsx', 'merge_report_site'}
+    tid = None
+    if request.endpoint in consumers or (request.endpoint == 'api_tender_agent_market_jobs' and request.method == 'POST'):
+        tid = (request.view_args or {}).get('tender_id')
+    elif request.endpoint == 'api_export_to_crm':
+        payload = request.get_json(silent=True)
+        tid = payload.get('tender_id') if isinstance(payload, dict) else None
+    elif request.endpoint == 'report_file':
+        filename = (request.view_args or {}).get('filename', '')
+        if any(part.startswith('.') or part == 'previous' for part in Path(filename).parts) or filename.startswith('PUBLICATION_'):
+            abort(404)
+        match = re.search(r'_([0-9]{8,25})\.(?:xlsx|html|json)$', filename)
+        tid = match[1] if match else None
+    if not isinstance(tid, str) or not re.fullmatch(r'[0-9]{8,25}', tid):
+        return None
+    context = consistent_report(REPORTS_DIR, tid)
+    try:
+        context.__enter__()
+    except (PublicationRecoveryRequired, OSError, TimeoutError) as error:
+        busy = isinstance(error, TimeoutError)
+        message = ('Отчёт сейчас сохраняется. Обновите страницу через несколько секунд.' if busy
+                   else str(error) if isinstance(error, PublicationRecoveryRequired)
+                   else 'Не удалось проверить сохранность отчёта. Исходные файлы доступны ниже.')
+        if request.path.startswith('/api/'):
+            response = jsonify({'ok': False, 'error': 'report_busy' if busy else 'publication_recovery_required', 'message': message})
+        else:
+            response = make_response(render_template('publication_unavailable.html', tender_id=tid,
+                busy=busy, message=message, documents=list_tender_source_files(tid)))
+        response.status_code = 503 if busy else 409
+        response.headers['Cache-Control'] = 'no-store'
+        if busy:
+            response.headers['Retry-After'] = '2'
+        return response
+    g.report_publication_context = context
+
+
+@app.teardown_request
+def release_report_publication(error):
+    from flask import g
+    context = g.pop('report_publication_context', None)
+    if context is not None:
+        context.__exit__(None, None, None)
+
+
 def _request_accepts_gzip() -> bool:
     qualities: dict[str, float] = {}
     for item in str(request.headers.get("Accept-Encoding") or "").split(","):
@@ -12644,6 +12694,8 @@ if __name__ == "__main__":
     # REPORT_SITE_PUBLIC_BASE_URL=http://<IP_ПК>:8765
     _host = (os.environ.get("WEB_UI_HOST") or "127.0.0.1").strip() or "127.0.0.1"
     _port = int((os.environ.get("WEB_UI_PORT") or "8765").strip() or "8765")
+    from autobot.estimate_publication_recovery import recover_pending_publications
+    recover_pending_publications(REPORTS_DIR)
     from autobot.agent_market_delivery import start_delivery_recovery
     start_delivery_recovery()
     from autobot.market_web_worker import start_web_worker

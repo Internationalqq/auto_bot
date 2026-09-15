@@ -1032,6 +1032,12 @@ def append_market_web_event(
         pass
 
 
+def _estimate_bytes(tender_id):
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(REPORTS_DIR, tender_id):
+        return estimate_path_for_tender(tender_id).read_bytes()
+
+
 def estimate_path_for_tender(tender_id: str) -> Path:
     return REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
 
@@ -3337,7 +3343,8 @@ def probe_agent_market_start_urls(
     estimate_path = estimate_path_for_tender(tid)
     if not estimate_path.is_file():
         return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Нет сметы для проверки прямых источников"}
-    estimate = pd.read_excel(estimate_path)
+    import io
+    estimate = pd.read_excel(io.BytesIO(_estimate_bytes(tid)))
     try:
         source_row = _resolve_agent_source_row(estimate, position_payload)
     except ValueError as error:
@@ -3419,7 +3426,7 @@ def _agent_import_context(tender_id, position_payload):
         raise FileNotFoundError(f"Нет {estimate_path.name}")
     import hashlib
     import io
-    captured = estimate_path.read_bytes()
+    captured = _estimate_bytes(tid)
     estimate = pd.read_excel(io.BytesIO(captured))
     if COL_NAME not in estimate.columns:
         raise ValueError(f"В смете нет колонки {COL_NAME!r}")
@@ -3695,7 +3702,8 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
 def publish_agent_market_result(tender_id, position_payload, prepared):
     """Publish verified evidence with no network and one read/merge/write lock."""
     from autobot.atomic_output import output_lock
-    with output_lock(output_path_for_tender(str(tender_id))):
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(REPORTS_DIR, str(tender_id)), output_lock(output_path_for_tender(str(tender_id))):
         return _publish_prepared_agent_result(tender_id, position_payload, prepared)
 
 
@@ -3730,7 +3738,7 @@ def run_tender(
     out_path = output_path_for_estimate(est_path)
     import hashlib
     import io
-    captured_estimate = est_path.read_bytes()
+    captured_estimate = _estimate_bytes(tid)
     estimate_digest = hashlib.sha256(captured_estimate).hexdigest()
     est = pd.read_excel(io.BytesIO(captured_estimate))
     if COL_NAME not in est.columns:
@@ -3840,7 +3848,8 @@ def run_tender(
                     max_results=min(10, max_results + len(previous_non_avito)),
                 )
             from autobot.atomic_output import output_lock
-            with output_lock(out_path):
+            from autobot.estimate_publication_recovery import consistent_report
+            with consistent_report(REPORTS_DIR, tid), output_lock(out_path):
                 # A simultaneous selected-position search may have published
                 # this same row. Merge observations by date before saving.
                 from autobot.market_evidence_policy import region_key

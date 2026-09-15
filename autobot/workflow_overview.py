@@ -124,6 +124,13 @@ def build_tender_workflow_overview(
         if not tid:
             continue
 
+        download_blocked = parse_blocked = False
+        if re.fullmatch(r"\d{8,25}", tid):
+            from autobot.document_bundle import display_status as download_status
+            from autobot.estimate_publication import display_status as parse_status
+            download_blocked = download_status(reports_dir, tid)['blocked']
+            parse_blocked = parse_status(reports_dir, tid)['blocked']
+
         has_downloads = _has_any_file(data_dir / "downloads" / tid)
         has_estimate = _file_exists(reports_dir, f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx")
         has_estimate_html = _file_exists(reports_dir, f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.html")
@@ -138,12 +145,6 @@ def build_tender_workflow_overview(
             has_report_site=has_report_site,
         )
 
-        download_blocked = parse_blocked = False
-        if re.fullmatch(r"\d{8,25}", tid):
-            from autobot.document_bundle import display_status as download_status
-            from autobot.estimate_publication import display_status as parse_status
-            download_blocked = download_status(reports_dir, tid)['blocked']
-            parse_blocked = parse_status(reports_dir, tid)['blocked']
         if download_blocked:
             next_action, next_action_label = "download_documents", "Повторить скачивание"
         elif parse_blocked and has_downloads:

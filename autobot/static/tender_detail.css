@@ -46,6 +46,11 @@ button { color: inherit; }
 .topnav a:focus-visible { outline:3px solid rgba(20,116,232,.22); outline-offset:2px; }
 
 .page { width: min(1500px, calc(100% - 40px)); margin: 0 auto; padding: 16px 0 48px; }
+.publication-unavailable { max-width: 960px; }
+.publication-unavailable .market-health-alert { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; }
+.publication-unavailable h1 { margin: 0; font-size: 23px; overflow-wrap: anywhere; }
+.publication-unavailable .market-health-alert .btn { justify-self: start; }
+.publication-unavailable .source-file-name strong { overflow-wrap: anywhere; }
 .breadcrumbs { display: flex; align-items: center; gap: 9px; margin: 0 0 17px; color: var(--muted); font-size: 13px; }
 .breadcrumbs a { color: var(--blue); text-decoration: none; }.breadcrumbs b { color: #465673; }
 

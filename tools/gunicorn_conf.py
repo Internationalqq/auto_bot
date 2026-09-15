@@ -36,6 +36,9 @@ preload_app = False
 
 
 def post_worker_init(worker):
+    from autobot.estimate_publication_recovery import recover_pending_publications
+    from autobot.report_prompt import REPORTS_DIR
+    recover_pending_publications(REPORTS_DIR)
     from autobot.agent_market_delivery import start_delivery_recovery
     start_delivery_recovery()
     from autobot.market_web_worker import start_web_worker

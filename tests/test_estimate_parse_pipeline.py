@@ -139,6 +139,10 @@ def test_restore_failure_keeps_private_recovery_copies(tmp_path, monkeypatch):
     paths, source, tender = setup(tmp_path)
     publication.parse_and_publish(tender, [source], [], [source], paths)
     before = saved_reports(paths)
+    # Make the new HTML different so recovery really has a file to restore.
+    cells = pd.read_excel(source, header=None)
+    cells.iloc[1, 2] = 'Демонтаж облицовки дверных откосов'
+    cells.to_excel(source, index=False, header=False)
     original = publication.os.replace
     def fail(origin, destination):
         origin, destination = Path(origin), Path(destination)
@@ -152,6 +156,11 @@ def test_restore_failure_keeps_private_recovery_copies(tmp_path, monkeypatch):
     assert len(recovery) == 1
     assert all((recovery[0] / 'previous' / name).read_bytes() == data for name, data in before.items())
     assert publication.display_status(paths['reports'], TID)['blocked']
+    monkeypatch.setattr(publication.os, 'replace', original)
+    assert len(publication.parse_and_publish(tender, [source], [], [source], paths)[2]) == 2
+    assert publication.read_status(paths['reports'], TID)['state'] == 'complete'
+    assert not list(paths['reports'].glob('PUBLICATION_*.json'))
+    assert not list(paths['reports'].glob('.autobot-parse-*'))
 
 
 def test_parent_deadline_cleans_child_and_next_parse_succeeds(tmp_path):

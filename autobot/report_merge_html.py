@@ -2049,6 +2049,14 @@ def _render_html_typed(
 
 
 def write_tender_report_site(tender_id: str) -> Path | None:
+    if not tender_id:
+        return None
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(REPORTS_DIR, tender_id):
+        return _consistent_write_tender_report_site(tender_id)
+
+
+def _consistent_write_tender_report_site(tender_id: str) -> Path | None:
     tid = (tender_id or "").strip()
     if not tid:
         return None

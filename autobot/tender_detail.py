@@ -311,6 +311,12 @@ def _primary_action(*, has_downloads, download_blocked, parse_blocked, archive_f
 
 
 def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(REPORTS_DIR, tender_id):
+        return _consistent_build_tender_detail(tender_id, metadata, workflow)
+
+
+def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
     market_path = _market_path(tender_id)
     comparison_path = REPORTS_DIR / f"{OUT_PREFIX}{tender_id}.xlsx"

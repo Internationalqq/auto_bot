@@ -62,6 +62,14 @@ def _market_or_market_path(stem: str) -> Path:
 
 
 def refresh_svodka_if_market_newer(tender_id: str) -> Path | None:
+    if not tender_id:
+        return None
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(REPORTS_DIR, tender_id):
+        return _consistent_refresh_svodka_if_market_newer(tender_id)
+
+
+def _consistent_refresh_svodka_if_market_newer(tender_id: str) -> Path | None:
     """
     Если ОТЧЕТ_ПО_СМЕТАМ обновлён позже СВОДКА_РЫНОК — пересобрать сводку.
     Иначе веб продолжает показывать старые кол-ва/цены из старого merge.
@@ -127,6 +135,14 @@ def _agg_text(series: pd.Series) -> str:
 
 
 def merge_estimate_and_market(tender_id: str) -> Path | None:
+    if not tender_id:
+        return None
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(REPORTS_DIR, tender_id):
+        return _consistent_merge_estimate_and_market(tender_id)
+
+
+def _consistent_merge_estimate_and_market(tender_id: str) -> Path | None:
     from autobot.market_contract import merge_market_frames
     from autobot.atomic_output import write_excel
 

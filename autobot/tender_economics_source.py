@@ -42,6 +42,12 @@ def fingerprints(reports: Path, tender_id: str) -> dict:
 
 
 def build_source(tender_id, metadata, reports, build_detail):
+    from autobot.estimate_publication_recovery import consistent_report
+    with consistent_report(reports, tender_id):
+        return _consistent_build_source(tender_id, metadata, reports, build_detail)
+
+
+def _consistent_build_source(tender_id, metadata, reports, build_detail):
     before = fingerprints(reports, tender_id)
     detail = build_detail(tender_id, metadata, {})
     if before != fingerprints(reports, tender_id):

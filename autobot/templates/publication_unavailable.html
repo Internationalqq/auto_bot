@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Отчёт требует проверки · AutoBot</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-recovery-1">
+  <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/tenders">← AutoBot · Тендеры</a></header>
+  <main class="page publication-unavailable">
+    <nav class="breadcrumbs" aria-label="Навигация"><a href="/tenders">Тендеры</a><span>›</span><b>№ {{ tender_id }}</b></nav>
+    <section class="market-health-alert" role="alert">
+      <h1>{{ 'Сохраняем отчёт' if busy else 'Отчёт требует проверки' }}</h1>
+      <p>{{ message }}</p>
+      {% if not busy %}<p>Сравнение цен и расчёт прибыли приостановлены. Документы и резервные копии сохранены. Причину остановки нужно устранить перед новым разбором.</p>{% endif %}
+      <a class="btn primary" href="/tenders/{{ tender_id }}">Обновить карточку</a>
+    </section>
+    <section class="source-files-panel" aria-labelledby="originalsTitle">
+      <header class="source-files-heading"><h2 id="originalsTitle">Исходные документы</h2></header>
+      <div class="source-file-list">
+        {% for file in documents.files %}
+        <article class="source-file-row">
+          <span class="file-ext kind-{{ file.kind }}" aria-hidden="true">{{ file.extension }}</span>
+          <div class="source-file-name"><strong>{{ file.name }}</strong><span>{{ file.type_label }} · {{ file.size_fmt }}</span></div>
+          <div class="source-file-actions"><a class="btn ghost" href="/tenders/{{ tender_id }}/source-files/{{ file.token }}/download">Скачать оригинал</a></div>
+        </article>
+        {% else %}<p>Загруженных исходных документов пока нет.</p>{% endfor %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>
