@@ -345,8 +345,8 @@ body.autobot-page {
 
 /* Estimates catalogue */
 .estimates-index-page .hero-grid {
-  grid-template-columns: minmax(0, 1.25fr) minmax(370px, .75fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   margin-bottom: 12px;
 }
 
@@ -363,12 +363,13 @@ body.autobot-page {
 
 .estimates-index-page .hero-card {
   display: grid;
-  align-content: center;
-  min-height: 178px;
-  padding: 26px;
-  background:
-    radial-gradient(circle at 92% 12%, rgba(37, 99, 235, .11), transparent 28%),
-    linear-gradient(145deg, #fff, #f4f8ff);
+  align-content: start;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
 .estimates-index-page .hero-card::after {
@@ -379,9 +380,9 @@ body.autobot-page {
   max-width: 680px;
   margin: 7px 0 0;
   color: var(--ab-ink);
-  font-size: clamp(30px, 4vw, 43px);
-  line-height: 1.03;
-  letter-spacing: -.045em;
+  font-size: clamp(25px, 3vw, 30px);
+  line-height: 1.15;
+  letter-spacing: -.02em;
 }
 
 .estimates-index-page .hero-text {
@@ -395,6 +396,15 @@ body.autobot-page {
 .estimates-index-page .upload-card {
   gap: 12px;
   padding: 18px;
+}
+
+.estimates-index-page .upload-row {
+  grid-template-columns: minmax(180px, .8fr) minmax(250px, 1.4fr) auto;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .estimates-index-page .upload-row { grid-template-columns: minmax(0, 1fr); }
 }
 
 .estimates-index-page .panel-title {
@@ -936,13 +946,8 @@ body.autobot-page {
 }
 
 @media (max-width: 980px) {
-  .estimates-index-page .hero-grid,
   .research-page .form-grid {
     grid-template-columns: 1fr;
-  }
-
-  .estimates-index-page .hero-card {
-    min-height: 148px;
   }
 }
 
@@ -984,11 +989,6 @@ body.autobot-page {
 
   .autobot-page .tab {
     flex: 1 0 auto;
-  }
-
-  .estimates-index-page .hero-card {
-    min-height: 0;
-    padding: 18px;
   }
 
   .estimates-index-page .panel-head {

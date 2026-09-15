@@ -6021,6 +6021,8 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
                         or src_path.resolve().parent != (USER_ESTIMATES_DIR / estimate_id).resolve()
                         or not src_path.is_file()):
                     raise RuntimeError("Исходный файл сметы недоступен после перезапуска.")
+                if job.get('source_sha256') and snapshot([src_path])[0]['sha256'] != job['source_sha256']:
+                    raise RuntimeError("Принятый исходник изменился. Загрузите новую версию отдельным файлом.")
                 saved = uploaded_estimates.meta(USER_ESTIMATES_DIR, estimate_id)
                 if saved is not None:
                     if snapshot([src_path])[0]['sha256'] != saved['source_sha256']:
@@ -7299,10 +7301,13 @@ ESTIMATES_TEMPLATE_V2 = """
     .upload-progress.is-running .upload-progress-fill { background-size:200% 100%; animation:upload-progress-live 1.4s linear infinite; }
     @keyframes upload-progress-live { from { background-position:100% 0; } to { background-position:-100% 0; } }
     .upload-progress-detail { margin-top:5px; color:#7389a9; font-size:12px; line-height:1.45; }
-    .upload-progress-steps { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
-    .upload-step { border:1px solid #cfd9e8; background:#f4f8fd; color:#6d7f96; border-radius:999px; padding:4px 9px; font-size:11px; }
-    .upload-step.is-active { color:#fff; border-color:#2e80e8; background:#2e80e8; }
-    .upload-step.is-done { color:#257347; border-color:#bfe5cc; background:#e9f8ef; }
+    .upload-title-field { display:grid; gap:5px; color:var(--ab-ink-soft); font-size:12px; }
+    .upload-title-field input { box-sizing:border-box; width:100%; }
+    .upload-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .upload-log-details { margin-top:10px; font-size:12px; color:var(--ab-muted); }
+    .upload-log-details summary { cursor:pointer; }
+    .estimates-index-page .upload-card [hidden] { display:none; }
+    .file-picker:has(input:disabled) label { opacity:.55; cursor:wait; }
     .upload-progress-error { margin-top:10px; color:#b04e4e; font-size:12px; white-space:pre-wrap; }
     .upload-progress-logs { margin-top:10px; border-radius:10px; border:1px solid #dfe7f1; background:#f8fbff; padding:9px; max-height:180px; overflow:auto; font-size:11px; color:#576a84; line-height:1.45; white-space:pre-wrap; }
     .empty {
@@ -7462,7 +7467,7 @@ ESTIMATES_TEMPLATE_V2 = """
       .bundle-modal-actions .btn { width: 100%; }
     }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260915-upload-1" />
 </head>
 <body class="autobot-page estimates-index-page">
   <header class="topbar autobot-section-bar">
@@ -7490,7 +7495,7 @@ ESTIMATES_TEMPLATE_V2 = """
         </div>
         <form id="estimateUploadForm" class="upload-row">
           <div class="file-picker">
-            <input class="file-input-native" id="estimateUploadFile" type="file" name="file" accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" required />
+            <input class="file-input-native" id="estimateUploadFile" type="file" name="file" accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" />
             <label class="file-picker-btn" for="estimateUploadFile">
               <svg class="icon-clip" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M21.44 11.05l-8.49 8.49a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"></path>
@@ -7499,10 +7504,10 @@ ESTIMATES_TEMPLATE_V2 = """
             </label>
             <span class="file-picker-name" id="estimateUploadFileName" hidden></span>
           </div>
-          <input type="text" name="title" placeholder="Название сметы, если нужно переименовать карточку" />
-          <button class="btn" type="submit">Загрузить и распарсить</button>
+          <label class="upload-title-field" for="estimateUploadTitle"><span>Название сметы <span class="muted">· необязательно</span></span><input id="estimateUploadTitle" type="text" name="title" maxlength="160" placeholder="По умолчанию — имя файла" /></label>
+          <button class="btn" id="estimateUploadSubmit" type="submit">Разобрать смету</button>
         </form>
-        <div id="uploadStatus" class="muted"></div>
+        <div id="uploadStatus" class="muted" role="status" aria-live="polite"></div>
         <div id="estimateUploadProgress" class="upload-progress" hidden>
           <div class="upload-progress-head">
             <div class="upload-progress-title" id="estimateUploadStage">Подготовка…</div>
@@ -7510,16 +7515,9 @@ ESTIMATES_TEMPLATE_V2 = """
           </div>
           <div class="upload-progress-bar"><div id="estimateUploadFill" class="upload-progress-fill"></div></div>
           <div id="estimateUploadDetail" class="upload-progress-detail"></div>
-          <div class="upload-progress-steps" id="estimateUploadSteps">
-            <span class="upload-step" data-step="upload">Отправка файла</span>
-            <span class="upload-step" data-step="received">Файл получен</span>
-            <span class="upload-step" data-step="parse">Разбор файла</span>
-            <span class="upload-step" data-step="catalogue">Каталог позиций</span>
-            <span class="upload-step" data-step="save">Сохранение</span>
-            <span class="upload-step" data-step="done">Готово</span>
-          </div>
           <div id="estimateUploadError" class="upload-progress-error" hidden></div>
-          <div id="estimateUploadLogs" class="upload-progress-logs" hidden></div>
+          <div class="upload-actions"><a class="btn secondary" id="estimateUploadOriginal" hidden>Скачать исходник</a><button class="btn secondary" id="estimateUploadRetryStatus" type="button" hidden>Проверить статус</button><button class="btn secondary" id="estimateUploadNew" type="button" hidden>Загрузить другую смету</button></div>
+          <details id="estimateUploadLogDetails" class="upload-log-details" hidden><summary>Подробности разбора</summary><pre id="estimateUploadLogs" class="upload-progress-logs"></pre></details>
         </div>
       </section>
     </section>
@@ -7655,22 +7653,9 @@ ESTIMATES_TEMPLATE_V2 = """
     </section>
   </div>
   <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
+  <script src="/estimates/upload-client.js?v=20260915-1"></script>
   <script>
     (function() {
-      const form = document.getElementById("estimateUploadForm");
-      const status = document.getElementById("uploadStatus");
-      const panel = document.getElementById("estimateUploadProgress");
-      const fill = document.getElementById("estimateUploadFill");
-      const pct = document.getElementById("estimateUploadPct");
-      const stage = document.getElementById("estimateUploadStage");
-      const detail = document.getElementById("estimateUploadDetail");
-      const fileInput = document.getElementById("estimateUploadFile");
-      const fileName = document.getElementById("estimateUploadFileName");
-      const errBox = document.getElementById("estimateUploadError");
-      const logs = document.getElementById("estimateUploadLogs");
-      const stepNodes = Array.from(document.querySelectorAll("#estimateUploadSteps .upload-step"));
-      let activePoll = 0;
-      const uploadJobStorageKey = "autobot:estimate-upload-job";
       const bundleBridge = window.AutoBotCrmBridge || { embedded: false, available: false };
       const bundleInputs = Array.from(document.querySelectorAll("[data-estimate-select]"));
       const bundleOpenBtn = document.getElementById("estimateBundleOpenBtn");
@@ -7989,187 +7974,6 @@ ESTIMATES_TEMPLATE_V2 = """
       });
       syncBundleSelection();
 
-      function rememberUploadJob(jobId) {
-        try { window.sessionStorage.setItem(uploadJobStorageKey, String(jobId || "")); } catch (e) {}
-      }
-
-      function forgetUploadJob() {
-        try { window.sessionStorage.removeItem(uploadJobStorageKey); } catch (e) {}
-      }
-
-      function rememberedUploadJob() {
-        try { return window.sessionStorage.getItem(uploadJobStorageKey) || ""; } catch (e) { return ""; }
-      }
-
-      function syncChosenFile() {
-        if (!fileInput || !fileName) return;
-        const name = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : "";
-        fileName.textContent = name;
-        fileName.hidden = !name;
-      }
-
-      if (fileInput) {
-        fileInput.addEventListener("change", syncChosenFile);
-      }
-
-      function showProgress() {
-        panel.hidden = false;
-        logs.hidden = false;
-      }
-
-      function markStep(progress, currentStage, done) {
-        const stageLow = String(currentStage || "").toLowerCase();
-        const currentKey =
-          done ? "done"
-          : progress < 25 ? "upload"
-          : progress < 40 ? "received"
-          : stageLow.includes("каталог") ? "catalogue"
-          : stageLow.includes("сохраня") ? "save"
-          : progress >= 40 ? "parse"
-          : "received";
-        const order = ["upload", "received", "parse", "catalogue", "save", "done"];
-        const currentIndex = order.indexOf(currentKey);
-        stepNodes.forEach(function(node) {
-          const key = node.getAttribute("data-step");
-          const idx = order.indexOf(key);
-          node.classList.toggle("is-done", idx >= 0 && idx < currentIndex);
-          node.classList.toggle("is-active", key === currentKey);
-        });
-      }
-
-      function renderProgress(data) {
-        const value = Math.max(0, Math.min(100, Number(data.progress || 0)));
-        fill.style.width = value + "%";
-        pct.textContent = value + "%";
-        panel.classList.toggle("is-running", !!data.running);
-        stage.textContent = data.stage || "Подготовка…";
-        const elapsed = Math.max(0, Number(data.elapsed_seconds || 0));
-        const alive = data.running && elapsed ? "Идёт обработка · прошло " + elapsed + " с" : "";
-        detail.textContent = [data.detail || "", alive].filter(Boolean).join(" · ");
-        const resultOk = !!data.result_ok;
-        status.textContent = data.running ? "Смета обрабатывается…" : (resultOk ? "Смета готова." : (data.error ? "Во время обработки возникла ошибка." : ""));
-        if (Array.isArray(data.log_tail) && data.log_tail.length) {
-          logs.hidden = false;
-          logs.textContent = data.log_tail.join("\\n");
-        } else {
-          logs.hidden = true;
-          logs.textContent = "";
-        }
-        if (data.error) {
-          errBox.hidden = false;
-          errBox.textContent = "Ошибка: " + data.error;
-        } else {
-          errBox.hidden = true;
-          errBox.textContent = "";
-        }
-        markStep(value, data.stage || "", resultOk && !data.running);
-      }
-
-      async function pollJob(jobId) {
-        const pollId = ++activePoll;
-        let failures = 0;
-        for (;;) {
-          if (pollId !== activePoll) return;
-          let resp, data;
-          try {
-            resp = await fetch("/api/estimates/upload-status/" + encodeURIComponent(jobId), { cache: "no-store" });
-            data = await resp.json();
-          } catch (e) {
-            failures += 1;
-            status.textContent = "AutoBot переподключается, обработка продолжится автоматически…";
-            if (failures >= 20) {
-              status.textContent = "Долго не удаётся получить статус обработки. Нажмите «Обновить» — задача сохранена.";
-              return;
-            }
-            await new Promise(function(resolve) { setTimeout(resolve, Math.min(5000, 700 + failures * 350)); });
-            continue;
-          }
-          if (!resp.ok || !data.ok) {
-            failures += 1;
-            status.textContent = (data && data.message) || "Жду восстановления AutoBot…";
-            if (failures >= 20) return;
-            await new Promise(function(resolve) { setTimeout(resolve, Math.min(5000, 700 + failures * 350)); });
-            continue;
-          }
-          failures = 0;
-          renderProgress(data);
-          if (!data.running) {
-            forgetUploadJob();
-            if (data.result_ok && data.estimate_id) {
-              status.textContent = "Готово, открываю смету…";
-              setTimeout(function() { location.href = "/estimates/" + data.estimate_id; }, 450);
-            }
-            return;
-          }
-          await new Promise(function(resolve) { setTimeout(resolve, 1500); });
-        }
-      }
-
-      form.addEventListener("submit", function(e) {
-        e.preventDefault();
-        if (!fileInput || !fileInput.files || !fileInput.files.length) {
-          status.textContent = "Сначала прикрепите файл сметы.";
-          return;
-        }
-        const fd = new FormData(form);
-        const xhr = new XMLHttpRequest();
-        activePoll += 1;
-        forgetUploadJob();
-        showProgress();
-        errBox.hidden = true;
-        errBox.textContent = "";
-        logs.textContent = "";
-        logs.hidden = true;
-        status.textContent = "Начинаю загрузку файла…";
-        renderProgress({ progress: 2, stage: "Отправляю файл", detail: "Загружаю смету на сервер", running: true, result_ok: false, log_tail: [] });
-        xhr.open("POST", "/api/estimates/upload");
-        xhr.upload.addEventListener("progress", function(ev) {
-          if (!ev.lengthComputable) return;
-          showProgress();
-          const uploadPct = Math.max(2, Math.min(24, Math.round(ev.loaded / ev.total * 24)));
-          renderProgress({ progress: uploadPct, stage: "Отправляю файл", detail: "Передано " + ev.loaded + " из " + ev.total + " байт", running: true, result_ok: false, log_tail: [] });
-        });
-        xhr.onreadystatechange = function() {
-          if (xhr.readyState !== 4) return;
-          let data = {};
-          try { data = JSON.parse(xhr.responseText || "{}"); } catch (e) {}
-          if (xhr.status < 200 || xhr.status >= 300 || !data.ok) {
-            showProgress();
-            renderProgress({
-              progress: 100,
-              stage: "Ошибка",
-              detail: "Загрузка или запуск обработки не удались",
-              running: false,
-              result_ok: false,
-              error: data.message || ("HTTP " + xhr.status),
-              log_tail: []
-            });
-            status.textContent = "Ошибка: " + (data.message || ("HTTP " + xhr.status));
-            return;
-          }
-          showProgress();
-          renderProgress({
-            progress: Math.max(26, Number(data.progress || 26)),
-            stage: data.stage || "Файл получен",
-            detail: data.detail || "Сервер принял файл и начал разбор",
-            running: true,
-            result_ok: false,
-            log_tail: data.log_tail || []
-          });
-          status.textContent = "Файл получен, идёт разбор сметы…";
-          rememberUploadJob(data.job_id);
-          pollJob(data.job_id);
-        };
-        xhr.send(fd);
-      });
-
-      const restoredJobId = rememberedUploadJob();
-      if (restoredJobId) {
-        showProgress();
-        status.textContent = "Возвращаюсь к обработке загруженной сметы…";
-        pollJob(restoredJobId);
-      }
-
       window.deleteEstimateCard = async function(event, btn) {
         if (event) {
           event.preventDefault();
@@ -8178,7 +7982,9 @@ ESTIMATES_TEMPLATE_V2 = """
         if (!btn || btn.disabled) return;
         const estimateId = btn.getAttribute("data-estimate-delete") || "";
         const title = btn.getAttribute("data-estimate-title") || "эта смета";
-        const ok = confirm(`Удалить смету "${title}"?\n\nБудут удалены карточка сметы, ее строки и сохраненные файлы рынка.`);
+        const ok = confirm(`Удалить смету "${title}"?
+
+Будут удалены карточка сметы, ее строки и сохраненные файлы рынка.`);
         if (!ok) return;
         const initialHtml = btn.innerHTML;
         btn.disabled = true;
@@ -8827,6 +8633,11 @@ def estimate_workspace_css():
     return app.send_static_file('estimate_workspace.css')
 
 
+@app.get('/estimates/upload-client.js')
+def estimate_upload_client_js():
+    return app.send_static_file('estimate_upload.js')
+
+
 @app.get('/estimates/workspace.js')
 def estimate_workspace_js():
     return app.send_static_file('estimate_workspace.js')
@@ -9190,63 +9001,60 @@ def api_estimate_market_stop(estimate_id: str):
 
 @app.route("/api/estimates/upload", methods=["POST"])
 def api_estimates_upload():
+    from autobot import upload_admission
     f = request.files.get("file")
     if not f or not getattr(f, "filename", None):
         return jsonify({"ok": False, "message": "Выберите файл сметы."}), 400
     if not _estimate_upload_allowed(f.filename):
         return jsonify({"ok": False, "message": "Нужен файл сметы: .xlsx, .xls, .xlsm или .pdf."}), 400
-    estimate_id = uuid.uuid4().hex[:16]
-    job_id = uuid.uuid4().hex[:16]
-    est_dir = USER_ESTIMATES_DIR / estimate_id
-    est_dir.mkdir(parents=True, exist_ok=True)
-    original_name = _safe_upload_filename(f.filename)
-    src_path = est_dir / original_name
-    f.save(src_path)
-    title_raw = (request.form.get("title", "") or "").strip()[:160]
+    try:
+        job_id = upload_admission.operation_key(request.form.get('operation_id'))
+        job, duplicate = upload_admission.receive(
+            f.stream, key=job_id, original_name=_safe_upload_filename(f.filename),
+            title=(request.form.get('title') or '').strip()[:160], source_root=USER_ESTIMATES_DIR,
+            jobs_dir=ESTIMATE_UPLOAD_JOBS_DIR, repo_root=REPO_ROOT,
+            max_bytes=_configured_max_upload_mb() * 1024 * 1024)
+    except upload_admission.AdmissionError as error:
+        return jsonify({'ok': False, 'message': str(error), 'retry_upload': error.retry_upload}), error.status
+    except (OSError, TimeoutError):
+        return jsonify({'ok': False, 'message': 'Не удалось подтвердить приём файла. Повторите эту загрузку позже.'}), 503
     with estimate_upload_lock:
-        estimate_upload_jobs[job_id] = {
-            "job_id": job_id,
-            "estimate_id": None,
-            "target_estimate_id": estimate_id,
-            "running": True,
-            "ok": False,
-            "progress": 26,
-            "progress_estimated": False,
-            "stage": "Файл получен",
-            "detail": "Сохраняю файл и запускаю разбор",
-            "error": "",
-            "title_raw": title_raw,
-            "original_name": original_name,
-            "source_path": str(src_path.relative_to(REPO_ROOT)),
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "ended_at": None,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "elapsed_seconds": 0,
-            "log_lines": [f"{datetime.now().strftime('%H:%M:%S')} · Файл получен: {original_name}"],
-        }
-        try:
-            _estimate_upload_persist_locked(estimate_upload_jobs[job_id], strict=True)
-        except OSError:
-            estimate_upload_jobs.pop(job_id, None)
-            return jsonify({"ok": False, "message": "Файл сохранён, но не удалось сохранить задание. Повторите загрузку позже."}), 503
-    if not _start_estimate_upload_worker(job_id):
-        return jsonify({"ok": False, "job_id": job_id, "message": "Файл сохранён, но обработчик не запустился. Повторите загрузку позже."}), 503
-    return jsonify(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "progress": 26,
-            "stage": "Файл получен",
-            "detail": "Сервер принял файл и начал разбор",
-            "message": "Смета загружена на сервер.",
-        }
-    )
+        worker_active = job_id in estimate_upload_workers
+        if not worker_active:
+            estimate_upload_jobs[job_id] = job
+    if job.get('running') and not worker_active and not _start_estimate_upload_worker(job_id):
+        return jsonify({'ok': False, 'accepted': True, 'job_id': job_id,
+                        'message': 'Файл принят, но обработчик не запустился. Проверьте статус загрузки.'}), 503
+    return jsonify({'ok': True, 'accepted': True, 'job_id': job_id, 'duplicate': duplicate,
+                    'progress': int(job.get('progress') or 26), 'stage': job.get('stage') or 'Файл получен',
+                    'detail': 'Файл сохранён. Возвращаюсь к прежнему заданию' if duplicate else 'Сервер принял файл',
+                    'message': 'Смета загружена на сервер.'})
+
+
+def _recover_admitted_upload(job_id):
+    from autobot import upload_admission
+    try:
+        job = upload_admission.restore(ESTIMATE_UPLOAD_JOBS_DIR, USER_ESTIMATES_DIR, REPO_ROOT, job_id)
+    except upload_admission.AdmissionError:
+        raise
+    except (OSError, TimeoutError) as error:
+        raise upload_admission.AdmissionError('Загрузка временно недоступна. Повторите проверку статуса.') from error
+    if job is not None:
+        with estimate_upload_lock:
+            if job_id not in estimate_upload_workers:
+                estimate_upload_jobs[job_id] = job
+    return job
 
 
 @app.route("/api/estimates/upload-status/<job_id>")
 def api_estimates_upload_status(job_id: str):
+    from autobot import upload_admission
+    try:
+        admitted = _recover_admitted_upload(job_id)
+    except upload_admission.AdmissionError as error:
+        return jsonify({'ok': False, 'message': str(error), 'retry_upload': error.retry_upload}), error.status
     with estimate_upload_lock:
-        stored_job = _estimate_upload_load_locked(job_id) or estimate_upload_jobs.get(job_id)
+        stored_job = admitted or _estimate_upload_load_locked(job_id) or estimate_upload_jobs.get(job_id)
         job = dict(stored_job or {})
         worker_active = job_id in estimate_upload_workers
     if not job:
@@ -9260,6 +9068,8 @@ def api_estimates_upload_status(job_id: str):
             "ok": True,
             "job_id": job_id,
             "estimate_id": job.get("estimate_id"),
+            "original_url": '/estimates/uploads/' + job_id + '/original' if _upload_job_original_path(job) is not None else '',
+            "original_filename": str(job.get('original_name') or ''),
             "running": bool(job.get("running")),
             "result_ok": bool(job.get("ok")),
             "progress": int(job.get("progress") or 0),
@@ -9274,6 +9084,24 @@ def api_estimates_upload_status(job_id: str):
             "log_tail": list(job.get("log_lines") or [])[-12:],
         }
     )
+
+
+def _upload_job_original_path(job):
+    estimate_id = str(job.get('target_estimate_id') or job.get('estimate_id') or '')
+    return _estimate_original_path(estimate_id, {'source_path': job.get('source_path')})
+
+
+@app.get('/estimates/uploads/<job_id>/original')
+def estimate_upload_original_download(job_id):
+    with estimate_upload_lock:
+        job = _estimate_upload_load_locked(job_id) or {}
+    path = _upload_job_original_path(job)
+    if path is None:
+        abort(404)
+    response = send_file(path, as_attachment=True, download_name=path.name, max_age=0)
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 
 @app.route("/reports/<path:filename>")

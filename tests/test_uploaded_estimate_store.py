@@ -161,7 +161,8 @@ def test_admission_requires_persisted_job_before_start(tmp_path,monkeypatch):
     monkeypatch.setattr(web_ui,'_start_estimate_upload_worker',lambda *a,**k:pytest.fail('Non-durable job started'))
     response=web_ui.app.test_client().post('/api/estimates/upload',data={'file':(io.BytesIO(b'fixture'),'source.xlsx')})
     assert response.status_code==503 and not response.json['ok']
-    assert not web_ui.estimate_upload_jobs and len(list(root.glob('*/source.xlsx')))==1
+    # An immutable receipt must be durable even before the source is published.
+    assert not web_ui.estimate_upload_jobs and not list(root.glob('*/source.xlsx'))
 
 
 def test_status_reads_new_progress_from_other_process(tmp_path,monkeypatch):
