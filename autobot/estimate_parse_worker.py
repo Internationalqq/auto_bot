@@ -146,16 +146,65 @@ def parse_files(excel_files, pdf_files, tender, limits):
     return {'rows': rows, 'official_totals': totals, 'documents': documents, 'sources': before}
 
 
+def parse_uploaded_file(path, limits, *, progress_cb=None):
+    """Keep the existing uploaded estimate formats inside the common limits."""
+    from autobot.estimate_excel_analysis import load_estimate_session
+    path = Path(path)
+    before = snapshot([path], limits)
+    if path.suffix.lower() == '.pdf':
+        inspect_pdf(path, limits)
+    elif path.suffix.lower() in ('.xlsx', '.xls', '.xlsm'):
+        # Validate all sheets, including those a format-specific reader ignores.
+        read_excel_bounded(path, limits)
+    else:
+        raise EstimateParseRejected('Нужен файл сметы Excel или PDF.')
+    try:
+        session = load_estimate_session(path, progress_cb=progress_cb)
+    except ValueError as error:
+        raise EstimateParseRejected(str(error)[:500]) from None
+    if not session.rows or len(session.rows) > limits.rows:
+        raise EstimateParseRejected('Нет проверяемых строк сметы или превышен предел их количества.')
+    validate_snapshot(before, limits)
+    return {'rows': [asdict(row) for row in session.rows],
+            'diagnostics': dict(session.diagnostics or {}), 'sources': before}
+
+
+def run_uploaded_parser(path, *, limits=None, progress_cb=None):
+    return _run_request({'kind': 'uploaded', 'path': str(Path(path).absolute())},
+                        limits or ParseLimits(), progress_cb=progress_cb)
+
+
 def run_parser(excel_files, pdf_files, tender, *, limits=None):
+    request = {'excel': [str(Path(p).absolute()) for p in excel_files],
+               'pdf': [str(Path(p).absolute()) for p in pdf_files], 'tender': asdict(tender)}
+    return _run_request(request, limits or ParseLimits())
+
+
+def _read_progress(folder, callback, previous):
+    if callback is None:
+        return previous
+    try:
+        path = folder / 'progress.json'
+        if path.stat().st_size > 8192:
+            return previous
+        value = json.loads(path.read_text(encoding='utf-8'))
+        event = (max(0, min(96, int(value['percent']))), str(value['stage'])[:160], str(value['detail'])[:800])
+        if event != previous:
+            callback(*event)
+        return event
+    except (OSError, ValueError, TypeError, KeyError):
+        return previous
+
+
+def _run_request(request, limits, *, progress_cb=None):
     from autobot.archive_extraction import _stop_process
-    limits = limits or ParseLimits()
+    preserved = ('Исходный файл сохранён; повторите загрузку или проверьте документ.'
+                 if request.get('kind') == 'uploaded' else 'Предыдущий отчёт сохранён.')
     # File hashing and parsers run in the same bounded child. The publisher
     # additionally verifies its full original/extracted source snapshot.
     with tempfile.TemporaryDirectory(prefix='autobot-estimate-') as name:
         folder = Path(name)
-        request = {'excel': [str(Path(p).absolute()) for p in excel_files],
-                   'pdf': [str(Path(p).absolute()) for p in pdf_files],
-                   'tender': asdict(tender), 'limits': asdict(limits)}
+        request = dict(request, limits=asdict(limits))
         (folder / 'request.json').write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith(
             ('PMBI_', 'OPENAI_', 'TELEGRAM_', 'CLERK_', 'SMTP_', 'RESEND_', 'MARKET_'))}
@@ -165,13 +214,26 @@ def run_parser(excel_files, pdf_files, tender, *, limits=None):
             start_new_session=os.name != 'nt', creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         try:
             try:
-                process.wait(timeout=limits.seconds)
+                if progress_cb is None:
+                    process.wait(timeout=limits.seconds)
+                else:
+                    deadline, progress = time.monotonic() + limits.seconds, None
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(process.args, limits.seconds)
+                        try:
+                            process.wait(timeout=min(.25, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            progress = _read_progress(folder, progress_cb, progress)
+                    _read_progress(folder, progress_cb, progress)
             except subprocess.TimeoutExpired:
                 _stop_process(process)
-                raise EstimateParseRejected('Время разбора сметы истекло. Предыдущий отчёт сохранён; повторите разбор или проверьте документы.') from None
+                raise EstimateParseRejected('Время разбора сметы истекло. ' + preserved) from None
             output = folder / 'result.json'
             if process.returncode or not output.is_file() or output.stat().st_size > RESULT_BYTES:
-                raise EstimateParseRejected('Обработчик сметы прерван или превысил лимит. Предыдущий отчёт сохранён.')
+                raise EstimateParseRejected('Обработчик сметы прерван или превысил лимит. ' + preserved)
             result = json.loads(output.read_text(encoding='utf-8'))
             if result.get('error'):
                 raise EstimateParseRejected(result['error'])
@@ -214,9 +276,17 @@ def worker(folder):
         dotenv.load_dotenv = lambda *args, **kwargs: False
     except ImportError:
         pass
-    from autobot.main import Tender
+    def progress(percent, stage, detail=''):
+        event = {'percent': max(0, min(96, int(percent))), 'stage': str(stage)[:160], 'detail': str(detail)[:800]}
+        temporary = folder / 'progress.tmp'
+        temporary.write_text(json.dumps(event, ensure_ascii=False), encoding='utf-8')
+        os.replace(temporary, folder / 'progress.json')
     try:
-        result = parse_files(request['excel'], request['pdf'], Tender(**request['tender']), limits)
+        if request.get('kind') == 'uploaded':
+            result = parse_uploaded_file(request['path'], limits, progress_cb=progress)
+        else:
+            from autobot.main import Tender
+            result = parse_files(request['excel'], request['pdf'], Tender(**request['tender']), limits)
         content = json.dumps(result, ensure_ascii=False, allow_nan=False)
         if len(content.encode('utf-8')) > RESULT_BYTES:
             raise EstimateParseRejected('Результат разбора превышает допустимый размер; прежний отчёт сохранён.')

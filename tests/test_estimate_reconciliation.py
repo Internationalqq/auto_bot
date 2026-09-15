@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 
-from autobot import estimate_excel_analysis, main, web_ui
+from autobot import estimate_excel_analysis, estimate_parse_worker, main, web_ui
 from autobot.estimate_excel_analysis import EstimateRow
 from autobot.market_analytics import COL_ITEM, COL_NAME, COL_QTY, COL_SUM, COL_UNIT, COL_UNIT_PRICE
 
@@ -93,9 +94,10 @@ def test_upload_worker_persists_reconciliation_in_meta_and_status(tmp_path, monk
     monkeypatch.setattr(web_ui, "USER_ESTIMATES_INDEX", estimates_dir / "index.json")
     monkeypatch.setattr(web_ui, "ESTIMATE_UPLOAD_JOBS_DIR", estimates_dir / ".upload_jobs")
     monkeypatch.setattr(
-        estimate_excel_analysis,
-        "load_estimate_session",
-        lambda _path, progress_cb=None: SimpleNamespace(rows=[_actionable_row()], diagnostics=_reconciliation()),
+        estimate_parse_worker,
+        "run_uploaded_parser",
+        lambda _path, progress_cb=None: {'rows':[asdict(_actionable_row())], 'diagnostics':_reconciliation(),
+                                       'sources':estimate_parse_worker.snapshot([_path])},
     )
 
     try:

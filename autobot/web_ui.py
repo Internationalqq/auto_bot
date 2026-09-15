@@ -5190,6 +5190,7 @@ def _estimate_row_to_dict(row) -> dict:
         "excel_row": row.excel_row,
         "section": row.section,
         "source": row.source,
+        "position_id": str(getattr(row, "position_id", "") or ""),
         "type": type_key,
         "type_label": type_label,
     }
@@ -5907,7 +5908,8 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
         daemon=True,
     ).start()
     try:
-        from autobot.estimate_excel_analysis import load_estimate_session
+        from types import SimpleNamespace
+        from autobot.estimate_parse_worker import run_uploaded_parser, validate_snapshot
 
         with estimate_upload_lock:
             current_progress = int((estimate_upload_jobs.get(job_id) or {}).get("progress") or 0)
@@ -5920,10 +5922,12 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
             stage="Файл получен",
             detail=f"Запускаю разбор {file_kind}",
         )
-        session = load_estimate_session(src_path, progress_cb=_estimate_upload_progress_cb(job_id))
-        rows = [_estimate_row_to_dict(r) for r in session.rows]
+        parsed = run_uploaded_parser(src_path, progress_cb=_estimate_upload_progress_cb(job_id))
+        source_version = parsed['sources'][0]['sha256']
+        rows = [dict(_estimate_row_to_dict(SimpleNamespace(**row)), estimate_version=source_version)
+                for row in parsed['rows']]
         summary = _summarize_estimate_rows(rows)
-        reconciliation = dict(getattr(session, "diagnostics", {}) or {})
+        reconciliation = dict(parsed.get('diagnostics') or {})
         _estimate_upload_set(job_id, progress=97, stage="Сохраняю смету", detail="Записываю карточку и таблицу")
         meta = {
             "id": estimate_id,
@@ -5933,9 +5937,11 @@ def _run_estimate_upload_worker(job_id: str, *, estimate_id: str, title_raw: str
             "row_count": len(rows),
             "total_sum": summary.get("total_sum"),
             "source_path": str(src_path.relative_to(REPO_ROOT)),
+            "source_sha256": source_version,
         }
         if reconciliation:
             meta["reconciliation"] = reconciliation
+        validate_snapshot(parsed['sources'])
         _estimate_rows_path(estimate_id).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
         _estimate_meta_path(estimate_id).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         index_items = [x for x in _read_estimates_index() if str(x.get("id") or "") != estimate_id]

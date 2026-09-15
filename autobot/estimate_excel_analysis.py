@@ -176,6 +176,69 @@ def _norm_unit(unit: str) -> str:
     return u
 
 
+def _labeled_columns(values) -> dict[str, int] | None:
+    """Recognize explicit flat-table headers, without guessing numeric columns."""
+    aliases = {
+        'name': {'наименование', 'названиеработыуслуги', 'наименованиеработ'},
+        'unit': {'едизм', 'единицаизмерения'},
+        'qty': {'колво', 'количество'},
+        'unit_price': {'цена', 'ценаруб', 'ценазаедруб', 'ценазаединицу', 'ценазаединицуруб'},
+        'total': {'сумма', 'суммаруб', 'стоимостьвсего', 'общаястоимость'},
+        'item_no': {'номер', 'пп', 'номерпозиции'},
+        'basis_code': {'шифр', 'код', 'обоснование', 'basiscode'},
+        'section': {'раздел'},
+        'position_id': {'positionid'},
+    }
+    found = {}
+    for index, value in enumerate(values):
+        cleaned = _clean_text(value).casefold()
+        value = 'номер' if cleaned == '№' else re.sub(r'[^а-яa-z0-9]', '', cleaned)
+        for field, names in aliases.items():
+            if value in names:
+                if field in found:
+                    return None
+                found[field] = index
+    return found if {'name', 'unit', 'qty', 'unit_price', 'total'} <= found.keys() else None
+
+
+def _read_labeled_tables(path: Path) -> list[EstimateRow]:
+    """Use named columns before the positional LSR parser; retain every sheet."""
+    sheets = _raw_sheets(path)
+    rows, tables, unrecognized = [], [], []
+    for sheet_name, frame in sheets.items():
+        if frame.empty or not frame.notna().any().any():
+            continue
+        found = None
+        for header_index in range(min(40, len(frame))):
+            columns = _labeled_columns(frame.iloc[header_index].tolist())
+            if columns:
+                found = (header_index, columns)
+                break
+        if found is None:
+            unrecognized.append(str(sheet_name))
+        else:
+            tables.append((sheet_name, frame, found))
+    if tables and unrecognized:
+        raise ValueError('Не распознан формат листов: ' + ', '.join(unrecognized)[:300]
+                         + '. Смета не сохранена частично; разделите файлы или приведите листы к одной таблице.')
+    for sheet_name, frame, found in tables:
+        header_index, columns = found
+        for index in range(header_index + 1, len(frame)):
+            values = frame.iloc[index].tolist()
+            if _labeled_columns(values):
+                continue
+            cell = lambda field: values[columns[field]] if field in columns else ''
+            name = _clean_text(cell('name'))
+            if not name or re.match(r'^(итого|всего|ндс)\b', name.casefold()):
+                continue
+            rows.append(EstimateRow(idx=len(rows)+1, name=name, unit=_clean_text(cell('unit')),
+                qty=_num(cell('qty')), unit_price=_num(cell('unit_price')), total=_num(cell('total')),
+                item_no=_clean_text(cell('item_no')), basis_code=_clean_text(cell('basis_code')),
+                sheet=str(sheet_name), excel_row=index+1, section=_clean_text(cell('section')),
+                source='labeled-table', position_id=_clean_text(cell('position_id')) or f'excel:{sheet_name}:row{index+1}'))
+    return rows
+
+
 def _read_standard_report(path: Path) -> list[EstimateRow]:
     try:
         df = pd.read_excel(path)
@@ -596,7 +659,9 @@ def load_estimate_session(path: Path, *, progress_cb: ProgressCallback | None = 
 
     _progress(progress_cb, 8, "Открываю Excel", f"Файл: {Path(path).name}")
     diagnostics: dict[str, Any] = {}
-    rows = _read_standard_report(path)
+    rows = _read_labeled_tables(path)
+    if not rows:
+        rows = _read_standard_report(path)
     if rows:
         _progress(progress_cb, 38, "Прочитан готовый отчёт", f"Найдено строк: {len(rows)}")
     if not rows:
