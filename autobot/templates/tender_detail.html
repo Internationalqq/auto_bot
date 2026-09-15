@@ -66,12 +66,20 @@
       <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Исходные файлы <span>{{ tender.documents.count }}</span></a>
     </nav>
 
-    {% if tender.archive_extraction.failed_count %}
+    {% if tender.document_download.blocked %}
+    <section class="market-health-alert" role="alert" aria-label="Загрузка документов не завершена">
+      <div><strong>Комплект документов не загружен</strong></div>
+      <p>{{ tender.document_download.errors | join(' · ') }} Новый отчёт не сформирован.{% if tender.has_estimate %} Предыдущий отчёт сохранён.{% endif %}</p>
+      <button class="btn primary" type="button" data-refresh-documents>Повторить скачивание</button>
+    </section>
+    {% elif tender.archive_extraction.failed_count %}
     <section class="market-health-alert" role="alert" aria-label="Ошибка обработки документов">
       <div><strong>Разбор документов не завершён</strong></div>
       <p>{{ tender.estimate_check_detail }} <a href="/tenders/{{ tender.tender_id }}?tab=files">Открыть исходные файлы</a></p>
     </section>
     {% endif %}
+
+    <p class="market-health-alert" id="documentRefreshStatus" role="status" tabindex="-1" hidden></p>
 
     {% if tender.active_tab == "overview" %}
 
@@ -98,6 +106,7 @@
         <details class="action-more">
           <summary class="btn ghost">Ещё <span aria-hidden="true">⌄</span></summary>
           <div class="action-more-menu">
+            <button type="button" data-refresh-documents>Обновить документы из ЕИС</button>
             {% if tender.has_estimate %}<button type="button" id="runMarketSampleBtn">Проверить 10 позиций</button>{% endif %}
             {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Скачать смету</a>{% endif %}
             {% if tender.has_estimate %}<button type="button" id="addTenderToCrmBtn">Добавить в объект CRM</button>{% endif %}
@@ -966,6 +975,66 @@
 
     document.getElementById("sourceFileSearch")?.addEventListener("input", filterSourceFiles);
     document.getElementById("sourceFileKind")?.addEventListener("change", filterSourceFiles);
+
+    const documentRefreshButtons = [...document.querySelectorAll("[data-refresh-documents]")];
+    const documentRefreshStatus = document.getElementById("documentRefreshStatus");
+    let documentRunId = null;
+    async function pollDocumentRefresh() {
+      if (!documentRunId) return;
+      try {
+        const response = await fetch("/api/parse-status?tender_id=" + encodeURIComponent(TENDER_ID), {cache: "no-store"});
+        if (!response.ok) throw new Error("status");
+        const state = await response.json();
+        if (state.run_id !== documentRunId) {
+          documentRefreshStatus.textContent = "Состояние запуска изменилось. Обновите карточку и проверьте документы.";
+          documentRunId = null;
+          documentRefreshButtons.forEach(button => button.disabled = false);
+          return;
+        }
+        if (!state.running) {
+          documentRunId = null;
+          documentRefreshButtons.forEach(button => button.disabled = false);
+          if (state.exit_code === 0) {
+            documentRefreshStatus.textContent = "Документы обработаны. Обновляю карточку…";
+            window.location.reload();
+          } else {
+            documentRefreshStatus.textContent = "Загрузка или разбор не завершились. " + ((state.document_status?.errors || []).join(" · ") || "Подробности доступны в журнале обработки. Повторите попытку позже.");
+          }
+          return;
+        }
+        documentRefreshStatus.textContent = "Скачиваю документы и разбираю смету. Страницу можно закрыть.";
+      } catch (error) {
+        documentRefreshStatus.textContent = "Не удалось получить состояние загрузки. Проверяю повторно…";
+      }
+      window.setTimeout(pollDocumentRefresh, 2500);
+    }
+    documentRefreshButtons.forEach(button => button.addEventListener("click", async function() {
+      documentRefreshButtons.forEach(item => item.disabled = true);
+      documentRefreshStatus.hidden = false;
+      documentRefreshStatus.textContent = "Запускаю загрузку документов…";
+      documentRefreshStatus.focus();
+      try {
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/refresh-documents", {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || "Не удалось запустить загрузку");
+        documentRunId = data.run_id;
+        pollDocumentRefresh();
+      } catch (error) {
+        documentRefreshStatus.textContent = error.message || "Не удалось запустить загрузку. Повторите попытку.";
+        documentRefreshButtons.forEach(item => item.disabled = false);
+      }
+    }));
+
+    fetch("/api/parse-status?tender_id=" + encodeURIComponent(TENDER_ID), {cache: "no-store"})
+      .then(response => response.ok ? response.json() : null).then(state => {
+        if (!state || !state.running || state.tender_id !== TENDER_ID || !state.run_id || documentRunId) return;
+        documentRunId = state.run_id;
+        documentRefreshStatus.hidden = false;
+        documentRefreshButtons.forEach(button => button.disabled = true);
+        pollDocumentRefresh();
+      }).catch(function() {});
 
     async function postRun(resetMarket, sampleRows) {
       if (marketButton) { marketButton.disabled = true; marketButton.textContent = "Запускаю…"; }

@@ -37,7 +37,6 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 from autobot.market_analytics import estimate_block_qty_from_unit, unit_has_area_or_volume_marker
-from autobot.source_file_versions import store_downloaded_source_file
 from autobot.telegram_notify import send_message, telegram_config
 from autobot.tender_notifications import safe_notify_new_tender
 from autobot import business_time, tender_search_state as search_state
@@ -437,26 +436,35 @@ def _candidate_notice_urls(tender: Tender) -> list[str]:
     return uniq
 
 
-def _goto_with_retries(page, url: str, *, timeout_ms: int = 60_000, retries: int = 3) -> tuple[bool, list[str]]:
+def _goto_with_retries(page, url: str, *, timeout_ms: int = 60_000, retries: int = 3,
+                       deadline: float | None = None) -> tuple[bool, list[str]]:
     """Пробует открыть страницу несколько раз, включая fallback wait_until='commit'."""
     errs: list[str] = []
+    def budget(milliseconds):
+        return milliseconds if deadline is None else max(1, min(milliseconds, int((deadline - time.monotonic()) * 1000)))
+    def expired():
+        return deadline is not None and time.monotonic() >= deadline
     attempts = max(1, int(retries))
     for attempt in range(1, attempts + 1):
+        if expired():
+            return False, [*errs, 'Время поиска ссылок на документы истекло.']
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(1800)
+            page.goto(url, wait_until="domcontentloaded", timeout=budget(timeout_ms))
+            page.wait_for_timeout(budget(1800))
             return True, errs
         except (PlaywrightTimeoutError, PlaywrightError) as e:
             errs.append(f"{url} [attempt {attempt}/{attempts}, domcontentloaded] -> {type(e).__name__}: {e}")
+        if expired():
+            return False, [*errs, 'Время поиска ссылок на документы истекло.']
         try:
-            page.goto(url, wait_until="commit", timeout=timeout_ms)
-            page.wait_for_load_state("domcontentloaded", timeout=15_000)
-            page.wait_for_timeout(1800)
+            page.goto(url, wait_until="commit", timeout=budget(timeout_ms))
+            page.wait_for_load_state("domcontentloaded", timeout=budget(15_000))
+            page.wait_for_timeout(budget(1800))
             return True, errs
         except (PlaywrightTimeoutError, PlaywrightError) as e:
             errs.append(f"{url} [attempt {attempt}/{attempts}, commit] -> {type(e).__name__}: {e}")
         if attempt < attempts:
-            page.wait_for_timeout(1000 * attempt)
+            page.wait_for_timeout(budget(1000 * attempt))
     return False, errs
 
 
@@ -1055,59 +1063,36 @@ def _send_no_estimate_files_summary_to_tg(
     send_message(token, chat_id, "\n".join(lines).strip(), parse_mode="HTML", disable_web_page_preview=True)
 
 
-def download_file(url: str, target_path: Path, cookies: dict[str, str] | None = None) -> tuple[Path, str] | None:
-    headers = {"User-Agent": USER_AGENT}
-    verify_tls = not _eis_ignore_https_errors()
-    if not verify_tls:
-        warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+def download_file(url: str, target_path: Path, cookies: dict[str, str] | None = None,
+                  *, diagnostics=None, timeout=None) -> tuple[Path, str] | None:
+    from autobot.document_download import fetch_document, DownloadRejected
     try:
-        resp = requests.get(
-            url,
-            headers=headers,
-            cookies=cookies or {},
-            timeout=60,
-            verify=verify_tls,
-        )
-        resp.raise_for_status()
-    except requests.RequestException:
+        result = fetch_document(url, target_path, headers={"User-Agent": USER_AGENT},
+                                cookies=cookies, verify=not _eis_ignore_https_errors(), timeout=timeout)
+    except (DownloadRejected, OSError) as error:
+        if diagnostics is not None:
+            diagnostics.append(str(error) if isinstance(error, DownloadRejected) else 'Не удалось сохранить файл.')
         return None
-
+    headers = result['headers']
+    detected = result['extension']
+    extension = detected or _extension_from_headers(headers.get('content-disposition'))
+    if not extension:
+        content_type = str(headers.get('content-type') or '').lower()
+        extension = next((ext for marker, ext in [('spreadsheet', '.xlsx'), ('excel', '.xls'),
+                         ('msword', '.doc'), ('pdf', '.pdf')] if marker in content_type), '')
     final_path = target_path
-    if target_path.suffix.lower() == ".bin":
-        ext = _extension_from_headers(resp.headers.get("content-disposition"))
-        if not ext:
-            ctype = (resp.headers.get("content-type") or "").lower()
-            if "zip" in ctype:
-                ext = ".zip"
-            elif "rar" in ctype:
-                ext = ".rar"
-            elif "spreadsheet" in ctype:
-                ext = ".xlsx"
-            elif "excel" in ctype:
-                ext = ".xls"
-        if ext:
-            final_path = target_path.with_suffix(ext)
-
-    final_path.write_bytes(resp.content)
-    original_name = _guess_original_name(url, resp.headers.get("content-disposition"), final_path)
+    if extension and target_path.suffix.lower() != extension:
+        final_path = target_path.with_suffix(extension)
+        os.replace(target_path, final_path)
+    original_name = _guess_original_name(url, headers.get('content-disposition'), final_path)
+    if extension and Path(original_name).suffix.lower() != extension:
+        original_name = Path(original_name).stem + extension
     return final_path, original_name
 
 
 def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> list[Path]:
     tender_dir = downloads_dir / tender.tender_id
     tender_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[Path] = []
-    download_log: list[dict] = []
-    previous_download_log: list[dict] = []
-    previous_log_path = tender_dir / "download_log.json"
-    if previous_log_path.is_file():
-        try:
-            payload = json.loads(previous_log_path.read_text(encoding="utf-8"))
-            if isinstance(payload, list):
-                previous_download_log = [row for row in payload if isinstance(row, dict)]
-        except Exception:
-            previous_download_log = []
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = _new_eis_page(browser)
@@ -1118,18 +1103,23 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
         nav_errors: list[str] = []
         nav_timeout_ms = max(20_000, int(os.environ.get("EIS_NAV_TIMEOUT_MS", "90000") or "90000"))
         nav_retries = max(1, min(5, int(os.environ.get("EIS_NAV_RETRIES", "3") or "3")))
+        navigation_deadline = time.monotonic() + 180
         for candidate_url in candidate_urls:
+            if time.monotonic() >= navigation_deadline:
+                nav_errors.append('Время поиска ссылок на документы истекло.')
+                break
             ok, errs = _goto_with_retries(
                 page,
                 candidate_url,
                 timeout_ms=nav_timeout_ms,
                 retries=nav_retries,
+                deadline=navigation_deadline,
             )
             nav_errors.extend(errs)
             if not ok:
                 continue
             try:
-                body_text = page.inner_text("body", timeout=15_000)
+                body_text = page.inner_text("body", timeout=max(1, min(15_000, int((navigation_deadline - time.monotonic()) * 1000))))
                 page_meta = parse_tender_card_metadata(
                     body_text,
                     tender_id=tender.tender_id,
@@ -1191,80 +1181,9 @@ def open_tender_and_download_archives(tender: Tender, downloads_dir: Path) -> li
                 "[single] Похоже, портал не отдал ссылки на документы (возможны капча/блокировка/недоступность сети)."
             )
 
-    for idx, (_, url) in enumerate(uniq_links, start=1):
-        ext = ".zip" if ".zip" in url.lower() else ".rar" if ".rar" in url.lower() else ".bin"
-        file_path = tender_dir / f".autobot-incoming-{uuid.uuid4().hex}{ext}"
-        downloaded = download_file(url, file_path, cookies=cookie_jar)
-        if downloaded:
-            saved_path, original_name = downloaded
-            preferred_name = _sanitize_filename_for_windows(
-                original_name,
-                fallback=saved_path.name,
-            )
-            try:
-                stored = store_downloaded_source_file(
-                    saved_path,
-                    tender_id=tender.tender_id,
-                    preferred_name=preferred_name,
-                    source_url=url,
-                    data_dir=downloads_dir.parent,
-                    previous_log=(*previous_download_log, *download_log),
-                )
-                saved_path = Path(stored["path"])
-            except Exception as error:
-                try:
-                    if saved_path.exists() and saved_path.name.startswith(".autobot-incoming-"):
-                        saved_path.unlink()
-                except OSError:
-                    pass
-                print(f"[download] Не удалось сохранить {preferred_name}: {type(error).__name__}: {error}")
-                download_log.append(
-                    {
-                        "tender_id": tender.tender_id,
-                        "url": url,
-                        "status": "failed",
-                        "saved_path": "",
-                        "original_name": original_name,
-                        "size_bytes": 0,
-                        "error": f"{type(error).__name__}: {error}",
-                    }
-                )
-                continue
-            if saved_path not in saved:
-                saved.append(saved_path)
-            download_log.append(
-                {
-                    "tender_id": tender.tender_id,
-                    "url": url,
-                    "status": "ok",
-                    "saved_path": str(saved_path),
-                    "original_name": original_name,
-                    "saved_name": saved_path.name,
-                    "size_bytes": saved_path.stat().st_size if saved_path.exists() else 0,
-                    "sha256": stored["sha256"],
-                    "storage_action": stored["action"],
-                    "old_versions_moved": stored["old_versions_moved"],
-                    "trash_path": stored["trash_path"],
-                }
-            )
-        else:
-            download_log.append(
-                {
-                    "tender_id": tender.tender_id,
-                    "url": url,
-                    "status": "failed",
-                    "saved_path": "",
-                    "original_name": "",
-                    "size_bytes": 0,
-                }
-            )
-
-    if download_log:
-        (tender_dir / "download_log.json").write_text(
-            json.dumps(download_log, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    return saved
+    from autobot.document_bundle import download_batch
+    return download_batch(tender.tender_id, uniq_links, downloads_dir, cookies=cookie_jar,
+                          download=download_file, sanitize=_sanitize_filename_for_windows)
 
 
 def _archive_output_dir(archive: Path, extracted_base: Path) -> Path:
@@ -1349,7 +1268,7 @@ def sort_excel_for_lsr_priority(paths: list[Path]) -> list[Path]:
 
 
 def is_excel_file(path: Path) -> bool:
-    return path.suffix.lower() in (".xlsx", ".xls")
+    return path.suffix.lower() in (".xlsx", ".xls", ".xlsm")
 
 
 def is_pdf_file(path: Path) -> bool:
@@ -2825,7 +2744,7 @@ def _run_main(args, out_paths):
             raise SystemExit(2)
         tender_dl = out_paths["downloads"] / tender.tender_id
         ext_root = out_paths["extracted"] / tender.tender_id
-        seeds = archive_seeds_for_tender(tender_dl, ext_root)
+        seeds = [p for p in downloaded_files if p.suffix.lower() in {".zip", ".rar", ".7z"}]
         extracted = extract_archives_nested(seeds, out_paths["extracted"],
                                             report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
@@ -2893,9 +2812,10 @@ def _run_main(args, out_paths):
             publish_date=None,
         )
         base = out_paths["downloads"] / tid
-        downloaded_files = [p for p in base.iterdir() if p.is_file() and not p.is_symlink()] if base.exists() else []
+        from autobot.document_bundle import current_files
+        downloaded_files = current_files(out_paths["downloads"], tid)
         existing_extracted_root = out_paths["extracted"] / tid
-        seeds = archive_seeds_for_tender(base, existing_extracted_root)
+        seeds = [p for p in downloaded_files if p.suffix.lower() in {".zip", ".rar", ".7z"}]
         extracted = extract_archives_nested(seeds, out_paths["extracted"],
                                             report_path=out_paths["reports"] / f"ARCHIVES_{tender.tender_id}.json", require_complete=True)
         direct_excel = [p for p in downloaded_files if p.exists() and is_excel_file(p)]
@@ -3183,7 +3103,7 @@ def _run_main(args, out_paths):
             continue
         tender_dl = out_paths["downloads"] / tender.tender_id
         ext_root = out_paths["extracted"] / tender.tender_id
-        seeds = archive_seeds_for_tender(tender_dl, ext_root)
+        seeds = [p for p in downloaded_files if p.suffix.lower() in {".zip", ".rar", ".7z"}]
         from autobot.archive_extraction import ArchiveRejected
         try:
             extracted = extract_archives_nested(seeds, out_paths["extracted"],

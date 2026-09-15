@@ -364,131 +364,150 @@ def cleanup_existing_source_duplicates(
         "errors": [],
     }
     for tid in tender_ids:
-        per_tender: list[tuple[str, Path, Path, str, str]] = []
-        downloads_folder = root / "downloads" / tid
-        extracted_folder = root / "extracted" / tid
-        old_named_files: set[Path] = set()
-        old_cache_dirs: set[Path] = set()
-        by_identity: dict[str, list[Path]] = {}
-        for path in _active_files(downloads_folder):
-            by_identity.setdefault(_identity_name(path.name), []).append(path)
-        for logical_versions in by_identity.values():
-            if len(logical_versions) < 2:
+        from contextlib import ExitStack
+        from autobot.atomic_output import output_lock
+        with ExitStack() as locks:
+            try:
+                locks.enter_context(output_lock(root / 'reports' / f'DOCUMENTS_{tid}.json', timeout=.1))
+            except TimeoutError:
+                summary['errors'].append(str(tid) + ': Источники заняты загрузкой; очистка отложена.')
                 continue
-            keeper = max(logical_versions, key=_keeper_key)
-            summary["duplicate_groups"] += 1
-            for old in logical_versions:
-                if old == keeper:
+            per_tender: list[tuple[str, Path, Path, str, str]] = []
+            downloads_folder = root / "downloads" / tid
+            extracted_folder = root / "extracted" / tid
+            from autobot.document_bundle import read_bundle, DocumentBundleRejected
+            try:
+                current_bundle = read_bundle(root / 'reports', tid)
+                if current_bundle is not None and current_bundle.get('state') != 'complete':
+                    raise DocumentBundleRejected('Загрузка комплекта не завершена; очистка отложена.')
+                current_names = {row.get('saved_name') for row in current_bundle['files']} if current_bundle else set()
+            except DocumentBundleRejected as error:
+                summary['errors'].append(str(tid) + ': ' + str(error))
+                continue
+            def keeper_key(path):
+                return (path.parent == downloads_folder and path.name in current_names, *_keeper_key(path))
+            old_named_files: set[Path] = set()
+            old_cache_dirs: set[Path] = set()
+            by_identity: dict[str, list[Path]] = {}
+            for path in _active_files(downloads_folder):
+                by_identity.setdefault(_identity_name(path.name), []).append(path)
+            for logical_versions in by_identity.values():
+                if len(logical_versions) < 2:
                     continue
-                old_named_files.add(old)
-                try:
-                    digest = sha256_file(old)
-                except OSError:
-                    digest = ""
-                per_tender.append(("downloads", old, keeper, digest, "older_named_version"))
-                cache = extracted_folder / old.stem
-                if include_extracted and cache.exists() and not cache.is_symlink():
-                    old_cache_dirs.add(cache)
-                    per_tender.append(
-                        (
-                            "extracted",
-                            cache,
-                            extracted_folder / keeper.stem,
-                            "",
-                            "cache_of_older_named_version",
-                        )
-                    )
-        categories = ["downloads"] + (["extracted"] if include_extracted else [])
-        for category in categories:
-            folder = root / category / tid
-            if not folder.is_dir():
-                continue
-            files = _walk_files(folder, summary["skipped_paths"])
-            if category == "downloads":
-                files = [path for path in files if path not in old_named_files]
-            elif category == "extracted" and old_cache_dirs:
-                files = [path for path in files if not _is_inside_any(path, old_cache_dirs)]
-            for group in _duplicate_groups(files):
-                keeper = max(group, key=_keeper_key)
-                digest = sha256_file(keeper)
+                keeper = max(logical_versions, key=keeper_key)
                 summary["duplicate_groups"] += 1
-                for duplicate in group:
-                    if duplicate == keeper:
+                for old in logical_versions:
+                    if old == keeper or old.name in current_names:
                         continue
-                    per_tender.append((category, duplicate, keeper, digest, "exact_duplicate"))
-        summary["tenders_scanned"] += 1
-        if not per_tender:
-            continue
-        trash_dir = _trash_batch(root, tid)
-        planned_rows: list[dict[str, Any]] = []
-        name_map: dict[str, str] = {}
-        for category, duplicate, keeper, digest, reason in per_tender:
-            size = _path_size(duplicate)
-            destination = trash_dir / category / duplicate.relative_to(root / category / tid)
-            row = {
-                "source": str(duplicate.relative_to(root)),
-                "trash": str(destination.relative_to(root)),
-                "keeper": str(keeper.relative_to(root)),
-                "sha256": digest,
-                "size_bytes": size,
-                "reason": reason,
-            }
-            planned_rows.append(row)
-            if category == "downloads" and duplicate.parent == root / "downloads" / tid and keeper.parent == duplicate.parent:
-                name_map[duplicate.name] = keeper.name
-        if dry_run:
-            summary["details"].extend(planned_rows)
-            summary["files_moved"] += len(planned_rows)
-            summary["bytes_moved"] += sum(int(row["size_bytes"]) for row in planned_rows)
-            continue
-        log_path = root / "downloads" / tid / "download_log.json"
-        original_log = log_path.read_bytes() if log_path.is_file() else None
-        moved: list[tuple[Path, Path]] = []
-        manifest_rows: list[dict[str, Any]] = []
-        try:
-            for plan, (_, duplicate, _, _, _) in zip(planned_rows, per_tender):
-                destination = _move_recoverably(duplicate, root / str(plan["trash"]), data_dir=root)
-                moved.append((duplicate, destination))
-                actual = dict(plan)
-                actual["trash"] = str(destination.relative_to(root))
-                manifest_rows.append(actual)
-            if name_map and log_path.is_file():
-                rows = _read_log(log_path)
-                for row in rows:
-                    saved_name = Path(str(row.get("saved_name") or row.get("saved_path") or "")).name
-                    keeper_name = name_map.get(saved_name)
-                    if not keeper_name:
-                        continue
-                    row["deduplicated_from"] = saved_name
-                    row["saved_name"] = keeper_name
-                    row["saved_path"] = str(root / "downloads" / tid / keeper_name)
-                    row["sha256"] = sha256_file(root / "downloads" / tid / keeper_name)
-                _atomic_json_write(log_path, rows)
-            _atomic_json_write(
-                trash_dir / "cleanup_manifest.json",
-                {
-                    "tender_id": tid,
-                    "created_at": datetime.now().isoformat(timespec="seconds"),
-                    "moved": manifest_rows,
-                },
-            )
-        except Exception as error:
-            for source, destination in reversed(moved):
-                try:
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    if destination.exists() and not source.exists():
-                        shutil.move(str(destination), str(source))
-                except Exception:
-                    pass
-            if original_log is not None:
-                try:
-                    log_path.write_bytes(original_log)
-                except OSError:
-                    pass
-            summary["errors"].append({"tender_id": tid, "error": f"{type(error).__name__}: {error}"})
-            continue
-        summary["details"].extend(manifest_rows)
-        summary["files_moved"] += len(manifest_rows)
-        summary["bytes_moved"] += sum(int(row["size_bytes"]) for row in manifest_rows)
-        summary["trash_batches"].append(str(trash_dir.relative_to(root)))
+                    old_named_files.add(old)
+                    try:
+                        digest = sha256_file(old)
+                    except OSError:
+                        digest = ""
+                    per_tender.append(("downloads", old, keeper, digest, "older_named_version"))
+                    cache = extracted_folder / old.stem
+                    if include_extracted and cache.exists() and not cache.is_symlink():
+                        old_cache_dirs.add(cache)
+                        per_tender.append(
+                            (
+                                "extracted",
+                                cache,
+                                extracted_folder / keeper.stem,
+                                "",
+                                "cache_of_older_named_version",
+                            )
+                        )
+            categories = ["downloads"] + (["extracted"] if include_extracted else [])
+            for category in categories:
+                folder = root / category / tid
+                if not folder.is_dir():
+                    continue
+                files = _walk_files(folder, summary["skipped_paths"])
+                if category == "downloads":
+                    files = [path for path in files if path not in old_named_files]
+                elif category == "extracted" and old_cache_dirs:
+                    files = [path for path in files if not _is_inside_any(path, old_cache_dirs)]
+                for group in _duplicate_groups(files):
+                    keeper = max(group, key=keeper_key)
+                    digest = sha256_file(keeper)
+                    summary["duplicate_groups"] += 1
+                    for duplicate in group:
+                        if duplicate == keeper or (category == 'downloads' and duplicate.name in current_names):
+                            continue
+                        per_tender.append((category, duplicate, keeper, digest, "exact_duplicate"))
+            summary["tenders_scanned"] += 1
+            if not per_tender:
+                continue
+            trash_dir = _trash_batch(root, tid)
+            planned_rows: list[dict[str, Any]] = []
+            name_map: dict[str, str] = {}
+            for category, duplicate, keeper, digest, reason in per_tender:
+                size = _path_size(duplicate)
+                destination = trash_dir / category / duplicate.relative_to(root / category / tid)
+                row = {
+                    "source": str(duplicate.relative_to(root)),
+                    "trash": str(destination.relative_to(root)),
+                    "keeper": str(keeper.relative_to(root)),
+                    "sha256": digest,
+                    "size_bytes": size,
+                    "reason": reason,
+                }
+                planned_rows.append(row)
+                if category == "downloads" and duplicate.parent == root / "downloads" / tid and keeper.parent == duplicate.parent:
+                    name_map[duplicate.name] = keeper.name
+            if dry_run:
+                summary["details"].extend(planned_rows)
+                summary["files_moved"] += len(planned_rows)
+                summary["bytes_moved"] += sum(int(row["size_bytes"]) for row in planned_rows)
+                continue
+            log_path = root / "downloads" / tid / "download_log.json"
+            original_log = log_path.read_bytes() if log_path.is_file() else None
+            moved: list[tuple[Path, Path]] = []
+            manifest_rows: list[dict[str, Any]] = []
+            try:
+                for plan, (_, duplicate, _, _, _) in zip(planned_rows, per_tender):
+                    destination = _move_recoverably(duplicate, root / str(plan["trash"]), data_dir=root)
+                    moved.append((duplicate, destination))
+                    actual = dict(plan)
+                    actual["trash"] = str(destination.relative_to(root))
+                    manifest_rows.append(actual)
+                if name_map and log_path.is_file():
+                    rows = _read_log(log_path)
+                    for row in rows:
+                        saved_name = Path(str(row.get("saved_name") or row.get("saved_path") or "")).name
+                        keeper_name = name_map.get(saved_name)
+                        if not keeper_name:
+                            continue
+                        row["deduplicated_from"] = saved_name
+                        row["saved_name"] = keeper_name
+                        row["saved_path"] = str(root / "downloads" / tid / keeper_name)
+                        row["sha256"] = sha256_file(root / "downloads" / tid / keeper_name)
+                    _atomic_json_write(log_path, rows)
+                _atomic_json_write(
+                    trash_dir / "cleanup_manifest.json",
+                    {
+                        "tender_id": tid,
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
+                        "moved": manifest_rows,
+                    },
+                )
+            except Exception as error:
+                for source, destination in reversed(moved):
+                    try:
+                        source.parent.mkdir(parents=True, exist_ok=True)
+                        if destination.exists() and not source.exists():
+                            shutil.move(str(destination), str(source))
+                    except Exception:
+                        pass
+                if original_log is not None:
+                    try:
+                        log_path.write_bytes(original_log)
+                    except OSError:
+                        pass
+                summary["errors"].append({"tender_id": tid, "error": f"{type(error).__name__}: {error}"})
+                continue
+            summary["details"].extend(manifest_rows)
+            summary["files_moved"] += len(manifest_rows)
+            summary["bytes_moved"] += sum(int(row["size_bytes"]) for row in manifest_rows)
+            summary["trash_batches"].append(str(trash_dir.relative_to(root)))
     return summary

@@ -162,7 +162,7 @@ def _tender_dir(tender_id: str) -> Path:
 def resolve_tender_source_file(tender_id: str, token: str) -> Path:
     root = _tender_dir(tender_id).resolve()
     name = _decode_file_token(token)
-    if name.casefold() in _HIDDEN_FILES:
+    if name.casefold() in _HIDDEN_FILES or name.startswith('.autobot-'):
         raise FileNotFoundError(name)
     original = root / name
     candidate = original.resolve()
@@ -224,7 +224,7 @@ def list_tender_source_files(tender_id: str) -> dict[str, Any]:
     physical_size = 0
     latest_timestamp = 0.0
     for path in folder.iterdir():
-        if not path.is_file() or path.is_symlink() or path.name.casefold() in _HIDDEN_FILES:
+        if not path.is_file() or path.is_symlink() or path.name.casefold() in _HIDDEN_FILES or path.name.startswith('.autobot-'):
             continue
         try:
             stat = path.stat()

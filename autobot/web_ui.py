@@ -11119,13 +11119,15 @@ def _stream_main_py(cli_args: list[str], *, log_cap: int = 400) -> int:
     return proc.wait()
 
 
-def _run_main_worker(cli_args: list[str], task: str) -> None:
+def _run_main_worker(cli_args: list[str], task: str, run_id: str | None = None, tender_id: str | None = None) -> None:
     """Запуск main.py тем же Python, что и веб-сервер (не py.exe из PATH)."""
     cmd = [sys.executable, "-u", str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
     cmd_display = _cmd_display(cmd)
     with parse_lock:
         parse_state["running"] = True
         parse_state["task"] = task
+        parse_state["run_id"] = run_id
+        parse_state["tender_id"] = tender_id
         parse_state["command"] = cmd_display
         parse_state["started_at"] = datetime.now().isoformat(timespec="seconds")
         parse_state["ended_at"] = None
@@ -11336,6 +11338,40 @@ def api_start_parse():
     return jsonify({"ok": True})
 
 
+@app.post('/api/tenders/<tender_id>/refresh-documents')
+def api_refresh_tender_documents(tender_id):
+    if not re.fullmatch(r'\d{8,25}', tender_id):
+        return jsonify({'ok': False, 'message': 'Некорректный номер тендера.'}), 400
+    metadata = load_tender_metadata().get(tender_id)
+    if metadata is None:
+        return jsonify({'ok': False, 'message': 'Тендер не найден.'}), 404
+    url = eis_notice_url(tender_id, metadata.get('url'))
+    from urllib.parse import urlparse
+    address = urlparse(url)
+    if address.scheme != 'https' or not address.hostname or not (address.hostname == 'zakupki.gov.ru' or address.hostname.endswith('.zakupki.gov.ru')) or address.username or address.password:
+        return jsonify({'ok': False, 'message': 'В карточке нет корректной HTTPS-ссылки на ЕИС.'}), 400
+    if _merge_site_busy():
+        return jsonify({'ok': False, 'message': 'Дождитесь завершения текущего сравнения цен.'}), 409
+    import uuid
+    run_id = uuid.uuid4().hex
+    task = 'скачивание документов и разбор сметы ' + tender_id
+    with parse_lock:
+        if parse_state['running']:
+            return jsonify({'ok': False, 'message': 'Сейчас выполняется другая работа с документами.'}), 409
+        parse_state.update(running=True, task=task, command='', run_id=run_id, tender_id=tender_id,
+            started_at=datetime.now().isoformat(timespec='seconds'), ended_at=None,
+            exit_code=None, log_lines=['Подготавливаем загрузку текущего комплекта документов…'])
+    try:
+        threading.Thread(target=_run_main_worker, kwargs={'cli_args': ['--from-tender-id', tender_id, '--from-tender-url', url],
+            'task': task, 'run_id': run_id, 'tender_id': tender_id}, daemon=True).start()
+    except RuntimeError:
+        with parse_lock:
+            parse_state.update(running=False, ended_at=datetime.now().isoformat(timespec='seconds'), exit_code=-1,
+                               log_lines=['Не удалось запустить загрузку. Повторите попытку.'])
+        return jsonify({'ok': False, 'message': 'Не удалось запустить загрузку.'}), 500
+    return jsonify({'ok': True, 'tender_id': tender_id, 'run_id': run_id}), 202
+
+
 @app.route("/api/rebuild-report", methods=["POST"])
 def api_rebuild_report():
     if _merge_site_busy():
@@ -11381,6 +11417,8 @@ def api_parse_status():
         payload = {
             "running": parse_state["running"],
             "task": parse_state["task"],
+            "run_id": parse_state.get('run_id'),
+            "tender_id": parse_state.get('tender_id'),
             "command": parse_state["command"],
             "started_at": parse_state["started_at"],
             "ended_at": parse_state["ended_at"],
@@ -11391,6 +11429,10 @@ def api_parse_status():
     from autobot import tender_search_state as search_state
     payload['search_summary'] = search_state.public_summary(DATA_DIR, running=payload['running'])
     payload['search_resume'] = search_state.public_resume(DATA_DIR)
+    tender_id = request.args.get('tender_id', '')
+    if re.fullmatch(r'\d{8,25}', tender_id):
+        from autobot.document_bundle import display_status
+        payload['document_status'] = display_status(REPORTS_DIR, tender_id)
     return jsonify(payload)
 
 

@@ -524,14 +524,20 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     if comparison_basis == "positions":
         estimate_check_detail = f"Официальные итоги ЛСР не найдены; контроль рассчитан по сумме распознанных позиций. {estimate_check_detail}"
     archive_status = _archive_extraction_status(tender_id)
+    from autobot.document_bundle import display_status
+    document_download = display_status(REPORTS_DIR, tender_id)
     if archive_status['failed_count']:
         estimate_check_class = "warn"
         estimate_check_title = "Не все документы распакованы"
         estimate_check_detail = ("Новый разбор не завершён; последний сохранённый отчёт не изменён. " + " · ".join(archive_status['errors'])
                                  + ". Архивы доступны во вкладке «Исходные файлы».")
+    if document_download['blocked']:
+        estimate_check_class = 'warn'
+        estimate_check_title = 'Комплект документов не загружен'
+        estimate_check_detail = 'Новый отчёт не сформирован. ' + ' · '.join(document_download['errors'])
     steps = (
-        {"key": "documents", "label": "Документы", "done": bool(workflow.get("has_downloads"))},
-        {"key": "estimate", "label": "Смета", "done": estimate_path.is_file() and not archive_status['failed_count']},
+        {"key": "documents", "label": "Документы", "done": bool(workflow.get("has_downloads")) and not document_download['blocked']},
+        {"key": "estimate", "label": "Смета", "done": estimate_path.is_file() and not archive_status['failed_count'] and not document_download['blocked']},
         {"key": "market", "label": "Проверка цен", "done": market_path.is_file() and counts["verified"] > 0},
         {"key": "comparison", "label": "Сравнение", "done": comparison_path.is_file() and counts["verified"] > 0},
     )
@@ -576,6 +582,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         "estimate_files_parsed": estimate_files_parsed,
         "estimate_empty_files": estimate_empty_files,
         "archive_extraction": archive_status,
+        "document_download": document_download,
         "estimate_official_total": estimate_official_total,
         "estimate_official_total_fmt": _fmt_money(estimate_official_total),
         "estimate_official_files_count": estimate_official_files_count,
