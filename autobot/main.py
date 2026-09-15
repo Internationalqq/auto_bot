@@ -640,8 +640,23 @@ def search_tenders(region: str, keyword: str, max_pages: int = 3, *, diagnostics
                     consecutive_errors = 0
                     if count == 0:
                         body = page.locator('body').inner_text(timeout=3000).casefold()
-                        known_empty = any(marker in body for marker in (
-                            'по вашему запросу ничего не найдено', 'поиск не дал результатов', 'по заданным параметрам ничего не найдено'))
+                        empty_markers = ('по вашему запросу ничего не найдено', 'поиск не дал результатов', 'по заданным параметрам ничего не найдено')
+                        known_empty = any(marker in body for marker in empty_markers)
+                        blocked = any(marker in body for marker in ('captcha', 'вы не робот', 'доступ ограничен'))
+                        if not known_empty and not blocked:
+                            wait_seconds = min(10, max(0, deadline - time.monotonic())) if deadline is not None else 10
+                            if wait_seconds:
+                                try:
+                                    cards.first.wait_for(state='attached', timeout=max(1, int(wait_seconds * 1000)))
+                                except PlaywrightTimeoutError:
+                                    pass
+                                count = cards.count()
+                                if not count:
+                                    body = page.locator('body').inner_text(timeout=3000).casefold()
+                                    known_empty = any(marker in body for marker in empty_markers)
+                            else:
+                                stats['budget_exhausted'] = True
+                    if count == 0:
                         stats['empty_pages' if known_empty else 'unknown_pages'] += 1
                         print(f'Поиск: {region} / {keyword}: ' + ('ЕИС показала пустую выдачу.' if known_empty else 'карточки не распознаны; отсутствие закупок не подтверждено.'))
                         break

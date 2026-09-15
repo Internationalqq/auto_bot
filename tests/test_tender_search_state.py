@@ -232,6 +232,17 @@ def test_expired_budget_does_not_launch_browser(monkeypatch):
     assert stats['budget_exhausted'] and stats['pages_requested'] == 0
 
 
+def test_loading_page_waits_for_cards_before_declaring_unknown(monkeypatch):
+    browser, page = fake_browser(monkeypatch, text='Загрузка результатов')
+    cards = page.locator('div.search-registry-entry-block, div.registry-entry__form')
+    cards.count.side_effect = [0, 1]
+    monkeypatch.setattr(main, '_tender_from_search_card', lambda *args: tender())
+    stats = state.start_summary('fresh')['source']
+    assert len(main.search_tenders('region', 'keyword', 1, diagnostics=stats)) == 1
+    cards.first.wait_for.assert_called_once_with(state='attached', timeout=10000)
+    assert stats['unknown_pages'] == 0
+
+
 def test_unreadable_card_does_not_erase_other_card(monkeypatch):
     browser, page = fake_browser(monkeypatch, cards=2)
     def parse(index, region):
