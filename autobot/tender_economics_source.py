@@ -31,9 +31,9 @@ def fingerprints(reports: Path, tender_id: str) -> dict:
     documents = read_bundle(reports, tender_id)
     # Retry timestamps do not create a new economic source when bytes and state
     # stayed the same. Changes to the current set or an incomplete attempt do.
-    result['current_documents'] = ({'state': documents.get('state'),
-        'files': sorted(documents.get('files', []), key=lambda row: row.get('saved_name', ''))}
-        if documents else None)
+    if documents is not None:
+        result['current_documents'] = {'state': documents.get('state'),
+            'files': sorted(documents.get('files', []), key=lambda row: row.get('saved_name', ''))}
     return result
 
 

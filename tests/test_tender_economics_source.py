@@ -5,6 +5,13 @@ import pytest
 from autobot.tender_economics_source import build_source
 
 
+def test_legacy_context_keeps_its_version_until_documents_are_refreshed(tmp_path):
+    source = build_source('12345678', {}, tmp_path, lambda *args: {'positions': []})
+    # Recorded from af110f3: installing the bundle reader must not invalidate
+    # private conditions before any real source or document-state change.
+    assert source['version'] == 'cfb4c00b3aea801dc8217b224841ca9ec6e709fbbb2b24794e117d732843872e'
+
+
 def test_reference_only_counts_confirmed_prices_and_tracks_real_market_files(tmp_path):
     tid = '12345678'
     source_file = tmp_path / f'РЫНОК_ИСТОЧНИКИ_ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx'
