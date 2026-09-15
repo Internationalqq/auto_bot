@@ -5192,7 +5192,12 @@ def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict]) -> pd.Da
         return pd.DataFrame()
     # Include all requested estimate rows in the denominator, even when the
     # persisted market file contains only a successful subset.
-    return merge_market_frames(_estimate_rows_to_report_df(rows_filtered), market)
+    estimate = _estimate_rows_to_report_df(rows_filtered)
+    if path.parent.parent.resolve() == USER_ESTIMATES_DIR.resolve():
+        region = (_load_estimate_meta(path.parent.name) or {}).get('market_city')
+        if region:
+            estimate['Регион поиска'] = str(region)
+    return merge_market_frames(estimate, market)
 
 
 def _table_cell_text(value) -> str:
@@ -9984,8 +9989,14 @@ def tender_svodka_download_xlsx(tender_id: str):
         abort(404)
     market = _normalize_market_columns(pd.read_excel(market_path))
     estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
-    frame = (merge_market_frames(pd.read_excel(estimate_path), market)
-             if estimate_path.is_file() else sanitize_market_frame(market))
+    meta = load_tender_metadata().get(tid) or {}
+    if estimate_path.is_file():
+        estimate = pd.read_excel(estimate_path)
+        if meta.get('region'):
+            estimate['Регион поиска'] = str(meta['region'])
+        frame = merge_market_frames(estimate, market)
+    else:
+        frame = sanitize_market_frame(market)
     buf = io.BytesIO()
     frame.to_excel(buf, index=False, engine="openpyxl")
     buf.seek(0)

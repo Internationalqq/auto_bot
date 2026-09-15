@@ -16,11 +16,12 @@ import pandas as pd
 
 from autobot.market_analytics import COL_NAME, COL_UNIT, COL_QTY, COL_SUM, COL_UNIT_PRICE
 from autobot.market_strategy import (
-    assess_price_plausibility, is_direct_source_url, normalize_unit, units_compatible,
+    assess_price_plausibility, is_direct_source_url, normalize_unit, units_compatible, classify_position,
 )
+from autobot.market_evidence_policy import freshness_reason, specification_reason, select_independent_offers, region_key, price_terms_reason
 
 BUNDLE_COLUMN = "Цена-сайт-телефон (json)"
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 
 def clean(value: Any) -> str:
@@ -73,6 +74,7 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
         return []
     result = []
     seen = set()
+    position = classify_position(row.get(COL_NAME), row.get(COL_UNIT), row.get('basis_code'), row.get('Раздел'))
     for item in bundle:
         if not isinstance(item, dict):
             continue
@@ -87,17 +89,28 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
             reason = "Нет прямой ссылки на предложение"
         elif COL_UNIT in row and clean(row.get(COL_UNIT)) in {"", "—", "-"}:
             reason = "Не определена единица позиции сметы"
+        elif not clean(item.get("matched_unit")):
+            reason = "Не подтверждена единица предложения"
         elif clean(item.get("matched_unit")) and clean(row.get(COL_UNIT)) and not units_compatible(
             normalize_unit(clean(row.get(COL_UNIT))), normalize_unit(clean(item.get("matched_unit")))
         ):
             reason = "Единица предложения не совпадает с позицией сметы"
         else:
+            reason = freshness_reason(item, position.bucket) or price_terms_reason(item) or specification_reason(
+                row.get(COL_NAME), clean(item.get('evidence')) or clean(item.get('snippet')) or clean(item.get('title')),
+            )
+            expected_region = region_key(row.get('Регион поиска')) or region_key(item.get('search_region'))
+            if not reason and expected_region:
+                if region_key(item.get('search_region')) != expected_region:
+                    reason = 'Регион сохранённой цены не совпадает с текущим поиском'
+                elif not clean(item.get('region_evidence')):
+                    reason = 'Источник не подтверждает работу или доставку в выбранный регион'
             assessment = assess_price_plausibility(
                 estimate_price=_number(row.get(COL_UNIT_PRICE)), market_price=price,
                 name=clean(row.get(COL_NAME)), unit=clean(row.get(COL_UNIT)),
                 quantity=_number(row.get(COL_QTY)), total=_number(row.get(COL_SUM)),
             )
-            if assessment.status in {"review", "extreme"}:
+            if not reason and assessment.status in {"review", "extreme"}:
                 reason = assessment.reason
         offer["price"] = price
         offer["verification"] = "candidate" if reason else "verified"
@@ -112,7 +125,8 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
 
 
 def confirmed_prices(row: Mapping[str, Any]) -> list[float]:
-    return [offer["price"] for offer in offers_for_row(row) if offer["verification"] == "verified"]
+    return [offer["price"] for offer in select_independent_offers(
+        [offer for offer in offers_for_row(row) if offer["verification"] == "verified"])]
 
 
 def sanitize_market_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -120,16 +134,26 @@ def sanitize_market_frame(frame: pd.DataFrame) -> pd.DataFrame:
     import statistics
 
     result = frame.copy()
-    bundles, prices, medians, lows, highs, counts = [], [], [], [], [], []
+    bundles, prices, medians, lows, highs, counts, candidates, statuses = [], [], [], [], [], [], [], []
     for _, row in result.iterrows():
         offers = offers_for_row(row)
-        values = [offer["price"] for offer in offers if offer["verification"] == "verified"]
+        values = [offer["price"] for offer in select_independent_offers(
+            [offer for offer in offers if offer["verification"] == "verified"])]
         bundles.append(json.dumps(offers, ensure_ascii=False, allow_nan=False))
         prices.append("; ".join(format(Decimal(str(v)).normalize(), "f") for v in values))
         medians.append(statistics.median(values) if values else None)
         lows.append(min(values) if values else None)
         highs.append(max(values) if values else None)
         counts.append(len(values))
+        candidate_count = sum(offer['verification'] != 'verified' for offer in offers)
+        candidates.append(candidate_count)
+        status = clean(row.get('Ошибка / статус'))
+        if offers:
+            status = f"В расчёте источников: {len(values)}; кандидатов: {candidate_count}"
+            if not values and candidate_count:
+                reasons = list(dict.fromkeys(clean(offer.get('verification_reason')) for offer in offers))
+                status += '. ' + '; '.join(reason for reason in reasons if reason)
+        statuses.append(status)
     result[BUNDLE_COLUMN] = bundles
     for column in ("Цены за ед. (рынок, руб)", "Рынок цены за ед. (итог)", "Суммы из ответа (итог)"):
         result[column] = prices
@@ -137,6 +161,9 @@ def sanitize_market_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result["Мин цена за ед. (рынок)"] = lows
     result["Макс цена за ед. (рынок)"] = highs
     result["Подтверждённых источников"] = counts
+    result["Проверенных источников"] = counts
+    result["Непроверенных кандидатов"] = candidates
+    result["Ошибка / статус"] = statuses
     result["Версия проверки рынка"] = CONTRACT_VERSION
     return result
 
@@ -209,7 +236,9 @@ def merge_market_frames(estimate: pd.DataFrame, market: pd.DataFrame) -> pd.Data
         row["Сопоставление рынка"] = "Позиция сопоставлена" if matched is not None else "Нет однозначного соответствия"
         if matched is not None:
             for column, value in matched.items():
-                if column not in {COL_NAME, COL_UNIT, COL_QTY, COL_SUM, COL_UNIT_PRICE, *_CONTEXT}:
+                if column not in {COL_NAME, COL_UNIT, COL_QTY, COL_SUM, COL_UNIT_PRICE, *_CONTEXT} and not (
+                    column == 'Регион поиска' and clean(original.get('Регион поиска'))
+                ):
                     row[column] = value
             if clean(matched.get(COL_UNIT)) in {"", "—", "-"}:
                 # Keep legacy sources inspectable without guessing their unit.

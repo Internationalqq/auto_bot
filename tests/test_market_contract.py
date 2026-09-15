@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
@@ -15,7 +16,8 @@ def position(name="Щебень гранитный 5-20", unit="м3", price=3000
 
 def offer(row, price=2500, verification="verified", **extra):
     return {**row, BUNDLE_COLUMN: json.dumps([{"price": price, "verification": verification,
-        "url": "https://supplier.example/item", "matched_unit": row[COL_UNIT], **extra}])}
+        "url": "https://supplier.example/item", "matched_unit": row[COL_UNIT],
+        "observed_at": datetime.now(timezone.utc).isoformat(), **extra}])}
 
 
 def test_same_name_different_units_cannot_share_price():
@@ -86,3 +88,45 @@ def test_unknown_row_amount_keeps_coverage_unknown():
     assert stats.rows_without_amount == 1
     assert stats.coverage_cost_percent is None
     assert _verdict_label(stats)[1] == "viability--warn"
+
+
+def test_saved_price_without_observation_date_requires_new_search():
+    data = offer(position())
+    bundle = json.loads(data[BUNDLE_COLUMN])
+    bundle[0].pop('observed_at')
+    data[BUNDLE_COLUMN] = json.dumps(bundle)
+    assert confirmed_prices(data) == []
+    assert compute_viability_stats(pd.DataFrame([data])).comparable == 0
+
+
+def test_market_row_cannot_overwrite_current_search_region():
+    estimate = position(**{'Регион поиска': 'Ярославль'})
+    market = offer(position(**{'Регион поиска': 'Москва'}), search_region='Москва', region_evidence='Бетон в Москве')
+    merged = merge_market_frames(pd.DataFrame([estimate]), pd.DataFrame([market]))
+    assert merged.iloc[0]['Регион поиска'] == 'Ярославль'
+    assert confirmed_prices(merged.iloc[0]) == []
+    assert json.loads(merged.iloc[0][BUNDLE_COLUMN])[0]['verification'] == 'candidate'
+
+
+def test_common_calculation_uses_one_quote_per_source():
+    data = position(price=200)
+    bundle = []
+    for n in range(10):
+        bundle.append({'price': 100, 'verification': 'verified', 'url': f'https://same.example/item/{n}',
+                       'matched_unit': 'м3', 'observed_at': datetime.now(timezone.utc).isoformat()})
+    bundle.append(dict(bundle[0], price=200, url='https://other.example/item'))
+    data[BUNDLE_COLUMN] = json.dumps(bundle)
+    assert sorted(confirmed_prices(data)) == [100, 200]
+    assert compute_viability_stats(pd.DataFrame([data])).comparable_market_total == 150
+
+
+def test_base_unit_price_is_not_rounded_before_extending_quantity():
+    from autobot.real_market_scraper import MarketOffer, _build_output_row
+    from autobot.market_strategy import build_search_plan
+    data = position(name='Кабель контрольный', unit='м', price=0.006, qty=1000)
+    quote = MarketOffer(source='Поставщик', title=data[COL_NAME], price=0.005, url='https://supplier.example/item',
+                        verification='verified', matched_unit='м', observed_at=datetime.now(timezone.utc).isoformat())
+    output = _build_output_row(pd.Series(data), offers=[quote], query='кабель', err='',
+                              plan=build_search_plan(data[COL_NAME], data[COL_UNIT]))
+    assert confirmed_prices(output) == [0.005]
+    assert compute_viability_stats(pd.DataFrame([output])).comparable_market_total == 5

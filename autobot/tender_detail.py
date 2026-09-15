@@ -231,6 +231,8 @@ def _parse_bundle(
                 "snapshot_path": _clean(item.get("snapshot_path")),
                 "matched_unit": _clean(item.get("matched_unit")),
                 "observed_at": _clean(item.get("observed_at")),
+                "region_evidence": _clean(item.get('region_evidence')),
+                "search_region": _clean(item.get('search_region')),
                 "evidence": _clean(item.get("evidence") or item.get("snippet")),
                 "published_at": _clean(item.get("published_at")),
                 "location": _clean(item.get("location")),
@@ -277,6 +279,8 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     comparison_path = REPORTS_DIR / f"{OUT_PREFIX}{tender_id}.xlsx"
     estimate = _read_excel(estimate_path)
     market = _read_excel(market_path)
+    if metadata.get('region'):
+        estimate['Регион поиска'] = str(metadata['region'])
     parse_manifest = _estimate_parse_manifest(tender_id)
     from autobot.market_contract import merge_market_frames, position_identity
     from autobot.tender_viability import compute_viability_stats, _estimate_numeric_for_compare
@@ -344,16 +348,8 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         candidate_sources = [source for source in sources if not source["verified"]]
         verified_count = len(verified_sources)
         candidate_count = len(candidate_sources)
-        verified_prices = [source["price"] for source in verified_sources if source["price"] is not None]
-        verified_weighted_prices = [
-            (
-                source["price"],
-                max(0.01, float(source.get("source_weight") or 1) / 100)
-                * max(0.05, float(source.get("confidence") or 1) / 100),
-            )
-            for source in verified_sources
-            if source["price"] is not None
-        ]
+        from autobot.market_contract import confirmed_prices
+        verified_prices = confirmed_prices(market_row) if market_row is not None else []
         market_median_base = statistics.median(verified_prices) if verified_prices else None
         if not verified_prices:
             verified_count = 0
@@ -417,6 +413,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
                 ),
                 "market_processed": market_processed,
                 "verified_count": verified_count,
+                "calculation_source_count": len(verified_prices),
                 "candidate_count": candidate_count,
                 "sources": sources,
                 "verdict": verdict,

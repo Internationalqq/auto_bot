@@ -39,7 +39,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from autobot.market_analytics import COL_DUP, COL_NAME, COL_QTY, COL_SUM, COL_UNIT_PRICE
-from autobot.market_source_adapters import inspect_source_page
+from autobot.market_source_adapters import inspect_source_page, source_region_evidence, region_matches_label
 from autobot.market_price_index import (
     lookup_verified_offers,
     record_parser_run,
@@ -201,6 +201,9 @@ class MarketOffer:
     agent_price: float | None = None
     agent_unit: str = ""
     agent_evidence: str = ""
+    search_region: str = ""
+    seller_id: str = ""
+    region_evidence: str = ""
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -494,8 +497,9 @@ def _source_page_cache_path(url: str) -> Path:
 
 def _load_source_page_cache(url: str) -> tuple[str, str, str] | None:
     payload = _read_json(_source_page_cache_path(url))
-    created_at = float(payload.get("created_at") or 0)
-    if not created_at:
+    from autobot.market_evidence_policy import observed_timestamp
+    created_at = observed_timestamp(payload.get("created_at"))
+    if created_at is None or created_at > time.time() + 900:
         return None
     ok = bool(payload.get("ok"))
     env_name = "MARKET_SOURCE_CACHE_TTL_SEC" if ok else "MARKET_SOURCE_ERROR_CACHE_TTL_SEC"
@@ -2088,7 +2092,7 @@ def _offer_bundle(offers: list[MarketOffer]) -> list[dict[str, object]]:
         {
             "source": o.source,
             "title": o.title,
-            "price": round(float(o.price), 2) if o.price and o.price > 0 else "",
+            "price": float(o.price) if o.price and o.price > 0 else "",
             "url": o.url,
             "phone": "",
             "snippet": o.snippet[:500],
@@ -2126,6 +2130,9 @@ def _offer_bundle(offers: list[MarketOffer]) -> list[dict[str, object]]:
             "agent_price": o.agent_price,
             "agent_unit": o.agent_unit,
             "agent_evidence": o.agent_evidence[:1600],
+            "search_region": o.search_region,
+            "seller_id": o.seller_id,
+            "region_evidence": o.region_evidence,
         }
         for o in offers
     ]
@@ -2411,6 +2418,13 @@ def _enrich_offer_from_page(
             if browser_inspection.accepted or browser_inspection.evidence:
                 inspection = browser_inspection
                 page_html = browser_html
+    # Cache reads retain the time of the captured page, not the current read.
+    from autobot.market_evidence_policy import observed_timestamp
+    cached_record = _read_json(_source_page_cache_path(offer.url)) if not is_avito else {}
+    captured = observed_timestamp(cached_record.get('created_at')) or time.time()
+    offer.observed_at = datetime.fromtimestamp(captured, tz=timezone.utc).isoformat(timespec='seconds')
+    offer.search_region = str(src_row.get('Регион поиска') or '').strip()
+    offer.region_evidence = source_region_evidence(page_html, offer.search_region, plan.position.bucket)
     if offer.adapter == "hermes-browser-agent" and _page_confirms_agent_evidence(page_html, offer):
         offer.evidence = offer.agent_evidence
         offer.snippet = offer.agent_evidence[:500]
@@ -2552,8 +2566,21 @@ def _verify_offers(
             offer.verification_reason = offer.page_error
             offer.rejection_code = offer.rejection_code or _failure_code(offer.page_error)
             offer.rejection_stage = offer.rejection_stage or "verification"
-        offer.matched_unit = check.matched_unit
-        offer.observed_at = check.observed_at
+        offer.matched_unit = check.matched_unit or offer.matched_unit
+        if not offer.observed_at and not is_agent_avito:
+            offer.observed_at = check.observed_at
+        offer.search_region = str(src_row.get('Регион поиска') or '').strip()
+        if is_agent_avito and region_matches_label(offer.search_region, offer.location):
+            offer.region_evidence = offer.location
+        from autobot.market_evidence_policy import freshness_reason, price_terms_reason
+        evidence_error = freshness_reason(vars(offer), plan.position.bucket) or price_terms_reason(vars(offer))
+        if offer.search_region and not offer.region_evidence:
+            evidence_error = 'Источник не подтверждает работу или доставку в регион: ' + offer.search_region
+        if offer.verification == 'verified' and evidence_error:
+            offer.verification = 'candidate'
+            offer.verification_reason = evidence_error
+            offer.rejection_code = 'region_unknown' if offer.search_region and not offer.region_evidence else 'stale_evidence'
+            offer.rejection_stage = 'verification'
         offer.position_type = plan.position.slug
         plausibility = assess_price_plausibility(
             estimate_price=src_row.get(COL_UNIT_PRICE, ""),
@@ -2618,6 +2645,7 @@ def research_position_market(
             "Ед. изм.": unit,
             "basis_code": basis_code,
             "Раздел": section,
+            "Регион поиска": region,
         }
     )
     selected_sources = sources or ["web", "avito"]
@@ -2786,7 +2814,8 @@ def _build_output_row(src_row: pd.Series, *, offers: list[MarketOffer], query: s
         base[f"Этап отклонения {i}"] = offer.rejection_stage
         base[f"Медиана группы {i}"] = offer.consensus_median
         base[f"Отклонение от медианы {i}"] = offer.consensus_ratio
-    return base
+    from autobot.market_contract import sanitize_market_frame
+    return sanitize_market_frame(pd.DataFrame([base])).iloc[0].to_dict()
 
 
 def _eligible_rows(df: pd.DataFrame) -> list[tuple[int, pd.Series]]:
@@ -2976,14 +3005,16 @@ def _revalidate_previous(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return result, changed_rows
 
 
-def _processed_keys(prev: pd.DataFrame) -> set[str]:
+def _processed_keys(prev: pd.DataFrame, *, region: str | None = None) -> set[str]:
     from autobot.market_contract import confirmed_prices, position_identity
+    from autobot.market_evidence_policy import region_key
 
-    return {position_identity(row) for _, row in prev.iterrows() if confirmed_prices(row)}
+    return {position_identity(row) for _, row in prev.iterrows()
+            if (region is None or region_key(row.get('Регион поиска')) == region_key(region)) and confirmed_prices(row)}
 
 
-def _verified_market_keys(prev: pd.DataFrame) -> set[str]:
-    return _processed_keys(prev)
+def _verified_market_keys(prev: pd.DataFrame, *, region: str | None = None) -> set[str]:
+    return _processed_keys(prev, region=region)
 
 
 def _saved_offers_for_key(prev: pd.DataFrame, key: str) -> list[MarketOffer]:
@@ -3047,12 +3078,13 @@ def _merge_rows(prev: pd.DataFrame, rows: list[dict]) -> pd.DataFrame:
     return pd.concat([retained, current], ignore_index=True)
 
 
-def _offers_from_local_index(src_row: pd.Series, *, max_results: int) -> list[MarketOffer]:
+def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: str = "") -> list[MarketOffer]:
     rows = lookup_verified_offers(
         name=src_row.get(COL_NAME, ""),
         unit=src_row.get("Ед. изм.", ""),
         basis_code=src_row.get("basis_code", ""),
         section=src_row.get("Раздел", ""),
+        region=region,
         limit=max_results,
     )
     offers: list[MarketOffer] = []
@@ -3070,11 +3102,17 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int) -> list[Ma
             verification="verified",
             confidence=max(0.05, min(1.0, float(item.get("confidence") or 0.5) * float(item.get("match_score") or 1))),
             verification_reason="Проверенный источник из локального индекса; TTL не истёк",
-            matched_unit=str(item.get("unit") or ""),
+            matched_unit=str(item.get("matched_unit") or ""),
             observed_at=observed_at,
             position_type=str(item.get("position_type") or ""),
             page_checked=True,
-            evidence=f"Аудиторская запись: {item.get('audit_record_path') or 'метаданные индекса'}",
+            evidence=str(item.get('evidence') or ''),
+            location=str(item.get('location') or ''),
+            published_at=str(item.get('published_at') or ''),
+            price_scope=str(item.get('price_scope') or ''),
+            search_region=str(item.get('search_region') or ''),
+            seller_id=str(item.get('seller_id') or ''),
+            region_evidence=str(item.get('region_evidence') or ''),
             source_weight=float(item.get("source_weight") or source_quality(item.get("url"), item.get("source"))),
             index_hit=True,
             index_match_score=float(item.get("match_score") or 0),
@@ -3099,7 +3137,7 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int) -> list[Ma
     return _dedupe_and_sort(offers, max_results=max_results)
 
 
-def _store_verified_offers_in_index(tender_id: str, src_row: pd.Series, offers: list[MarketOffer]) -> int:
+def _store_verified_offers_in_index(tender_id: str, src_row: pd.Series, offers: list[MarketOffer], *, region: str = "") -> int:
     fresh = [offer for offer in offers if offer.verification == "verified" and not offer.index_hit]
     if not fresh:
         return 0
@@ -3118,6 +3156,7 @@ def _store_verified_offers_in_index(tender_id: str, src_row: pd.Series, offers: 
         unit=src_row.get("Ед. изм.", ""),
         basis_code=src_row.get("basis_code", ""),
         section=src_row.get("Раздел", ""),
+        region=region,
         offers=payloads,
     )
     if stored:
@@ -3126,6 +3165,7 @@ def _store_verified_offers_in_index(tender_id: str, src_row: pd.Series, offers: 
             unit=src_row.get("Ед. изм.", ""),
             basis_code=src_row.get("basis_code", ""),
             section=src_row.get("Раздел", ""),
+            region=region,
             limit=max(20, len(offers) * 3),
         )
         by_url = {_canonical_offer_url(str(item.get("url") or "")): item for item in indexed}
@@ -3166,7 +3206,7 @@ def _backfill_price_index_from_report(tender_id: str, frame: pd.DataFrame) -> tu
                 offers.append(MarketOffer(**payload))
             except (TypeError, ValueError):
                 continue
-        stored = _store_verified_offers_in_index(tender_id, row, offers)
+        stored = _store_verified_offers_in_index(tender_id, row, offers, region=str(row.get('Регион поиска') or ''))
         if not stored:
             continue
         stored_total += stored
@@ -3205,10 +3245,10 @@ def probe_agent_market_start_urls(
     if not estimate_path.is_file():
         return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Нет сметы для проверки прямых источников"}
     estimate = pd.read_excel(estimate_path)
-    matches = estimate[estimate[COL_NAME].fillna("").astype(str).map(_norm_key) == _norm_key(name)]
-    if matches.empty:
-        return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Позиция больше не найдена в смете"}
-    source_row = matches.iloc[0]
+    try:
+        source_row = _resolve_agent_source_row(estimate, position_payload)
+    except ValueError as error:
+        return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": str(error)}
     plan = build_search_plan(
         source_row.get(COL_NAME, ""),
         source_row.get("Ед. изм.", ""),
@@ -3296,6 +3336,8 @@ def import_agent_market_result(
     key = _norm_key(name)
     source_row = _resolve_agent_source_row(estimate, position_payload)
     metadata = load_tender_metadata().get(tid, {})
+    source_row = source_row.copy()
+    source_row['Регион поиска'] = str(metadata.get('region') or position_payload.get('region') or '').strip()
     plan = build_search_plan(
         source_row.get(COL_NAME, ""),
         source_row.get("Ед. изм.", ""),
@@ -3343,8 +3385,6 @@ def import_agent_market_result(
             # into the dedicated browser-session workflow.
             continue
         observed_at = str(item.get("observed_at") or result.get("observed_at") or "").strip()
-        if not observed_at:
-            observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         plausibility = assess_price_plausibility(
             estimate_price=source_row.get(COL_UNIT_PRICE, ""),
             market_price=price,
@@ -3412,7 +3452,7 @@ def import_agent_market_result(
         plan,
         reference_offers=saved,
     )
-    stored_verified = _store_verified_offers_in_index(tid, source_row, imported)
+    stored_verified = _store_verified_offers_in_index(tid, source_row, imported, region=source_row['Регион поиска'])
     refreshed_urls = {_canonical_offer_url(offer.url) for offer in imported if offer.url}
     if refreshed_urls:
         # A newly imported observation of the same direct page must replace its
@@ -3533,7 +3573,7 @@ def run_tender(
             print(f"Локальный индекс: перенесено проверенных источников из отчёта — {backfilled_offers}", flush=True)
     eligible = _eligible_rows(est)
     if only_without_verified:
-        verified_keys = _verified_market_keys(prev)
+        verified_keys = _verified_market_keys(prev, region=region)
         filtered: list[tuple[int, pd.Series]] = []
         seen_keys: set[str] = set()
         for row_index, row in eligible:
@@ -3556,7 +3596,7 @@ def run_tender(
     # order in the estimate itself. Search order must not become row identity.
     eligible.sort(key=lambda entry: -float(pd.to_numeric(entry[1].get("Сумма, руб"), errors="coerce") or 0)
                   if pd.notna(pd.to_numeric(entry[1].get("Сумма, руб"), errors="coerce")) else 0)
-    done_keys = set() if no_resume or rerun_selected else _processed_keys(prev)
+    done_keys = set() if no_resume or rerun_selected else _processed_keys(prev, region=region)
     eligible = [(index, row) for index, row in eligible if position_identity(row) not in done_keys]
     if max_rows and max_rows > 0:
         eligible = eligible[:max_rows]
@@ -3573,6 +3613,8 @@ def run_tender(
     browser_headless = (os.environ.get("MARKET_AVITO_HEADLESS", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
     with AvitoBrowserFetcher(enabled=use_browser and not dry_run, headless=browser_headless) as browser:
         for seq, (_, row) in enumerate(eligible, start=1):
+            row = row.copy()
+            row['Регион поиска'] = region
             work_name = str(row.get(COL_NAME, "") or "").strip()
             key = position_identity(row)
             if key in done_keys:
@@ -3593,7 +3635,7 @@ def run_tender(
                 offers = []
                 err = ""
             else:
-                offers = [] if avito_collect_only else _offers_from_local_index(row, max_results=max_results)
+                offers = [] if avito_collect_only else _offers_from_local_index(row, max_results=max_results, region=region)
                 indexed_reused += sum(1 for offer in offers if offer.index_hit)
                 errors: list[str] = []
                 primary_sources = [source for source in sources if source != "avito"] or sources
@@ -3673,7 +3715,7 @@ def run_tender(
                     max_results=min(10, max_results + len(previous_non_avito)),
                 )
             if not dry_run:
-                indexed_stored += _store_verified_offers_in_index(tid, row, offers)
+                indexed_stored += _store_verified_offers_in_index(tid, row, offers, region=region)
             new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
             merged = _merge_rows(prev, new_rows)
             write_excel(merged, out_path)

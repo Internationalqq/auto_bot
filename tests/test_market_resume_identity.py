@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 import pandas as pd
 from autobot.market_contract import BUNDLE_COLUMN, position_identity
 from autobot.market_analytics import COL_NAME, COL_UNIT, COL_QTY, COL_UNIT_PRICE, COL_SUM
@@ -9,7 +10,8 @@ import pytest
 def row(unit='м3', price=2500, verification='verified', source='a.xlsx'):
     return {COL_NAME: 'Щебень гранитный', COL_UNIT: unit, COL_QTY: 1, COL_UNIT_PRICE: 3000,
             COL_SUM: 3000, 'Файл ЛСР': source, BUNDLE_COLUMN: json.dumps([{'price': price,
-            'url': 'https://supplier.example/item', 'verification': verification}])}
+            'url': 'https://supplier.example/item', 'verification': verification,
+            'matched_unit': unit, 'observed_at': datetime.now(timezone.utc).isoformat()}])}
 
 
 def test_rerun_one_unit_preserves_other_unit_and_other_file():
@@ -26,6 +28,17 @@ def test_failed_search_is_not_marked_complete_and_retry_keeps_verified_rows():
     processed = _processed_keys(pd.DataFrame([good, empty]))
     assert processed == {position_identity(good)}
     assert position_identity(empty) not in processed
+
+
+def test_changed_search_region_does_not_skip_previous_local_price():
+    saved = row()
+    saved['Регион поиска'] = 'Ярославль'
+    offers = json.loads(saved[BUNDLE_COLUMN])
+    offers[0].update(search_region='Ярославль', region_evidence='Доставка по Ярославлю')
+    saved[BUNDLE_COLUMN] = json.dumps(offers)
+    frame = pd.DataFrame([saved])
+    assert _processed_keys(frame, region='Ярославль') == {position_identity(saved)}
+    assert _processed_keys(frame, region='Миасс') == set()
 
 
 def test_legacy_price_without_unit_cannot_be_assigned_by_title_alone():

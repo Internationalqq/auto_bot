@@ -35,6 +35,7 @@ class MarketPriceIndexTests(unittest.TestCase):
                     "price": 2800,
                     "url": "https://supplier.example/catalog/crushed-stone-20-40",
                     "confidence": 0.9,
+                    "matched_unit": "м3",
                     "observed_at": datetime.now(timezone.utc).isoformat(),
                     "page_html": "<html><body>Щебень 20-40, цена 2800 руб/м3</body></html>",
                 }
@@ -65,11 +66,42 @@ class MarketPriceIndexTests(unittest.TestCase):
                     "price": 900,
                     "url": "https://supplier.example/sand",
                     "confidence": 0.9,
+                    "matched_unit": "м3",
                     "observed_at": old,
                 }
             ],
         )
         self.assertEqual(index.lookup_verified_offers(name="Песок строительный", unit="м3"), [])
+
+    def test_unknown_date_is_not_backfilled_as_today(self) -> None:
+        stored = index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3', offers=[{
+            'verification': 'verified', 'price': 900, 'url': 'https://supplier.example/sand',
+            'matched_unit': 'м3', 'observed_at': 'unknown',
+        }])
+        self.assertEqual(stored, 0)
+        self.assertEqual(index.lookup_verified_offers(name='Песок строительный', unit='м3'), [])
+
+    def test_regional_cache_keeps_distinct_quotes_and_source_conditions(self) -> None:
+        for region, price in [('Ярославль', 900), ('Миасс', 1200)]:
+            stored = index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3', region=region,
+                offers=[{'verification': 'verified', 'source': 'Поставщик', 'title': 'Песок строительный',
+                         'price': price, 'url': 'https://supplier.example/sand', 'matched_unit': 'м3',
+                         'observed_at': datetime.now(timezone.utc).isoformat(), 'location': region, 'search_region': region,
+                         'evidence': f'Песок строительный — {price} руб/м3', 'price_scope': 'без доставки'}])
+            self.assertEqual(stored, 1)
+        local = index.lookup_verified_offers(name='Песок строительный', unit='м3', region='Ярославль')
+        self.assertEqual([r['price'] for r in local], [900])
+        self.assertEqual(local[0]['location'], 'Ярославль')
+        self.assertEqual(local[0]['price_scope'], 'без доставки')
+        self.assertIn('900', local[0]['evidence'])
+        self.assertEqual(index.lookup_verified_offers(name='Песок строительный', unit='м3', region='Москва'), [])
+
+    def test_recording_an_old_offer_does_not_relabel_its_region(self) -> None:
+        offer = {'verification': 'verified', 'price': 900, 'url': 'https://supplier.example/sand',
+                 'matched_unit':'м3', 'observed_at':datetime.now(timezone.utc).isoformat(),
+                 'search_region':'Миасс', 'region_evidence':'Доставка по Миассу'}
+        self.assertEqual(index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3',
+                                                     region='Ярославль', offers=[offer]), 0)
 
     def test_weighted_median_prefers_trusted_cluster(self) -> None:
         value = index.weighted_median([(800, 0.9), (820, 0.8), (250, 0.1)])

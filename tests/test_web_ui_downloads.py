@@ -201,6 +201,7 @@ def test_tender_download_routes_serve_existing_files(monkeypatch, tmp_path):
 
 def test_estimate_price_progress_excludes_candidates_and_live_processed_count(monkeypatch, tmp_path):
     import json
+    import time
     import pandas as pd
     from autobot.market_contract import BUNDLE_COLUMN
 
@@ -208,7 +209,9 @@ def test_estimate_price_progress_excludes_candidates_and_live_processed_count(mo
             for unit in ['м3', 'т']]
     frame = web_ui._estimate_rows_to_report_df(rows)
     frame[BUNDLE_COLUMN] = [json.dumps([{'price': 2500, 'url': 'https://supplier.example/item',
-                                        'verification': state}]) for state in ['verified', 'candidate']]
+                                        'verification': state, 'matched_unit': unit,
+                                        'observed_at': time.time()}])
+                            for state, unit in zip(['verified', 'candidate'], ['м3', 'т'])]
     path = tmp_path / 'market.xlsx'
     frame.to_excel(path, index=False)
     monkeypatch.setattr(web_ui, '_estimate_market_raw_path', lambda _: path)

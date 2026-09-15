@@ -21,8 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from autobot.market_strategy import classify_position, market_query_name, normalize_unit
+from autobot.market_strategy import classify_position, market_query_name, normalize_unit, units_compatible
 from autobot.paths import REPO_ROOT
+from autobot.market_evidence_policy import evidence_ttl_days, observed_timestamp, region_key, specification_reason, freshness_reason, price_terms_reason
+from autobot.market_source_adapters import region_matches_label
 
 
 INDEX_ROOT = REPO_ROOT / "data" / "market_index"
@@ -56,6 +58,7 @@ class PriceIdentity:
     position_type: str
     brand_model: str
     query_name: str
+    search_region: str = ""
 
 
 def _clean(value: object) -> str:
@@ -88,7 +91,7 @@ def _brand_model(value: object, *, bucket: str) -> str:
     return " ".join(dict.fromkeys(item.casefold() for item in candidates + latin))[:180]
 
 
-def build_price_identity(name: object, unit: object = "", basis_code: object = "", section: object = "") -> PriceIdentity:
+def build_price_identity(name: object, unit: object = "", basis_code: object = "", section: object = "", region: object = "") -> PriceIdentity:
     query_name = market_query_name(name)
     position = classify_position(name, unit, basis_code, section)
     tokens = _identity_tokens(query_name)
@@ -96,6 +99,9 @@ def build_price_identity(name: object, unit: object = "", basis_code: object = "
     unit_norm = normalize_unit(unit)
     brand = _brand_model(name, bucket=position.bucket)
     readable = "|".join((position.bucket, position.slug, unit_norm, category_key, brand))
+    search_region = region_key(region)
+    if search_region:
+        readable += "|region:" + search_region
     normalized_key = hashlib.sha256(readable.encode("utf-8")).hexdigest()[:32]
     return PriceIdentity(
         normalized_key=normalized_key,
@@ -106,6 +112,7 @@ def build_price_identity(name: object, unit: object = "", basis_code: object = "
         position_type=position.slug,
         brand_model=brand,
         query_name=query_name,
+        search_region=search_region,
     )
 
 
@@ -229,31 +236,12 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
-def _iso_timestamp(value: object) -> float:
-    text = _clean(value)
-    if text:
-        try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            pass
-    return time.time()
+def _iso_timestamp(value: object) -> float | None:
+    return observed_timestamp(value)
 
 
 def _ttl_days(identity: PriceIdentity, url: str) -> int:
-    configured = os.environ.get("MARKET_INDEX_TTL_DAYS", "").strip()
-    if configured:
-        try:
-            return max(1, int(configured))
-        except ValueError:
-            pass
-    host = urlparse(url).netloc.casefold()
-    if "avito.ru" in host:
-        return 14
-    if identity.bucket == "materials":
-        return 30
-    if identity.bucket == "works":
-        return 60
-    return 45
+    return evidence_ttl_days(identity.bucket, url)
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -336,9 +324,10 @@ def record_verified_offers(
     unit: object,
     basis_code: object = "",
     section: object = "",
+    region: object = "",
     offers: list[dict],
 ) -> int:
-    identity = build_price_identity(name, unit, basis_code, section)
+    identity = build_price_identity(name, unit, basis_code, section, region)
     if not identity.unit or identity.bucket not in {"works", "materials"}:
         return 0
     now = time.time()
@@ -352,9 +341,22 @@ def record_verified_offers(
                 price = float(offer.get("price") or 0)
             except (TypeError, ValueError):
                 continue
-            if not url or price <= 0:
+            if not url or not math.isfinite(price) or price <= 0 or not _clean(offer.get('matched_unit')):
+                continue
+            if not units_compatible(normalize_unit(unit), normalize_unit(offer.get('matched_unit'))) or price_terms_reason(offer):
                 continue
             observed = _iso_timestamp(offer.get("observed_at"))
+            if observed is None or observed > now + 900:
+                continue
+            if specification_reason(name, offer.get('evidence') or offer.get('snippet') or offer.get('title')):
+                continue
+            geo_evidence = _clean(offer.get('region_evidence'))
+            if identity.search_region and region_key(offer.get('search_region')) != identity.search_region:
+                continue
+            if not geo_evidence and region_matches_label(region, offer.get('location')):
+                geo_evidence = _clean(offer.get('location'))
+            if identity.search_region and not geo_evidence:
+                continue
             ttl_days = _ttl_days(identity, url)
             quality = source_quality(url, offer.get("source"))
             try:
@@ -377,6 +379,14 @@ def record_verified_offers(
                     "source_weight": quality,
                     "observed_at": observed,
                     "expires_at": observed + ttl_days * 86400,
+                    "search_region": identity.search_region,
+                    "matched_unit": _clean(offer.get('matched_unit')),
+                    "evidence": _clean(offer.get('evidence') or offer.get('snippet')),
+                    "location": _clean(offer.get('location')),
+                    "published_at": _clean(offer.get('published_at')),
+                    "price_scope": _clean(offer.get('price_scope')),
+                    "seller_id": _clean(offer.get('seller_id')),
+                    "region_evidence": geo_evidence,
                 },
             )
             host = urlparse(url).netloc.casefold().split(":", 1)[0]
@@ -434,9 +444,10 @@ def lookup_verified_offers(
     unit: object,
     basis_code: object = "",
     section: object = "",
+    region: object = "",
     limit: int = 5,
 ) -> list[dict]:
-    identity = build_price_identity(name, unit, basis_code, section)
+    identity = build_price_identity(name, unit, basis_code, section, region)
     if not identity.unit or identity.bucket not in {"works", "materials"}:
         return []
     now = time.time()
@@ -450,6 +461,8 @@ def lookup_verified_offers(
     wanted = set(identity.category_tokens)
     matches: list[tuple[float, dict]] = []
     for row in rows:
+        if freshness_reason(dict(row), identity.bucket, now=now):
+            continue
         try:
             saved_tokens = set(json.loads(row["category_tokens_json"] or "[]"))
         except (TypeError, ValueError):
@@ -467,7 +480,22 @@ def lookup_verified_offers(
             wanted_brand = set(_identity_tokens(identity.brand_model))
             if saved_brand and wanted_brand and not (saved_brand & wanted_brand):
                 continue
+        try:
+            record_path = (REPO_ROOT / row['audit_record_path']).resolve()
+            if not record_path.is_relative_to(AUDIT_ROOT.resolve()) or record_path.stat().st_size > 1024 * 1024:
+                continue
+            evidence = json.loads(record_path.read_text(encoding='utf-8'))
+        except (ValueError, OSError, TypeError):
+            continue
+        if not isinstance(evidence, dict) or region_key(evidence.get('search_region')) != identity.search_region:
+            continue
+        if identity.search_region and not _clean(evidence.get('region_evidence')):
+            continue
+        if not _clean(evidence.get('matched_unit')) or not units_compatible(normalize_unit(unit), normalize_unit(evidence.get('matched_unit'))) or price_terms_reason(evidence) or specification_reason(name, evidence.get('evidence') or evidence.get('title')):
+            continue
         payload = dict(row)
+        for field in ('search_region', 'matched_unit', 'evidence', 'location', 'published_at', 'price_scope', 'seller_id', 'region_evidence'):
+            payload[field] = _clean(evidence.get(field))
         payload["match_score"] = round(similarity, 4)
         payload["index_hit"] = True
         matches.append((similarity * float(row["source_weight"]) * float(row["confidence"]), payload))

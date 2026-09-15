@@ -510,7 +510,7 @@ def build_search_plan(
 
     if position.bucket == "materials":
         queries = (
-            f"{exact_title} цена прайс {price_marker}".strip(),
+            f"{exact_title} цена прайс {price_marker}{place}".strip(),
             f"{title} купить поставщик цена {broad_unit}{place}".strip(),
         )
         return MarketSearchPlan(
@@ -521,7 +521,7 @@ def build_search_plan(
         )
     if position.bucket == "works":
         queries = (
-            f"{exact_title} стоимость работ прайс {price_marker}".strip(),
+            f"{exact_title} стоимость работ прайс {price_marker}{place}".strip(),
             f"{title} подрядчик стоимость работы {broad_unit}{place}".strip(),
         )
         return MarketSearchPlan(
@@ -618,6 +618,10 @@ def check_offer(
     parsed = urlparse(_text(url))
     host = parsed.netloc.casefold().split(":", 1)[0]
     evidence_text = f"{_text(title)} {_text(snippet)}"
+    from autobot.market_evidence_policy import specification_reason
+    conflict = specification_reason(name, evidence_text)
+    if conflict:
+        return OfferCheck("candidate", 0.30, conflict, "", observed_at)
     wanted = _tokens(name)
     found = _tokens(evidence_text)
     common = wanted & found

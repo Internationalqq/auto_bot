@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import json
+import time
 
 from autobot.tender_detail import _display_unit, _parse_bundle, _verdict
 
 
-def _bundle(price: float) -> str:
+def _bundle(price: float, unit: str = 'м2', title: str = 'Нанесение дорожной разметки') -> str:
     return json.dumps(
         [
             {
                 "source": "Интернет",
-                "title": "Нанесение дорожной разметки 189 руб. за м2",
+                "title": title,
                 "price": price,
                 "url": "https://supplier.example/services/marking",
                 "verification": "verified",
                 "verification_reason": "Совпали позиция и единица",
-                "evidence": "Цена нанесения разметки — 189 руб. за м2",
+                "evidence": f"{title} — {price} руб. за {unit}",
+                "matched_unit": unit,
+                "observed_at": time.time(),
             }
         ],
         ensure_ascii=False,
@@ -38,7 +41,7 @@ def test_existing_extreme_offer_is_not_displayed_as_verified() -> None:
 
 def test_market_and_estimate_are_displayed_in_same_block() -> None:
     sources = _parse_bundle(
-        _bundle(180),
+        _bundle(180, 'м3', 'Разработка грунта с погрузкой'),
         estimate_price=84_518,
         name="Разработка грунта с погрузкой в траншеях 1000",
         unit="м3",

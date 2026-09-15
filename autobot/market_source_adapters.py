@@ -175,8 +175,13 @@ def detect_price_unit(text: object) -> str:
         ("смена", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*смен\w*",)),
         ("м", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:метр\w*|\bм\.?\b|mtr)(?!\s*[23])",)),
     )
+    # A unit attached to the currency beats an unrelated unit elsewhere in the
+    # paragraph: "1500 ₽/час ... цена за м3 зависит" is an hourly quote.
+    attached = {unit for unit, patterns in checks if re.search(patterns[0], value, flags=re.IGNORECASE)}
+    if attached:
+        return next(iter(attached)) if len(attached) == 1 else ""
     for unit, patterns in checks:
-        if any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns):
+        if any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns[1:]):
             return unit
     # Price lists often put the unit in a separate table cell before the price.
     if re.search(r"\b(?:кв\.?\s*м|м\s*2)\b", value):
@@ -186,6 +191,52 @@ def detect_price_unit(text: object) -> str:
     if re.search(r"\b(?:пог\.?\s*м|м\.?п\.?)\b", value):
         return "пог.м"
     return ""
+
+
+def region_matches_label(region: object, label: object) -> bool:
+    ignored = {'г', 'город', 'область', 'обл', 'край', 'республика', 'респ', 'россия', 'на'}
+    words = [word for word in re.findall(r'[а-яёa-z]+', _fold(region)) if word not in ignored]
+    if not words:
+        return False
+    value = _fold(label)
+    # Match grammatical forms of the requested place, never an arbitrary
+    # prefix: Ярославский (a Moscow district) is not Ярославль.
+    def forms(word):
+        if word.endswith(('ская', 'ский', 'ское')):
+            return re.escape(word[:-2]) + r'(?:ая|ий|ое|ой|ую|ом|ого|им)'
+        if word.endswith('ь'):
+            return re.escape(word[:-1]) + r'(?:ь|я|ю|ем|е|и)'
+        if word.endswith('а'):
+            return re.escape(word[:-1]) + r'(?:а|у|е|ы|ой|ою)'
+        if word.endswith('я'):
+            return re.escape(word[:-1]) + r'(?:я|ю|е|и|ей|ею)'
+        if word[-1] not in 'аеёиоуыэюя':
+            return re.escape(word) + r'(?:а|у|ом|е)?'
+        return re.escape(word)
+    if re.search(r'\bобл(?:асть)?\b', _fold(region)) and not re.search(r'\bобл(?:асть|асти|астью)?\b', value):
+        return False
+    return all(re.search(r'\b' + forms(word) + r'\b', value) for word in words)
+
+
+def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
+    """Keep a bounded citation of local service/delivery, not a guessed city."""
+    if not _clean(region):
+        return ''
+    soup = BeautifulSoup(page_html, 'html.parser')
+    for node in soup.select('title, h1, address, [itemprop="addressLocality"], [itemprop="addressRegion"]'):
+        value = _clean(node.get_text(' ', strip=True))
+        if len(value) <= 900 and region_matches_label(region, value):
+            return value[:500]
+    for node in soup.select('p, li, meta[name="description"]'):
+        value = _clean(node.get('content') or node.get_text(' ', strip=True))
+        folded = _fold(value)
+        if len(value) > 900 or re.search(r'\b(?:не достав|не работа|кроме|исключ)', folded):
+            continue
+        if region_matches_label(region, value) and re.search(r'достав|работаем|оказыва\w* услуг|выполня\w* работ', folded):
+            return value[:500]
+        if bucket == 'materials' and re.search(r'достав\w*\s+по\s+(?:всей\s+)?россии', folded):
+            return value[:500]
+    return ''
 
 
 def _scope(text: object, page_text: object = "") -> str:
@@ -537,6 +588,10 @@ def inspect_source_page(
     if best is None:
         reason = "На странице не найдена рублёвая цена" if not facts else f"Найдено цен: {len(facts)}, но ни одна не относится к позиции и единице"
         return PageInspection(False, "no-match", adapter, reason=reason, facts_found=len(facts))
+    from autobot.market_evidence_policy import price_terms_reason
+    terms_reason = price_terms_reason({'url': url, 'evidence': best.evidence})
+    if terms_reason:
+        return PageInspection(False, "conditional-price", adapter, best.price, best.unit, best.scope, best.title, best.evidence, terms_reason, best.extractor, len(facts))
     target = normalize_unit(target_unit)
     if target and not units_compatible(best.unit, target):
         return PageInspection(False, "unit-mismatch", adapter, best.price, best.unit, best.scope, best.title, best.evidence, "Единица цены не совпала со сметой", best.extractor, len(facts))

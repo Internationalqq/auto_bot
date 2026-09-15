@@ -2,10 +2,24 @@ from __future__ import annotations
 
 import unittest
 
-from autobot.market_source_adapters import inspect_source_page
+from autobot.market_source_adapters import inspect_source_page, detect_price_unit, source_region_evidence
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_hourly_price_does_not_borrow_cubic_unit_from_following_sentence(self):
+        evidence = 'Стоимость разработки грунта: от 1500 ₽/час. Цена за м3 зависит от категории грунта.'
+        self.assertEqual(detect_price_unit(evidence), 'час')
+        result = inspect_source_page('<h1>Разработка грунта экскаватором</h1><p>' + evidence + '</p>',
+            'https://supplier.example/earthwork', name='Разработка грунта экскаватором', target_unit='м3', position_bucket='works')
+        self.assertFalse(result.accepted)
+
+    def test_region_needs_local_source_evidence(self):
+        moscow = '<h1>Разработка грунта в Москве</h1><p>Цена от 150 рублей за м3</p>'
+        self.assertEqual(source_region_evidence(moscow, 'Ярославль', 'works'), '')
+        local = '<h1>Разработка грунта в Ярославле</h1><p>Цена от 250 рублей за м3</p>'
+        self.assertIn('Ярославле', source_region_evidence(local, 'Ярославль', 'works'))
+        self.assertEqual(source_region_evidence('<p>Не доставляем в Ярославль</p>', 'Ярославль', 'materials'), '')
+
     def test_work_price_is_taken_from_matching_line_not_page_minimum(self) -> None:
         page = """
         <h1>Укладка тротуарной плитки</h1>
@@ -22,7 +36,8 @@ class MarketSourceAdapterTests(unittest.TestCase):
             target_unit="м2",
             position_bucket="works",
         )
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
         self.assertEqual(result.price, 450)
         self.assertEqual(result.price_scope, "work_only")
 
@@ -40,7 +55,8 @@ class MarketSourceAdapterTests(unittest.TestCase):
             target_unit="м",
             position_bucket="materials",
         )
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
         self.assertEqual(result.price, 82)
         self.assertEqual(result.unit, "м")
 
@@ -97,7 +113,8 @@ class MarketSourceAdapterTests(unittest.TestCase):
             target_unit="м2",
             position_bucket="works",
         )
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
         self.assertEqual(result.price, 500)
         self.assertIn("Укладка тротуарной плитки", result.evidence)
 
@@ -135,7 +152,8 @@ class MarketSourceAdapterTests(unittest.TestCase):
             target_unit="м2",
             position_bucket="works",
         )
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
         self.assertEqual(result.price, 300)
         self.assertEqual(result.unit, "м2")
 
@@ -155,7 +173,7 @@ class MarketSourceAdapterTests(unittest.TestCase):
         self.assertEqual(result.price, 96)
         self.assertEqual(result.unit, "пог.м")
 
-    def test_bulk_material_accepts_rubles_per_cube(self) -> None:
+    def test_bulk_material_from_price_preserves_unit_as_candidate(self) -> None:
         page = """
         <h1>Щебень строительный</h1>
         <p>Щебень с доставкой — от 750 руб/куб</p>
@@ -167,7 +185,8 @@ class MarketSourceAdapterTests(unittest.TestCase):
             target_unit="м3",
             position_bucket="materials",
         )
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
         self.assertEqual(result.price, 750)
         self.assertEqual(result.unit, "м3")
 
@@ -264,7 +283,8 @@ class MarketSourceAdapterTests(unittest.TestCase):
             target_unit="м3",
             position_bucket="materials",
         )
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
         self.assertEqual(result.price, 2400)
         self.assertEqual(result.unit, "м3")
         self.assertEqual(result.extractor, "table-row")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 
 from autobot.report_merge_html import _rows_from_bundle_or_fallback
@@ -15,6 +16,8 @@ class ReportMarketVerificationTests(unittest.TestCase):
                     "price": 1500,
                     "url": "https://supplier.example/item",
                     "verification": "verified",
+                    "matched_unit": "шт",
+                    "observed_at": time.time(),
                 },
                 {
                     "title": "Unverified listing",

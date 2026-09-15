@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +30,8 @@ def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypa
                 "url": "https://supplier.example/price",
                 "verification": "verified",
                 "verification_reason": "Цена подтверждена",
+                "matched_unit": "м3",
+                "observed_at": time.time(),
             }
         ],
         ensure_ascii=False,

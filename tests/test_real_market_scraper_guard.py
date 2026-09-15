@@ -436,7 +436,8 @@ def test_verified_market_keys_only_returns_rows_with_verified_sources() -> None:
     from autobot.market_contract import position_identity
     frame.loc[0, "Ед. изм."] = "м3"
     frame.loc[0, "Цена-сайт-телефон (json)"] = json.dumps([
-        {"price": 900, "url": "https://supplier.example/sand", "verification": "verified"}
+        {"price": 900, "url": "https://supplier.example/sand", "verification": "verified",
+         "matched_unit": "м3", "observed_at": time.time()}
     ])
     assert market._verified_market_keys(frame) == {position_identity(frame.iloc[0])}
 
@@ -756,9 +757,10 @@ def test_agent_exact_title_selects_matching_supplier_table_row(tmp_path: Path, m
 
     assert len(checked) == 1
     assert checked[0].price == 2400
-    assert checked[0].verification == "verified", checked[0].verification_reason.encode("unicode_escape")
+    assert checked[0].verification == "candidate", checked[0].verification_reason.encode("unicode_escape")
     assert checked[0].matched_unit == "м3"
-    assert checked[0].page_checked is True
+    assert checked[0].page_checked is False
+    assert checked[0].rejection_code == 'conditional_price'
 
 
 def test_agent_block_unit_is_normalized_to_base_market_unit() -> None:

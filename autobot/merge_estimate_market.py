@@ -23,7 +23,7 @@ except ImportError:
 import pandas as pd
 
 from autobot.market_analytics import COL_NAME
-from autobot.report_prompt import REPORTS_DIR
+from autobot.report_prompt import REPORTS_DIR, load_tender_metadata
 
 MARKET_PREFIX = "РЫНОК_ИСТОЧНИКИ_"
 OUT_PREFIX = "СВОДКА_РЫНОК_"
@@ -94,6 +94,10 @@ def refresh_svodka_if_market_newer(tender_id: str) -> Path | None:
         try:
             sample = pd.read_excel(out_path, nrows=1)
             contract_current = (not sample.empty and sample.iloc[0].get("Версия проверки рынка") == CONTRACT_VERSION)
+            if contract_current:
+                from autobot.market_evidence_policy import region_key
+                expected_region = region_key((load_tender_metadata().get(tid) or {}).get('region'))
+                contract_current = region_key(sample.iloc[0].get('Регион поиска')) == expected_region
         except (OSError, ValueError):
             pass
     if contract_current and max(est_mtime, market_mtime) <= sv_mtime:
@@ -134,6 +138,9 @@ def merge_estimate_and_market(tender_id: str) -> Path | None:
     if not est_path.is_file() or not market_path.is_file():
         return None
     est = pd.read_excel(est_path)
+    region = (load_tender_metadata().get(tid) or {}).get('region')
+    if region:
+        est['Регион поиска'] = str(region)
     market = _normalize_market_columns(pd.read_excel(market_path))
     if COL_NAME not in est.columns or COL_NAME not in market.columns:
         return None
