@@ -74,6 +74,7 @@ def _is_unit(value: str) -> bool:
     return text in {
         "м", "м2", "м3", "m", "m2", "m3", "т", "кг", "kg", "шт", "pcs", "компл", "чел.-ч", "чел-ч", "маш.-ч", "маш-ч",
         "100м", "100м2", "100м3", "100шт",
+        "1000м", "1000м2", "1000м3", "1000шт",
     }
 
 
@@ -126,6 +127,60 @@ def _word_lines(words: Sequence[dict[str, object]]) -> list[tuple[float, str]]:
         if text:
             lines.append((center, text))
     return lines
+
+
+def _secondary_unit(anchor, observations, page_width):
+    """Accept a missing unit only from the same physical unit cell in pass 2."""
+    center = float(anchor['top']) + float(anchor['height']) / 2
+    same_cell = [item for item in observations or []
+        if item.get('page') == anchor.get('page')
+        and page_width * .37 <= float(item['left']) < page_width * .45
+        and abs(float(item['top']) + float(item['height']) / 2 - center) <= 35]
+    candidates = [item for item in same_cell if float(item['left']) >= page_width * .40 and _is_unit(str(item['text']))]
+    if len(candidates) != 1:
+        return None
+    unit = dict(candidates[0])
+    prefixes = [item for item in same_cell if str(item['text']) in {'100', '1000'}
+        and float(item['left']) < float(unit['left'])
+        and abs(float(item['top']) - float(unit['top'])) <= max(float(unit['height']), 12)]
+    if len(prefixes) == 1:
+        unit['text'] = str(prefixes[0]['text']) + ' ' + str(unit['text'])
+        unit['left'] = prefixes[0]['left']
+    elif prefixes:
+        return None
+    return unit
+
+
+def _position_title(anchor, title_items, words, page_width, right):
+    if not title_items:
+        return ''
+    center = float(anchor['top']) + float(anchor['height']) / 2
+    # A following normative reference starts its own explanatory row. Its
+    # long text can lean into the title's OCR band on a skewed scan.
+    references = [float(item['top']) + float(item['height']) / 2 for item in words
+        if item.get('page') == anchor.get('page') and float(item['left']) <= page_width * .18
+        and center + 15 < float(item['top']) + float(item['height']) / 2 < center + 200
+        and re.search(r'\d+\s*/\s*пр(?:[_\s]|$)', str(item['text']), re.I)]
+    end = min(references) - 12 if references else float('inf')
+    following = [float(item['top']) + float(item['height']) / 2 for item in words
+        if item.get('page') == anchor.get('page') and float(item['left']) <= page_width * .18
+        and float(item['top']) + float(item['height']) / 2 > center + 35
+        and _is_main_estimate_code(str(item['text']))]
+    end = min(end, min(following) - 12 if following else float('inf'), center + 200)
+    left = min(float(item['left']) for item in title_items)
+    column = [item for item in words if item.get('page') == anchor.get('page')
+        and left - 5 <= float(item['left']) < right
+        and center - 35 <= float(item['top']) + float(item['height']) / 2 < end]
+    heights = sorted(max(1.,float(item.get('height') or 1)) for item in title_items)
+    gap = max(35.,min(70.,heights[len(heights)//2]*2.5))
+    lines=[]; previous=None
+    for top,text in _word_lines(column):
+        if previous is not None and (top-previous>gap or re.match(
+                r'^(?:об[ъь]?[её]м\s*[=:]|(?:всего|итого)\b|ОТ\s*\(|ОТм\s*\(|ЭМ\b|ФОТ\b|НР\b|СП\b|'
+                r'Производство\s+ремонтно|При\s+применении\s+сметных)',text,re.I)):
+            break
+        lines.append(text);previous=top
+    return _clean(' '.join(lines))
 
 
 def _clean_section_name(value: str, *, strip_total: bool = False) -> str:
@@ -453,7 +508,13 @@ class PdfEstimateAdapter:
                 ),
                 key=lambda item: float(item["left"]),
             )
-            unit_word = next((item for item in same_line if float(item["left"]) > left and _is_unit(str(item["text"]))), None)
+            unit_candidates = [item for item in same_line if item.get('page') == word.get('page')
+                and page_width * .40 <= float(item['left']) < page_width * .45 and _is_unit(str(item['text']))]
+            unit_word = unit_candidates[0] if len(unit_candidates) == 1 else None
+            if not unit_candidates:
+                unit_word = _secondary_unit(word, section_words, page_width)
+                if unit_word is not None:
+                    same_line = sorted([*same_line, unit_word], key=lambda item: float(item['left']))
             code_index = same_line.index(word)
             value_column_left = page_width * 0.45
             quantity_column_right = page_width * 0.63
@@ -463,14 +524,18 @@ class PdfEstimateAdapter:
                 len(same_line),
             )
             title_items = same_line[code_index + 1:title_end]
-            if title_items and str(title_items[-1]["text"]) == "100":
+            title_right = float(unit_word['left']) if unit_word is not None else value_column_left
+            if title_items and str(title_items[-1]["text"]) in {'100','1000'} and float(title_items[-1]['left']) >= page_width*.37:
+                title_right = float(title_items[-1]['left'])
                 title_items = title_items[:-1]
-            title = _clean(" ".join(str(item["text"]) for item in title_items))
+            title = _position_title(word, title_items, words, page_width, title_right)
             if len(title) < 4:
                 continue
             unit = str(unit_word["text"]) if unit_word is not None else ""
-            if unit_index is not None and unit_index > 0 and str(same_line[unit_index - 1]["text"]) == "100":
-                unit = f"100 {unit}"
+            if unit_index is not None and unit_index > 0:
+                scale = str(same_line[unit_index - 1]['text'])
+                if scale in {'100','1000'} and not re.match(r'^(?:1000|100)\s*', unit):
+                    unit = scale + ' ' + unit
             # In the standard ЛСР layout the source quantity is column 7
             # ("всего с учетом коэффициентов"), not column 5.  The latter
             # often looks identical, but diverges whenever a coefficient is

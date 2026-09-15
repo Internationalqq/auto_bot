@@ -60,11 +60,29 @@ def _now() -> float:
 def _connect(path: Path | str | None = None) -> sqlite3.Connection:
     db_path = Path(path or DEFAULT_DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(db_path), timeout=20, isolation_level=None)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 20000")
-    connection.execute("PRAGMA journal_mode = WAL")
-    return connection
+    deadline = time.monotonic() + 20
+    while True:
+        connection = sqlite3.connect(str(db_path), timeout=20, isolation_level=None)
+        try:
+            connection.row_factory = sqlite3.Row
+            remaining = max(1, int((deadline - time.monotonic()) * 1000))
+            connection.execute(f"PRAGMA busy_timeout = {remaining}")
+            # WAL is persistent. Avoid requesting a mode switch on every read.
+            if str(connection.execute('PRAGMA journal_mode').fetchone()[0]).lower() != 'wal':
+                connection.execute('PRAGMA journal_mode = WAL')
+            connection.execute('PRAGMA busy_timeout = 20000')
+            return connection
+        except sqlite3.OperationalError as error:
+            connection.close()
+            code = getattr(error, 'sqlite_errorcode', 0) & 0xff
+            if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or time.monotonic() >= deadline:
+                raise
+            # Concurrent first open can fail a journal upgrade without invoking
+            # SQLite's busy handler. Reopen before retrying; no job write began.
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
+        except BaseException:
+            connection.close()
+            raise
 
 
 def init_db(path: Path | str | None = None) -> Path:
