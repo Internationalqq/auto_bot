@@ -6,6 +6,8 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-controls-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
+  <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-1" />
+  <script defer src="/assets/js/tender_economics.js?v=20260915-1"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
@@ -82,6 +84,7 @@
       </dl>
       <p>Расчёт по распознанным позициям на {{ tender.estimate_total_fmt }}. {% if tender.rows_without_amount %}У {{ tender.rows_without_amount }} поз. не определена сумма — полнота пока неизвестна.{% else %}Для прибыли ещё нужны доставка, накладные, резерв и цена предложения.{% endif %}</p>
     </section>
+    <div data-tender-economics data-tender-id="{{ tender.tender_id }}" hidden></div>
     <section class="action-panel">
       <div>
         <small>Следующий шаг AutoBot</small>

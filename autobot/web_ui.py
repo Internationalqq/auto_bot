@@ -4542,6 +4542,23 @@ def tender_detail_page(tender_id: str):
     return response
 
 
+@app.get('/api/tenders/<tender_id>/economics-source')
+def tender_economics_source(tender_id: str):
+    if not re.fullmatch(r'[0-9]{8,25}', tender_id):
+        abort(404)
+    metadata = dict(load_tender_metadata().get(tender_id) or {})
+    if not metadata and not (REPORTS_DIR / f'ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx').is_file():
+        abort(404)
+    from autobot.tender_economics_source import build_source
+    try:
+        payload = build_source(tender_id, metadata, REPORTS_DIR, build_tender_detail)
+    except (OSError, ValueError):
+        return jsonify({'error': 'source_unavailable'}), 503
+    response = jsonify(payload)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @app.route("/market-audit")
 def market_audit_view():
     """Read-only viewer for immutable market evidence captured during verification."""
