@@ -417,7 +417,7 @@
   <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Дополнительные источники · сайты поставщиков</small><h2 id="agentMarketModalTitle">Повторно найти недостающие цены</h2><p>Выберите строки таблицы или отправьте первые 20 позиций без цены. Hermes откроет сайты поставщиков и вернёт прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Дополнительные источники · сайты поставщиков</small><h2 id="agentMarketModalTitle">Повторно найти недостающие цены</h2><p>Выберите строки таблицы или отправьте первые 20 позиций без цены. Поиск проверит прямые страницы поставщиков и сохранит источники цен. Страницу можно закрыть.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -425,7 +425,7 @@
   <aside class="feature-modal" id="avitoModal" hidden aria-labelledby="avitoModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Дополнительные источники · Авито</small><h2 id="avitoModalTitle">Найти цены в объявлениях Авито</h2><p>Выберите строки таблицы или отправьте первые 5 позиций без цены. Hermes откроет объявления и сохранит прямые ссылки.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Дополнительные источники · Авито</small><h2 id="avitoModalTitle">Найти цены в объявлениях Авито</h2><p>Выберите строки таблицы или отправьте первые 5 позиций без цены. Для открытия объявлений нужен подключённый браузерный исполнитель. Постановка в очередь ещё не означает начало поиска.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -708,7 +708,7 @@
         if (meta) {
           meta.textContent = total
             ? ("Осталось: " + Number(progress.remaining || 0) + " · найдено предложений: " + Number(progress.offers_found || 0) + (progress.failed ? " · ошибок: " + Number(progress.failed) : ""))
-            : "Нажмите «Дожать», чтобы отправить первые 20 позиций без цены";
+            : "Нажмите «Повторно найти цены», чтобы проверить первые 20 позиций без цены";
         }
         live?.classList.toggle("is-running", !!progress.running);
         live?.classList.toggle("is-done", !!total && processed >= total);
@@ -736,7 +736,7 @@
         }
         if (agentMarketNote) {
           agentMarketNote.textContent = data.enabled
-            ? (Number(progress.leased || 0) > 0 ? "Исполнитель взял задание. Страницу можно закрыть." : "Для обработки очереди нужен подключённый исполнитель. Постановка задания ещё не означает запуск поиска.")
+            ? (data.executor === "server" ? "Серверный поиск обрабатывает очередь по одной позиции. Страницу можно закрыть." : (Number(progress.leased || 0) > 0 ? "Исполнитель взял задание. Страницу можно закрыть." : "Для обработки очереди нужен подключённый исполнитель. Постановка задания ещё не означает запуск поиска."))
             : "Подключение поискового исполнителя пока не настроено.";
           agentMarketNote.classList.toggle("is-warning", !data.enabled);
         }

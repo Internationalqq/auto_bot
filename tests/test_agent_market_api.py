@@ -302,7 +302,7 @@ class AgentMarketApiTests(unittest.TestCase):
         self.assertEqual(payload["skipped_ineligible"][0]["position_key"], "aggregate-1")
         claimed = queue.claim_job("mac-priority")
         self.assertEqual(claimed["position_key"], "material-1")
-        self.assertEqual(claimed["payload"]["max_attempts"], 1)
+        self.assertEqual(claimed["payload"]["max_attempts"], 2)
         self.assertIn("scheben", " ".join(claimed["payload"]["start_urls"]))
 
     def test_post_collapses_duplicate_estimate_rows_before_queueing(self) -> None:

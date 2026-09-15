@@ -1,6 +1,7 @@
 """Persistent, auditable price evidence shared between tenders.
 
-The index stores only verified direct-source offers.  It deliberately keeps
+Only verified direct-source offers are reusable. New rejected observations
+can invalidate an older quote, without deleting its audit record. It keeps
 position identity separate from the original estimate wording so the same
 evidence can be reused for a compatible position in another tender.
 """
@@ -326,6 +327,7 @@ def record_verified_offers(
     section: object = "",
     region: object = "",
     offers: list[dict],
+    record_candidates: bool = False,
 ) -> int:
     identity = build_price_identity(name, unit, basis_code, section, region)
     if not identity.unit or identity.bucket not in {"works", "materials"}:
@@ -334,28 +336,34 @@ def record_verified_offers(
     stored = 0
     with _connect() as connection:
         for offer in offers:
-            if _clean(offer.get("verification")).casefold() != "verified":
+            verification = _clean(offer.get("verification")).casefold()
+            candidate = verification == 'candidate'
+            if verification != 'verified' and not (
+                record_candidates and candidate and offer.get('page_checked') is True
+                and not offer.get('index_hit')
+            ):
                 continue
             url = _clean(offer.get("url"))
             try:
                 price = float(offer.get("price") or 0)
             except (TypeError, ValueError):
                 continue
-            if not url or not math.isfinite(price) or price <= 0 or not _clean(offer.get('matched_unit')):
+            if not url or not math.isfinite(price) or price < 0:
                 continue
-            if not units_compatible(normalize_unit(unit), normalize_unit(offer.get('matched_unit'))) or price_terms_reason(offer):
+            if not candidate and (price <= 0 or not _clean(offer.get('matched_unit')) or
+                                  not units_compatible(normalize_unit(unit), normalize_unit(offer.get('matched_unit'))) or price_terms_reason(offer)):
                 continue
             observed = _iso_timestamp(offer.get("observed_at"))
             if observed is None or observed > now + 900:
                 continue
-            if specification_reason(name, offer.get('evidence') or offer.get('snippet') or offer.get('title')):
+            if not candidate and specification_reason(name, offer.get('evidence') or offer.get('snippet') or offer.get('title')):
                 continue
             geo_evidence = _clean(offer.get('region_evidence'))
             if identity.search_region and region_key(offer.get('search_region')) != identity.search_region:
                 continue
             if not geo_evidence and region_matches_label(region, offer.get('location')):
                 geo_evidence = _clean(offer.get('location'))
-            if identity.search_region and not geo_evidence:
+            if identity.search_region and not geo_evidence and not candidate:
                 continue
             ttl_days = _ttl_days(identity, url)
             quality = source_quality(url, offer.get("source"))
@@ -374,6 +382,8 @@ def record_verified_offers(
                     "title": _clean(offer.get("title")),
                     "source": _clean(offer.get("source")),
                     "price": price,
+                    "verification": verification,
+                    "verification_reason": _clean(offer.get('verification_reason')),
                     "currency": "RUB",
                     "confidence": confidence,
                     "source_weight": quality,
@@ -424,7 +434,7 @@ def record_verified_offers(
                     url,
                     confidence,
                     quality,
-                    "verified",
+                    verification,
                     observed,
                     observed + ttl_days * 86400,
                     audit_record,
@@ -434,7 +444,7 @@ def record_verified_offers(
                     now,
                 ),
             )
-            stored += cursor.rowcount
+            stored += cursor.rowcount if not candidate else 0
         _refresh_summary(connection, identity.normalized_key, now)
     return stored
 

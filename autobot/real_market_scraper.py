@@ -124,6 +124,7 @@ _SEARCH_CACHE_VERSIONS = {"web": "10", "avito": "2", "avito_index": "1"}
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _DOMAIN_RATE_LOCK = threading.Lock()
 _SEARCH_DEADLINE: ContextVar[float | None] = ContextVar('market_search_deadline', default=None)
+_SEARCH_CANCELLED = ContextVar('market_search_cancelled', default=None)
 
 
 class SearchBudgetExceeded(TimeoutError):
@@ -138,6 +139,9 @@ def _bounded_setting(name: str, default: int, low: int, high: int) -> int:
 
 
 def _remaining_timeout(default: float) -> float:
+    cancelled = _SEARCH_CANCELLED.get()
+    if cancelled is not None and cancelled():
+        raise SearchBudgetExceeded('Поиск отменён или попытка задания завершена')
     deadline = _SEARCH_DEADLINE.get()
     if deadline is None:
         return default
@@ -2705,6 +2709,7 @@ def _research_row_market(
     browser_fetcher: AvitoBrowserFetcher | None = None,
     initial_offers: list[MarketOffer] | None = None,
     avito_collect_only: bool = False,
+    cancelled=None,
 ) -> tuple[list[MarketOffer], str]:
     """One bounded discovery/verification loop for a row and the whole tender.
 
@@ -2731,6 +2736,7 @@ def _research_row_market(
     pages, query_count, errors = 0, 0, []
     deadline = min(_SEARCH_DEADLINE.get() or float('inf'), time.monotonic() + seconds)
     token = _SEARCH_DEADLINE.set(deadline)
+    cancel_token = _SEARCH_CANCELLED.set(cancelled or _SEARCH_CANCELLED.get())
     def confirmed_count():
         return len({independent_source_key(vars(offer)) for offer in pool
                     if offer.verification == 'verified' and independent_source_key(vars(offer))})
@@ -2753,6 +2759,9 @@ def _research_row_market(
             if error:
                 errors.append(error)
             for offer in found:
+                host = (urlparse(offer.url).hostname or '').casefold()
+                if 'avito' not in sources and (host == 'avito.ru' or host.endswith('.avito.ru')):
+                    continue
                 url = _canonical_offer_url(offer.url)
                 if not url or url in seen:
                     continue
@@ -2771,6 +2780,7 @@ def _research_row_market(
     except SearchBudgetExceeded as error:
         errors.append(str(error))
     finally:
+        _SEARCH_CANCELLED.reset(cancel_token)
         _SEARCH_DEADLINE.reset(token)
     _append_market_search_log('position_complete', name=str(row.get(COL_NAME, '')),
                              queries=query_count, pages=pages, independent_sources=confirmed_count(),
@@ -3218,7 +3228,9 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
 
 
 def _store_verified_offers_in_index(tender_id: str, src_row: pd.Series, offers: list[MarketOffer], *, region: str = "") -> int:
-    fresh = [offer for offer in offers if offer.verification == "verified" and not offer.index_hit]
+    fresh = [offer for offer in offers if not offer.index_hit and (
+        offer.verification == 'verified' or (offer.verification == 'candidate' and offer.page_checked)
+    )]
     if not fresh:
         return 0
     payloads: list[dict] = []
@@ -3238,6 +3250,7 @@ def _store_verified_offers_in_index(tender_id: str, src_row: pd.Series, offers: 
         section=src_row.get("Раздел", ""),
         region=region,
         offers=payloads,
+        record_candidates=True,
     )
     if stored:
         indexed = lookup_verified_offers(
@@ -3421,9 +3434,30 @@ def _agent_import_context(tender_id, position_payload):
         source_row.get("Ед. изм.", ""),
         source_row.get("basis_code", ""),
         source_row.get("Раздел", ""),
-        str(metadata.get("region") or ""),
+        source_row['Регион поиска'],
     )
     return tid, name, key, source_row, estimate, metadata, plan, hashlib.sha256(captured).hexdigest()
+
+
+def prepare_builtin_market_result(tender_id, position_payload, *, cancelled=None):
+    """Capture the input before server search; publish only through durable delivery.
+
+    This internal path accepts no externally supplied verification flags.
+    It never opens Avito or requires an LLM/browser worker.
+    """
+    tid, name, key, row, estimate, metadata, plan, digest = _agent_import_context(tender_id, position_payload)
+    try:
+        limit = max(1, min(10, int(position_payload.get('max_offers') or 3)))
+    except (ValueError, TypeError):
+        limit = 3
+    offers, notes = _research_row_market(row, plan, sources=['web'], max_results=limit,
+                                          cancelled=cancelled)
+    prepared = {'schema_version': 1, 'estimate_digest': digest, 'position_key': key,
+                'region': row['Регион поиска'], 'offers': [vars(offer) for offer in offers]}
+    result = {'schema_version': 2, 'position_key': key, 'executor': 'server',
+              'offers': [dict(vars(offer), unit=offer.matched_unit) for offer in offers],
+              'notes': notes or ('Подтверждённых цен не найдено' if not offers else '')}
+    return result, prepared
 
 
 def prepare_agent_market_result(tender_id, position_payload, result):
@@ -3539,6 +3573,38 @@ def prepare_agent_market_result(tender_id, position_payload, result):
     }
 
 
+def _latest_offers_for_row(source_row, saved, incoming):
+    """Keep the newest observation per URL, then revalidate against today's row.
+
+    A new candidate replaces an old verified value on that page. A late search
+    with no offers cannot erase a concurrently published quote on another page.
+    """
+    from autobot.market_contract import offers_for_row, BUNDLE_COLUMN
+    from autobot.market_evidence_policy import observed_timestamp, region_key
+    expected_region = region_key(source_row.get('Регион поиска'))
+    def rank(value):
+        return (region_key(value.search_region) == expected_region,
+                value.verification == 'verified' or bool(value.page_checked),
+                observed_timestamp(value.observed_at) or 0)
+    chosen = {}
+    for offer in [*saved, *incoming]:
+        key = _canonical_offer_url(offer.url)
+        if not key:
+            continue
+        old = chosen.get(key)
+        if old is None or rank(offer) >= rank(old):
+            chosen[key] = offer
+    evidence_row = dict(source_row)
+    evidence_row[BUNDLE_COLUMN] = json.dumps(_offer_bundle(list(chosen.values())), ensure_ascii=False)
+    checks = {_canonical_offer_url(offer['url']): offer for offer in offers_for_row(evidence_row)}
+    for key, offer in chosen.items():
+        checked = checks.get(key)
+        offer.verification = checked['verification'] if checked else 'candidate'
+        if checked:
+            offer.verification_reason = checked.get('verification_reason') or offer.verification_reason
+    return _diverse_market_offers(list(chosen.values()), 12)
+
+
 def _publish_prepared_agent_result(tender_id, position_payload, prepared):
     from autobot.atomic_output import write_excel
     tid, name, key, source_row, estimate, metadata, plan, digest = _agent_import_context(tender_id, position_payload)
@@ -3550,35 +3616,14 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
     imported = [MarketOffer(**offer) for offer in prepared.get('offers', [])]
     if not imported:
         return {'imported': 0, 'message': 'Агент не вернул пригодных цен'}
-    # Re-check time-sensitive evidence when replaying an accepted package.
-    from autobot.market_contract import offers_for_row, BUNDLE_COLUMN, position_identity
-    evidence_row = dict(source_row)
-    evidence_row[BUNDLE_COLUMN] = json.dumps(_offer_bundle(imported), ensure_ascii=False)
-    checks = {_canonical_offer_url(offer['url']): offer for offer in offers_for_row(evidence_row)}
-    for offer in imported:
-        checked = checks.get(_canonical_offer_url(offer.url))
-        if checked:
-            offer.verification = checked['verification']
-            offer.verification_reason = checked.get('verification_reason') or offer.verification_reason
+    from autobot.market_contract import position_identity
     output_path = output_path_for_tender(tid)
     previous = _read_previous(output_path)
     saved = _saved_offers_for_key(previous, key)
-    from autobot.market_evidence_policy import observed_timestamp
-    fresh_by_url = {_canonical_offer_url(offer.url): offer for offer in imported if offer.url}
-    for offer in saved:
-        fresh = fresh_by_url.get(_canonical_offer_url(offer.url))
-        if fresh and region_key(offer.search_region) == region_key(source_row['Регион поиска']) and (observed_timestamp(offer.observed_at) or 0) > (observed_timestamp(fresh.observed_at) or 0):
-            imported.remove(fresh)
-            fresh_by_url.pop(_canonical_offer_url(offer.url), None)
-    refreshed_urls = set(fresh_by_url)
+    offers = _latest_offers_for_row(source_row, saved, imported)
+    retained = {id(offer) for offer in offers}
+    imported = [offer for offer in imported if id(offer) in retained]
     stored_verified = _store_verified_offers_in_index(tid, source_row, imported, region=source_row['Регион поиска'])
-    if refreshed_urls:
-        # A newly imported observation of the same direct page must replace its
-        # stale normalization.  Keeping the historically lower value here once
-        # preserved the old 8.50 ₽/м interpretation after a 100 m roll had been
-        # correctly re-read as 850 ₽/шт.
-        saved = [offer for offer in saved if _canonical_offer_url(offer.url) not in refreshed_urls]
-    offers = _dedupe_and_sort(saved + imported, max_results=12)
     query = str(position_payload.get("query") or "").strip()
     if not query:
         queries = position_payload.get("queries") or plan.queries
@@ -3610,9 +3655,12 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
             equivalent_row.get("Ед. изм.", ""),
             equivalent_row.get("basis_code", ""),
             equivalent_row.get("Раздел", ""),
-            str(metadata.get("region") or ""),
+            source_row['Регион поиска'],
         )
-        output_rows.append(_build_output_row(equivalent_row, offers=offers, query=query, err="", plan=equivalent_plan))
+        from dataclasses import replace
+        equivalent_offers = _latest_offers_for_row(equivalent_row, _saved_offers_for_key(previous, equivalent_key),
+                                                   [replace(offer) for offer in imported])
+        output_rows.append(_build_output_row(equivalent_row, offers=equivalent_offers, query=query, err="", plan=equivalent_plan))
         output_keys.add(equivalent_key)
     merged = _merge_rows(previous, output_rows)
     write_excel(merged, output_path)
@@ -3680,7 +3728,11 @@ def run_tender(
     if not est_path.is_file():
         raise FileNotFoundError(f"Нет {est_path.name}")
     out_path = output_path_for_estimate(est_path)
-    est = pd.read_excel(est_path)
+    import hashlib
+    import io
+    captured_estimate = est_path.read_bytes()
+    estimate_digest = hashlib.sha256(captured_estimate).hexdigest()
+    est = pd.read_excel(io.BytesIO(captured_estimate))
     if COL_NAME not in est.columns:
         raise ValueError(f"В смете нет колонки {COL_NAME!r}")
 
@@ -3787,14 +3839,21 @@ def run_tender(
                     previous_non_avito + offers,
                     max_results=min(10, max_results + len(previous_non_avito)),
                 )
-            if not dry_run:
-                indexed_stored += _store_verified_offers_in_index(tid, row, offers, region=region)
-            new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
             from autobot.atomic_output import output_lock
             with output_lock(out_path):
-                # Merge only this completed row against the latest file. An
-                # agent may have published another position during the search.
-                merged = _merge_rows(_read_previous(out_path), [new_rows[-1]])
+                # A simultaneous selected-position search may have published
+                # this same row. Merge observations by date before saving.
+                from autobot.market_evidence_policy import region_key
+                current_region = load_tender_metadata().get(tid, {}).get('region')
+                if (hashlib.sha256(est_path.read_bytes()).hexdigest() != estimate_digest or
+                        region_key(current_region) != region_key(region)):
+                    raise ValueError('Смета или регион изменились во время поиска; нужен новый запуск')
+                latest = _read_previous(out_path)
+                offers = _latest_offers_for_row(row, _saved_offers_for_key(latest, key), offers)
+                if not dry_run:
+                    indexed_stored += _store_verified_offers_in_index(tid, row, offers, region=region)
+                new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
+                merged = _merge_rows(latest, [new_rows[-1]])
                 write_excel(merged, out_path)
             verified_count = sum(1 for offer in offers if offer.verification == "verified")
             candidate_count = sum(1 for offer in offers if offer.verification == "candidate")

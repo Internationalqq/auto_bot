@@ -11925,6 +11925,8 @@ def api_tender_agent_market_jobs(tender_id: str):
     job_mode = "avito" if requested_mode == "avito" else "web"
 
     if request.method == "GET":
+        from autobot.market_web_worker import web_worker_enabled
+        server_executor = job_mode == "web" and web_worker_enabled()
         jobs = list_jobs(tid, mode=job_mode)
         latest_jobs: dict[str, dict] = {}
         for job in jobs:
@@ -11962,7 +11964,8 @@ def api_tender_agent_market_jobs(tender_id: str):
         return jsonify(
             {
                 "ok": True,
-                "enabled": bool(_agent_market_token()),
+                "enabled": server_executor or bool(_agent_market_token()),
+                "executor": "server" if server_executor else "external",
                 "mode": job_mode,
                 "summary": job_summary(tid, mode=job_mode),
                 "progress": job_progress(tid, mode=job_mode),
@@ -12078,7 +12081,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "max_sources": 3,
             "max_turns": 16,
             "max_seconds": 180,
-            "max_attempts": 1,
+            "max_attempts": 2 if job_mode == "web" else 1,
             "retry_policy": "network_only",
             "queue_priority": (60 if position_type in {"material", "product"} else 70) + search_rank,
             "start_urls": start_urls,
@@ -12221,7 +12224,7 @@ def api_agent_market_claim():
         return jsonify({"ok": False, "message": "Нужен worker_id"}), 400
     try:
         lease_seconds = _agent_market_lease_seconds(data)
-        job = claim_job(worker_id, lease_seconds=lease_seconds)
+        job = claim_job(worker_id, lease_seconds=lease_seconds, mode=data.get("mode"))
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     if not job:
@@ -12625,4 +12628,6 @@ if __name__ == "__main__":
     _port = int((os.environ.get("WEB_UI_PORT") or "8765").strip() or "8765")
     from autobot.agent_market_delivery import start_delivery_recovery
     start_delivery_recovery()
+    from autobot.market_web_worker import start_web_worker
+    start_web_worker()
     app.run(host=_host, port=_port, debug=False)

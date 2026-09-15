@@ -38,3 +38,5 @@ preload_app = False
 def post_worker_init(worker):
     from autobot.agent_market_delivery import start_delivery_recovery
     start_delivery_recovery()
+    from autobot.market_web_worker import start_web_worker
+    start_web_worker()

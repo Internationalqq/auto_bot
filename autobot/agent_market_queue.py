@@ -217,9 +217,12 @@ def enqueue_jobs(
 def claim_job(
     worker_id: str,
     *,
+    mode: str | None = None,
     path: Path | str | None = None,
     lease_seconds: int = 300,
 ) -> dict[str, Any] | None:
+    if mode is not None and mode not in ("web", "avito"):
+        raise ValueError("mode must be web or avito")
     init_db(path)
     worker = str(worker_id or "").strip()[:120]
     if not worker:
@@ -232,8 +235,9 @@ def claim_job(
             expired = connection.execute(
                 """SELECT id, attempts, payload_json
                    FROM agent_market_jobs
-                   WHERE status = 'leased' AND lease_until IS NOT NULL AND lease_until <= ?""",
-                (now,),
+                   WHERE status = 'leased' AND lease_until IS NOT NULL AND lease_until <= ?
+                     AND (? IS NULL OR job_mode = ?)""",
+                (now, mode, mode),
             ).fetchall()
             for expired_job in expired:
                 try:
@@ -263,9 +267,10 @@ def claim_job(
                 )
             row = connection.execute(
                 """SELECT * FROM agent_market_jobs
-                   WHERE status = 'queued'
+                   WHERE status = 'queued' AND (? IS NULL OR job_mode = ?)
                    ORDER BY priority ASC, created_at ASC
-                   LIMIT 1"""
+                   LIMIT 1""",
+                (mode, mode),
             ).fetchone()
             if row is None:
                 connection.execute("COMMIT")
