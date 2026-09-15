@@ -202,6 +202,12 @@ def test_distance_rate_is_not_a_volume_price():
     assert not price_terms_reason({'evidence': 'Бетон М300 4700 руб/м3 с доставкой'})
 
 
+@pytest.mark.parametrize('evidence', ['Бетон М300 от 3000 р', 'Бетон М300 от 3 000 р/м3', 'Бетон 3000–3500 р за м3'])
+def test_ruble_abbreviation_without_dot_is_not_an_exact_lower_bound(evidence):
+    from autobot.market_evidence_policy import price_terms_reason
+    assert price_terms_reason({'evidence': evidence})
+
+
 def test_exact_price_row_wins_over_conditional_metadata():
     from autobot.market_source_adapters import inspect_source_page
     html = '''<html><head><title>Бетон М300 от 4500 руб/м3</title>

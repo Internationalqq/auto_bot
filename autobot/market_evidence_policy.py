@@ -79,7 +79,7 @@ def price_terms_reason(offer: dict) -> str:
     if re.search(r'(?:/|за\s+)\s*км\b', evidence) and re.search(r'\bм\s*[3³]\b', evidence):
         return 'Тариф зависит от объёма и километража; это не цена за один м³'
     amount = r'\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?'
-    currency = r'(?:₽|руб\w*\.?|р\.)'
+    currency = r'(?:₽|руб\w*\.?|р\.?(?![a-zа-я]))'
     if re.search(r'\b(?:от|около|примерно|до)\s*' + amount + r'\s*' + currency, evidence):
         return 'Указана ориентировочная цена или цена «от»: нужна точная стоимость для этого объёма'
     for match in re.finditer(r'(?<![\w.,–—-])' + amount + r'\s*[-–—]\s*' + amount + r'\s*' + currency, evidence):
