@@ -13,9 +13,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
 
-import pandas as pd
-
 from autobot.paths import DATA_DIR
+from autobot.archive_extraction import Budget, Limits, open_archive, read_member_stream
+from autobot.document_preview_worker import PreviewRejected, run_reader
 
 
 DOWNLOADS_DIR = DATA_DIR / "downloads"
@@ -26,7 +26,9 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _TEXT_EXTENSIONS.add(".svg")
 _ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z"}
 _MAX_ARCHIVE_DEPTH = 3
-_MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
+_MAX_ARCHIVE_MEMBER_BYTES = 32 * 1024 * 1024
+_PREVIEW_ARCHIVE_LIMITS = Limits(depth=3, archives=16, members=500, member_bytes=_MAX_ARCHIVE_MEMBER_BYTES,
+                               total_bytes=64 * 1024 * 1024, seconds=23)
 
 
 def _clean(value: Any) -> str:
@@ -162,8 +164,9 @@ def resolve_tender_source_file(tender_id: str, token: str) -> Path:
     name = _decode_file_token(token)
     if name.casefold() in _HIDDEN_FILES:
         raise FileNotFoundError(name)
-    candidate = (root / name).resolve()
-    if candidate.parent != root or not candidate.is_file() or candidate.is_symlink():
+    original = root / name
+    candidate = original.resolve()
+    if original.is_symlink() or candidate.parent != root or not candidate.is_file():
         raise FileNotFoundError(name)
     return candidate
 
@@ -285,27 +288,47 @@ def _decode_text(data: bytes) -> str:
     for encoding in ("utf-8-sig", "utf-8", "cp1251", "latin1"):
         try:
             return data.decode(encoding)
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as error:
+            if error.reason == 'unexpected end of data' and error.end == len(data):
+                return data[:error.start].decode(encoding)
             continue
     return data.decode("utf-8", errors="replace")
 
 
 def _excel_preview(source: Any) -> dict[str, Any]:
+    import pandas as pd
     sheets: list[dict[str, Any]] = []
-    workbook = pd.ExcelFile(source)
-    for sheet_name in workbook.sheet_names[:5]:
-        frame = pd.read_excel(workbook, sheet_name=sheet_name, nrows=100)
-        frame = frame.iloc[:, :30].fillna("")
-        columns = [_clean(column) or f"Столбец {index + 1}" for index, column in enumerate(frame.columns)]
-        rows = [[_clean(value) for value in row] for row in frame.astype(object).values.tolist()]
-        sheets.append({"name": _clean(sheet_name), "columns": columns, "rows": rows})
-    return {"kind": "excel", "sheets": sheets, "truncated": len(workbook.sheet_names) > 5}
+    remaining = 500_000
+    truncated = False
+    def cell(value):
+        nonlocal remaining, truncated
+        raw = _clean(value)
+        text = raw[:min(2000, remaining)]
+        remaining -= len(text)
+        truncated = truncated or text != raw
+        return text
+    with pd.ExcelFile(source) as workbook:
+        truncated = len(workbook.sheet_names) > 5
+        for sheet_name in workbook.sheet_names[:5]:
+            frame = pd.read_excel(workbook, sheet_name=sheet_name, nrows=101)
+            truncated = truncated or len(frame) > 100 or len(frame.columns) > 30
+            frame = frame.iloc[:100, :30].fillna("")
+            columns = [cell(column) or f"Столбец {index + 1}" for index, column in enumerate(frame.columns)]
+            rows = [[cell(value) for value in row] for row in frame.astype(object).values.tolist()]
+            sheets.append({"name": cell(sheet_name), "columns": columns, "rows": rows})
+    return {"kind": "excel", "sheets": sheets, "truncated": truncated}
 
 
 def _docx_preview(source: Any) -> dict[str, Any]:
     namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     with zipfile.ZipFile(source) as archive:
-        xml = archive.read("word/document.xml")
+        info = archive.getinfo('word/document.xml')
+        if info.file_size > 8 * 1024 * 1024 or info.file_size > max(1, info.compress_size) * 500:
+            raise PreviewRejected('Текст документа слишком большой для предпросмотра. Скачайте оригинал.')
+        with archive.open(info) as stream:
+            xml = stream.read(8 * 1024 * 1024 + 1)
+        if len(xml) > 8 * 1024 * 1024:
+            raise PreviewRejected('Текст документа превышает лимит просмотра.')
     root = ElementTree.fromstring(xml)
     paragraphs: list[str] = []
     for paragraph in root.iter(namespace + "p"):
@@ -359,48 +382,27 @@ def _archive_member_model(raw_name: str, size: int, directory: bool, chain: list
     }
 
 
-def _collect_archive_entries(source: Any, source_name: str, chain_prefix: list[str], depth: int) -> tuple[list[dict[str, Any]], bool]:
-    extension = Path(source_name).suffix.casefold()
+def _collect_archive_entries(source: Any, source_name: str, chain_prefix: list[str], depth: int,
+                             budget: Budget) -> tuple[list[dict[str, Any]], bool]:
     if hasattr(source, "seek"):
         source.seek(0)
-    if extension == ".zip":
-        with zipfile.ZipFile(source) as archive:
-            infos = archive.infolist()
-            return _models_from_archive_infos(
-                infos,
-                lambda info: archive.read(info),
-                lambda info: info.is_dir(),
-                chain_prefix,
-                depth,
-            )
-    if extension == ".rar":
-        import rarfile
-
-        with rarfile.RarFile(source) as archive:
-            infos = archive.infolist()
-            return _models_from_archive_infos(
-                infos,
-                lambda info: archive.read(info),
-                lambda info: info.isdir(),
-                chain_prefix,
-                depth,
-            )
-    raise ValueError("Неподдерживаемый формат вложенного архива")
+    with open_archive(source, source_name) as archive:
+        infos = budget.reserve(archive.infolist())
+        return _models_from_archive_infos(archive, infos, chain_prefix, depth, budget)
 
 
 def _models_from_archive_infos(
+    archive: Any,
     infos: list[Any],
-    read_member: Any,
-    is_directory: Any,
     chain_prefix: list[str],
     depth: int,
+    budget: Budget,
 ) -> tuple[list[dict[str, Any]], bool]:
     entries: list[dict[str, Any]] = []
-    truncated = len(infos) > 500
-    for info in infos[:500]:
+    truncated = False
+    for info, _path, directory, size in infos:
+        budget.check_time()
         raw_name = str(info.filename)
-        directory = bool(is_directory(info))
-        size = int(getattr(info, "file_size", 0) or 0)
         chain = [*chain_prefix, raw_name]
         entry = _archive_member_model(raw_name, size, directory, chain)
         if (
@@ -410,17 +412,24 @@ def _models_from_archive_infos(
             and size <= _MAX_ARCHIVE_MEMBER_BYTES
         ):
             try:
-                nested_data = read_member(info)
+                target = io.BytesIO()
+                with archive.open(info) as stream:
+                    read_member_stream(stream, target, size, budget)
                 children, child_truncated = _collect_archive_entries(
-                    io.BytesIO(nested_data),
+                    io.BytesIO(target.getvalue()),
                     entry["short_name"],
                     chain,
                     depth + 1,
+                    budget,
                 )
                 entry["children"] = children
                 truncated = truncated or child_truncated
             except Exception as exc:
                 entry["nested_error"] = f"Не удалось раскрыть вложенный архив ({type(exc).__name__})"
+                truncated = True
+        elif not directory and entry['kind'] == 'archive':
+            entry['nested_error'] = 'Достигнута глубина предпросмотра. Скачайте исходный архив.'
+            truncated = True
         entries.append(entry)
     return entries, truncated
 
@@ -434,7 +443,10 @@ def _flatten_archive_entries(entries: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def _archive_preview(source: Any, source_name: str, chain_prefix: list[str] | None = None) -> dict[str, Any]:
-    entries, truncated = _collect_archive_entries(source, source_name, list(chain_prefix or []), 0)
+    prefix = list(chain_prefix or [])
+    if len(prefix) >= _MAX_ARCHIVE_DEPTH:
+        return {'kind': 'unavailable', 'message': 'Достигнута глубина предпросмотра. Скачайте этот архив для дальнейшего просмотра.'}
+    entries, truncated = _collect_archive_entries(source, source_name, prefix, len(prefix), Budget(_PREVIEW_ARCHIVE_LIMITS))
     flat = _flatten_archive_entries(entries)
     files = [entry for entry in flat if not entry["directory"]]
     estimates = [entry for entry in files if entry["likely_estimate"]]
@@ -450,38 +462,29 @@ def _archive_preview(source: Any, source_name: str, chain_prefix: list[str] | No
     }
 
 
-def _read_one_archive_member(source: Any, source_name: str, raw_name: str) -> bytes:
-    extension = Path(source_name).suffix.casefold()
+def _read_one_archive_member(source: Any, source_name: str, raw_name: str, budget: Budget) -> bytes:
     if hasattr(source, "seek"):
         source.seek(0)
-    if extension == ".zip":
-        with zipfile.ZipFile(source) as archive:
-            info = next((item for item in archive.infolist() if item.filename == raw_name), None)
-            if info is None or info.is_dir():
-                raise FileNotFoundError(raw_name)
-            if int(info.file_size or 0) > _MAX_ARCHIVE_MEMBER_BYTES:
-                raise ValueError("Файл внутри архива слишком большой для просмотра")
-            return archive.read(info)
-    if extension == ".rar":
-        import rarfile
-
-        with rarfile.RarFile(source) as archive:
-            info = next((item for item in archive.infolist() if item.filename == raw_name), None)
-            if info is None or info.isdir():
-                raise FileNotFoundError(raw_name)
-            if int(info.file_size or 0) > _MAX_ARCHIVE_MEMBER_BYTES:
-                raise ValueError("Файл внутри архива слишком большой для просмотра")
-            return archive.read(info)
-    raise ValueError("Неподдерживаемый формат вложенного архива")
+    with open_archive(source, source_name) as archive:
+        infos = budget.reserve(archive.infolist())
+        found = next((item for item in infos if item[0].filename == raw_name), None)
+        if found is None or found[2]:
+            raise FileNotFoundError(raw_name)
+        info, _, _, size = found
+        output = io.BytesIO()
+        with archive.open(info) as stream:
+            read_member_stream(stream, output, size, budget)
+        return output.getvalue()
 
 
-def read_archive_member(path: Path, member_token: str) -> dict[str, Any]:
+def _read_archive_member(path: Path, member_token: str) -> dict[str, Any]:
     chain = _decode_archive_member_token(member_token)
     source: Any = path
     source_name = path.name
     data = b""
+    budget = Budget(_PREVIEW_ARCHIVE_LIMITS)
     for raw_name in chain:
-        data = _read_one_archive_member(source, source_name, raw_name)
+        data = _read_one_archive_member(source, source_name, raw_name, budget)
         source = io.BytesIO(data)
         source_name = raw_name
     display_path = repair_filename(chain[-1]).replace("\\", "/")
@@ -503,7 +506,7 @@ def read_archive_member(path: Path, member_token: str) -> dict[str, Any]:
     }
 
 
-def build_source_bytes_preview(data: bytes, filename: str, chain_prefix: list[str] | None = None) -> dict[str, Any]:
+def _build_source_bytes_preview(data: bytes, filename: str, chain_prefix: list[str] | None = None) -> dict[str, Any]:
     extension = Path(filename).suffix.casefold()
     if extension in _EXCEL_EXTENSIONS:
         return _excel_preview(io.BytesIO(data))
@@ -517,7 +520,7 @@ def build_source_bytes_preview(data: bytes, filename: str, chain_prefix: list[st
     return {"kind": "unavailable", "message": "Этот формат браузер не показывает. Файл можно скачать и открыть на компьютере."}
 
 
-def build_source_file_preview(path: Path) -> dict[str, Any]:
+def _build_source_file_preview(path: Path) -> dict[str, Any]:
     extension = path.suffix.casefold()
     if extension in _EXCEL_EXTENSIONS:
         return _excel_preview(path)
@@ -525,8 +528,24 @@ def build_source_file_preview(path: Path) -> dict[str, Any]:
         return _docx_preview(path)
     if extension in _TEXT_EXTENSIONS:
         limit = 2 * 1024 * 1024
-        data = path.read_bytes()[:limit]
+        with path.open('rb') as stream:
+            data = stream.read(limit)
         return {"kind": "text", "text": _decode_text(data), "truncated": path.stat().st_size > limit}
     if extension in {".zip", ".rar"}:
         return _archive_preview(path, path.name)
     return {"kind": "unavailable", "message": "Этот формат браузер не показывает. Файл можно скачать и открыть на компьютере."}
+
+
+def read_archive_member(path: Path, member_token: str) -> dict[str, Any]:
+    _decode_archive_member_token(member_token)
+    return run_reader('member', path=path, member_token=member_token)
+
+
+def build_source_bytes_preview(data: bytes, filename: str, chain_prefix: list[str] | None = None) -> dict[str, Any]:
+    return run_reader('bytes', data=data, filename=filename, chain=chain_prefix)
+
+
+def build_source_file_preview(path: Path) -> dict[str, Any]:
+    if path.suffix.casefold() in _TEXT_EXTENSIONS:
+        return _build_source_file_preview(path)
+    return run_reader('file', path=path)

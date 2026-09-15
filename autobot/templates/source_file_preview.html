@@ -30,7 +30,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260823-2" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-preview-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>{{ file.name }} · AutoBot</title>
 </head>
@@ -86,7 +86,7 @@
     {% elif preview.kind == "text" %}
       <section class="preview-block"><pre class="text-preview">{{ preview.text }}</pre></section>
     {% else %}
-      <section class="preview-unavailable"><strong>Предпросмотр недоступен</strong><p>{{ preview.message }}</p><a class="btn primary" href="/tenders/{{ tender_id }}/source-files/{{ file.token }}/download">Скачать файл</a></section>
+      <section class="preview-unavailable"><strong>Предпросмотр недоступен</strong><p>{{ preview.message }}</p><a class="btn primary" href="{{ download_url }}">Скачать файл</a></section>
     {% endif %}
   </main>
 </body>

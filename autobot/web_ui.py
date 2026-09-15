@@ -56,6 +56,7 @@ from autobot.source_documents import (
     resolve_tender_source_file,
 )
 from autobot.tender_detail import build_tender_detail
+from autobot.document_preview_worker import PreviewRejected
 from autobot.tender_deletion import delete_tender_data
 from autobot.workflow_overview import build_storage_overview, build_workflow_payload
 
@@ -4687,6 +4688,8 @@ def tender_source_file_preview(tender_id: str, token: str):
         return response
     try:
         preview = build_source_file_preview(path)
+    except PreviewRejected as exc:
+        preview = {'kind': 'unavailable', 'message': str(exc)}
     except Exception as exc:
         preview = {
             "kind": "unavailable",
@@ -4714,6 +4717,8 @@ def tender_archive_member_download(tender_id: str, token: str, member_token: str
     try:
         path = resolve_tender_source_file(tender_id, token)
         member = read_archive_member(path, member_token)
+    except PreviewRejected as exc:
+        return _archive_preview_limit_response(tender_id, token, path, str(exc))
     except (ValueError, FileNotFoundError, OSError):
         abort(404)
     response = make_response(
@@ -4736,6 +4741,8 @@ def tender_archive_member_preview(tender_id: str, token: str, member_token: str)
     try:
         path = resolve_tender_source_file(tender_id, token)
         member = read_archive_member(path, member_token)
+    except PreviewRejected as exc:
+        return _archive_preview_limit_response(tender_id, token, path, str(exc))
     except (ValueError, FileNotFoundError, OSError):
         abort(404)
 
@@ -4759,6 +4766,8 @@ def tender_archive_member_preview(tender_id: str, token: str, member_token: str)
 
     try:
         preview = build_source_bytes_preview(member["data"], member["name"], member["chain"])
+    except PreviewRejected as exc:
+        preview = {'kind': 'unavailable', 'message': str(exc)}
     except Exception as exc:
         preview = {
             "kind": "unavailable",
@@ -4778,6 +4787,20 @@ def tender_archive_member_preview(tender_id: str, token: str, member_token: str)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'self'"
+    return response
+
+
+def _archive_preview_limit_response(tender_id, token, path, message):
+    file_model = {'name': repair_filename(path.name), 'token': token, 'kind': 'archive',
+                  'extension': path.suffix.lstrip('.').upper(), 'type_label': 'Исходный архив',
+                  'size_fmt': format_file_size(path.stat().st_size), 'updated': '—'}
+    response = make_response(render_template('source_file_preview.html', tender_id=tender_id,
+        file=file_model, preview={'kind': 'unavailable', 'message': message},
+        back_url=f'/tenders/{tender_id}?tab=files',
+        download_url=f'/tenders/{tender_id}/source-files/{token}/download', archive_source_token=token), 422)
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'self'"
     return response
 
 
