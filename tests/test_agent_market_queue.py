@@ -156,7 +156,7 @@ class AgentMarketQueueTests(unittest.TestCase):
         self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "queued")
 
         second = claim_job("mac-mini", path=self.db_path)
-        self.assertTrue(fail_job(second["id"], "mac-mini", "browser crash: DevToolsActivePort", path=self.db_path, retry=True))
+        self.assertTrue(fail_job(second["id"], "mac-mini", "browser crash: DevToolsActivePort", path=self.db_path, retry=True, lease_token=second["lease_token"]))
         self.assertEqual(list_jobs("12345678", path=self.db_path)[0]["status"], "failed")
 
     def test_expired_lease_stops_at_payload_retry_limit(self) -> None:

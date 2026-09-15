@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import hashlib
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -105,7 +106,7 @@ def init_db(path: Path | str | None = None) -> Path:
     return db_path
 
 
-def _row_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _row_payload(row: sqlite3.Row | None, *, include_lease_token: bool = False) -> dict[str, Any] | None:
     if row is None:
         return None
     item = dict(row)
@@ -115,7 +116,45 @@ def _row_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
             item[field.removesuffix("_json")] = json.loads(raw) if raw else None
         except (TypeError, ValueError):
             item[field.removesuffix("_json")] = None
+    payload = item.get('payload')
+    if isinstance(payload, dict):
+        token = payload.pop('_lease_token', '')
+        if include_lease_token:
+            item['lease_token'] = token
+    result = item.get('result')
+    if isinstance(result, dict):
+        result.pop('_delivery', None)
+    if item.get('status') == 'applying':
+        item['status'] = 'leased'
+        item['delivery_pending'] = True
     return item
+
+
+def _owns_attempt(row, worker_id, lease_token=None):
+    if row is None or not worker_id or row['worker_id'] != worker_id:
+        return False
+    try:
+        payload = json.loads(row['payload_json'] or '{}')
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    supplied = str(lease_token or '')
+    expected = str(payload.get('_lease_token') or '')
+    return bool(expected and supplied and secrets.compare_digest(supplied, expected)) or (
+        not supplied and int(row['attempts']) == 1
+    )
+
+
+def _owns_current_lease(row, worker_id, lease_token=None):
+    return bool(_owns_attempt(row, worker_id, lease_token) and row['status'] == 'leased'
+                and row['lease_until'] is not None and row['lease_until'] > _now())
+
+
+def owns_current_lease(job_id, worker_id, *, lease_token=None, path=None):
+    with closing(_connect(path)) as connection:
+        row = connection.execute('SELECT * FROM agent_market_jobs WHERE id = ?', (job_id,)).fetchone()
+        return _owns_current_lease(row, worker_id, lease_token)
 
 
 def enqueue_jobs(
@@ -142,7 +181,7 @@ def enqueue_jobs(
                 active = connection.execute(
                     """SELECT id FROM agent_market_jobs
                        WHERE tender_id = ? AND position_key = ? AND job_mode = ?
-                         AND status IN ('queued', 'leased')
+                         AND status IN ('queued', 'leased', 'applying')
                        LIMIT 1""",
                     (tender_id, key, job_mode),
                 ).fetchone()
@@ -231,12 +270,14 @@ def claim_job(
             if row is None:
                 connection.execute("COMMIT")
                 return None
+            payload = json.loads(row['payload_json'] or '{}')
+            payload['_lease_token'] = secrets.token_urlsafe(24)
             connection.execute(
                 """UPDATE agent_market_jobs
                    SET status = 'leased', worker_id = ?, lease_until = ?, attempts = attempts + 1,
-                       error = '', updated_at = ?
+                       error = '', updated_at = ?, payload_json = ?
                    WHERE id = ? AND status = 'queued'""",
-                (worker, lease, now, row["id"]),
+                (worker, lease, now, json.dumps(payload, ensure_ascii=False), row["id"]),
             )
             claimed = connection.execute(
                 "SELECT * FROM agent_market_jobs WHERE id = ?", (row["id"],)
@@ -245,7 +286,7 @@ def claim_job(
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    return _row_payload(claimed)
+    return _row_payload(claimed, include_lease_token=True)
 
 
 def heartbeat_job(
@@ -254,10 +295,15 @@ def heartbeat_job(
     *,
     path: Path | str | None = None,
     lease_seconds: int = 300,
+    lease_token: str | None = None,
 ) -> bool:
     now = _now()
     lease = now + max(60, min(int(lease_seconds or 300), 1800))
-    with closing(_connect(path)) as connection:
+    with closing(_connect(path)) as connection, connection:
+        connection.execute('BEGIN IMMEDIATE')
+        row = connection.execute('SELECT * FROM agent_market_jobs WHERE id = ?', (job_id,)).fetchone()
+        if not _owns_current_lease(row, worker_id, lease_token):
+            return False
         cursor = connection.execute(
             """UPDATE agent_market_jobs SET lease_until = ?, updated_at = ?
                WHERE id = ? AND status = 'leased' AND worker_id = ?""",
@@ -272,9 +318,14 @@ def complete_job(
     result: dict[str, Any],
     *,
     path: Path | str | None = None,
+    lease_token: str | None = None,
 ) -> dict[str, Any] | None:
     now = _now()
-    with closing(_connect(path)) as connection:
+    with closing(_connect(path)) as connection, connection:
+        connection.execute('BEGIN IMMEDIATE')
+        row = connection.execute('SELECT * FROM agent_market_jobs WHERE id = ?', (job_id,)).fetchone()
+        if not _owns_current_lease(row, worker_id, lease_token):
+            return None
         cursor = connection.execute(
             """UPDATE agent_market_jobs
                SET status = 'completed', result_json = ?, error = '', lease_until = NULL,
@@ -295,15 +346,17 @@ def fail_job(
     *,
     path: Path | str | None = None,
     retry: bool = False,
+    lease_token: str | None = None,
 ) -> bool:
     now = _now()
-    with closing(_connect(path)) as connection:
+    with closing(_connect(path)) as connection, connection:
+        connection.execute('BEGIN IMMEDIATE')
         row = connection.execute(
-            "SELECT attempts, payload_json FROM agent_market_jobs "
+            "SELECT * FROM agent_market_jobs "
             "WHERE id = ? AND status = 'leased' AND worker_id = ?",
             (job_id, worker_id),
         ).fetchone()
-        if row is None:
+        if not _owns_current_lease(row, worker_id, lease_token):
             return False
         try:
             payload = json.loads(str(row["payload_json"] or "{}"))
@@ -354,7 +407,7 @@ def cancel_job(job_id: str, tender_id: str, *, path: Path | str | None = None) -
         cursor = connection.execute(
             """UPDATE agent_market_jobs
                SET status = 'canceled', lease_until = NULL, updated_at = ?
-               WHERE id = ? AND tender_id = ? AND status IN ('queued', 'leased')""",
+               WHERE id = ? AND tender_id = ? AND status IN ('queued', 'leased', 'applying')""",
             (now, job_id, tender_id),
         )
     return cursor.rowcount == 1
@@ -528,3 +581,88 @@ def get_job(job_id: str, *, path: Path | str | None = None) -> dict[str, Any] | 
     with closing(_connect(path)) as connection:
         row = connection.execute("SELECT * FROM agent_market_jobs WHERE id = ?", (job_id,)).fetchone()
     return _row_payload(row)
+
+
+def _result_digest(result):
+    encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+    if len(encoded.encode('utf-8')) > 2 * 1024 * 1024:
+        raise ValueError('Результат задания слишком велик')
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+def received_job_result(job_id, worker_id, result, *, lease_token=None, path=None):
+    """Recognize an identical retry without checking pages or publishing again."""
+    digest = _result_digest(result)
+    with closing(_connect(path)) as connection:
+        row = connection.execute('SELECT * FROM agent_market_jobs WHERE id = ?', (job_id,)).fetchone()
+        if not _owns_attempt(row, worker_id, lease_token) or row['status'] not in {'applying', 'completed'}:
+            return None
+        saved = json.loads(row['result_json'] or '{}')
+        if (saved.get('_delivery') or {}).get('digest') != digest:
+            return None
+        return _row_payload(row)
+
+
+def accept_job_result(job_id, worker_id, result, prepared, *, lease_token=None, path=None):
+    """Persist the verified package before any market report is modified."""
+    digest = _result_digest(result)
+    _result_digest(prepared)  # finite JSON and the same bounded payload size
+    with closing(_connect(path)) as connection, connection:
+        connection.execute('BEGIN IMMEDIATE')
+        row = connection.execute('SELECT * FROM agent_market_jobs WHERE id = ?', (job_id,)).fetchone()
+        if _owns_attempt(row, worker_id, lease_token) and row['status'] in {'applying', 'completed'}:
+            saved = json.loads(row['result_json'] or '{}')
+            return _row_payload(row) if (saved.get('_delivery') or {}).get('digest') == digest else None
+        if not _owns_current_lease(row, worker_id, lease_token):
+            return None
+        saved = dict(result)
+        saved['_delivery'] = {'version': 1, 'digest': digest, 'prepared': prepared, 'accepted_at': _now()}
+        connection.execute("UPDATE agent_market_jobs SET status='applying', result_json=?, lease_until=NULL, updated_at=?, error='' WHERE id=?",
+                           (json.dumps(saved, ensure_ascii=False, allow_nan=False), _now(), job_id))
+        return _row_payload(connection.execute('SELECT * FROM agent_market_jobs WHERE id=?', (job_id,)).fetchone())
+
+
+def pending_deliveries(*, path=None, limit=10):
+    init_db(path)
+    with closing(_connect(path)) as connection:
+        return [row[0] for row in connection.execute(
+            "SELECT id FROM agent_market_jobs WHERE status='applying' ORDER BY updated_at LIMIT ?",
+            (max(1, min(100, int(limit))),))]
+
+
+def apply_accepted_result(job_id, publisher, *, path=None):
+    """Serialize cancellation and file publication; publisher must not use network.
+
+    A crash rolls back this transaction, leaving the accepted package to replay.
+    The publisher performs an idempotent merge under its cross-process file lock.
+    """
+    try:
+        with closing(_connect(path)) as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT * FROM agent_market_jobs WHERE id=?', (job_id,)).fetchone()
+            if row is None or row['status'] not in {'applying', 'completed'}:
+                return None
+            if row['status'] == 'completed':
+                return _row_payload(row)
+            saved = json.loads(row['result_json'] or '{}')
+            delivery = saved.get('_delivery') or {}
+            try:
+                if delivery.get('version') != 1 or not isinstance(delivery.get('prepared'), dict):
+                    raise ValueError('Сохранённый пакет публикации повреждён')
+                imported = publisher(row['tender_id'], (_row_payload(row) or {}).get('payload') or {}, delivery['prepared'])
+            except (ValueError, TypeError) as error:
+                connection.execute("UPDATE agent_market_jobs SET status='failed', error=?, completed_at=?, updated_at=? WHERE id=?",
+                                   (str(error)[:2000], _now(), _now(), job_id))
+                connection.commit()
+                raise
+            saved['import'] = imported
+            delivery.pop('prepared', None)
+            delivery['published_at'] = _now()
+            connection.execute("UPDATE agent_market_jobs SET status='completed', result_json=?, error='', completed_at=?, updated_at=? WHERE id=?",
+                               (json.dumps(saved, ensure_ascii=False, allow_nan=False), _now(), _now(), job_id))
+            return _row_payload(connection.execute('SELECT * FROM agent_market_jobs WHERE id=?', (job_id,)).fetchone())
+    except OSError as error:
+        with closing(_connect(path)) as connection:
+            connection.execute("UPDATE agent_market_jobs SET error=?, updated_at=? WHERE id=? AND status='applying'",
+                               ('Публикация будет повторена: ' + str(error)[:1600], _now(), job_id))
+        raise

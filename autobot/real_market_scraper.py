@@ -3316,13 +3316,7 @@ def _resolve_agent_source_row(estimate: pd.DataFrame, payload: dict) -> pd.Serie
     return matches.iloc[0]
 
 
-def import_agent_market_result(
-    tender_id: str,
-    position_payload: dict[str, object],
-    result: dict[str, object],
-) -> dict[str, object]:
-    """Import agent evidence and independently verify every direct page on AutoBot."""
-
+def _agent_import_context(tender_id, position_payload):
     tid = str(tender_id or "").strip()
     name = str(position_payload.get("name") or "").strip()
     if not tid or not name:
@@ -3330,11 +3324,15 @@ def import_agent_market_result(
     estimate_path = estimate_path_for_tender(tid)
     if not estimate_path.is_file():
         raise FileNotFoundError(f"Нет {estimate_path.name}")
-    estimate = pd.read_excel(estimate_path)
+    import hashlib
+    import io
+    captured = estimate_path.read_bytes()
+    estimate = pd.read_excel(io.BytesIO(captured))
     if COL_NAME not in estimate.columns:
         raise ValueError(f"В смете нет колонки {COL_NAME!r}")
-    key = _norm_key(name)
     source_row = _resolve_agent_source_row(estimate, position_payload)
+    from autobot.market_contract import position_identity
+    key = position_identity(source_row)
     metadata = load_tender_metadata().get(tid, {})
     source_row = source_row.copy()
     source_row['Регион поиска'] = str(metadata.get('region') or position_payload.get('region') or '').strip()
@@ -3345,6 +3343,12 @@ def import_agent_market_result(
         source_row.get("Раздел", ""),
         str(metadata.get("region") or ""),
     )
+    return tid, name, key, source_row, estimate, metadata, plan, hashlib.sha256(captured).hexdigest()
+
+
+def prepare_agent_market_result(tender_id, position_payload, result):
+    """Verify pages without publishing a report; return a durable replay package."""
+    tid, name, key, source_row, estimate, metadata, plan, digest = _agent_import_context(tender_id, position_payload)
     search_mode = str(position_payload.get("search_mode") or "").strip().casefold()
     avito_agent_mode = search_mode == "avito_agent"
     direct_probe_mode = bool(result.get("_autobot_direct_probe"))
@@ -3440,9 +3444,6 @@ def import_agent_market_result(
                 agent_evidence=raw_evidence,
             )
         )
-    if not imported:
-        return {"imported": 0, "message": "Агент не вернул пригодных цен"}
-
     output_path = output_path_for_tender(tid)
     previous = _read_previous(output_path)
     saved = _saved_offers_for_key(previous, key)
@@ -3452,8 +3453,45 @@ def import_agent_market_result(
         plan,
         reference_offers=saved,
     )
+    return {
+        'schema_version': 1, 'estimate_digest': digest, 'position_key': key,
+        'region': source_row['Регион поиска'], 'offers': [vars(offer) for offer in imported],
+    }
+
+
+def _publish_prepared_agent_result(tender_id, position_payload, prepared):
+    from autobot.atomic_output import write_excel
+    tid, name, key, source_row, estimate, metadata, plan, digest = _agent_import_context(tender_id, position_payload)
+    from autobot.market_evidence_policy import region_key
+    if prepared.get('schema_version') != 1 or prepared.get('estimate_digest') != digest or prepared.get('position_key') != key:
+        raise ValueError('Исходная смета изменилась после проверки цены; нужен новый поиск')
+    if region_key(prepared.get('region')) != region_key(source_row['Регион поиска']):
+        raise ValueError('Регион изменился после проверки цены; нужен новый поиск')
+    imported = [MarketOffer(**offer) for offer in prepared.get('offers', [])]
+    if not imported:
+        return {'imported': 0, 'message': 'Агент не вернул пригодных цен'}
+    # Re-check time-sensitive evidence when replaying an accepted package.
+    from autobot.market_contract import offers_for_row, BUNDLE_COLUMN, position_identity
+    evidence_row = dict(source_row)
+    evidence_row[BUNDLE_COLUMN] = json.dumps(_offer_bundle(imported), ensure_ascii=False)
+    checks = {_canonical_offer_url(offer['url']): offer for offer in offers_for_row(evidence_row)}
+    for offer in imported:
+        checked = checks.get(_canonical_offer_url(offer.url))
+        if checked:
+            offer.verification = checked['verification']
+            offer.verification_reason = checked.get('verification_reason') or offer.verification_reason
+    output_path = output_path_for_tender(tid)
+    previous = _read_previous(output_path)
+    saved = _saved_offers_for_key(previous, key)
+    from autobot.market_evidence_policy import observed_timestamp
+    fresh_by_url = {_canonical_offer_url(offer.url): offer for offer in imported if offer.url}
+    for offer in saved:
+        fresh = fresh_by_url.get(_canonical_offer_url(offer.url))
+        if fresh and region_key(offer.search_region) == region_key(source_row['Регион поиска']) and (observed_timestamp(offer.observed_at) or 0) > (observed_timestamp(fresh.observed_at) or 0):
+            imported.remove(fresh)
+            fresh_by_url.pop(_canonical_offer_url(offer.url), None)
+    refreshed_urls = set(fresh_by_url)
     stored_verified = _store_verified_offers_in_index(tid, source_row, imported, region=source_row['Регион поиска'])
-    refreshed_urls = {_canonical_offer_url(offer.url) for offer in imported if offer.url}
     if refreshed_urls:
         # A newly imported observation of the same direct page must replace its
         # stale normalization.  Keeping the historically lower value here once
@@ -3472,17 +3510,21 @@ def import_agent_market_result(
         if not isinstance(equivalent, dict):
             continue
         equivalent_name = str(equivalent.get("name") or "").strip()
-        equivalent_key = _norm_key(equivalent_name)
-        if not equivalent_key or equivalent_key in output_keys:
+        if not equivalent_name:
             continue
         try:
             equivalent_row = _resolve_agent_source_row(estimate, equivalent)
         except ValueError:
             continue
+        equivalent_key = position_identity(equivalent_row)
+        if equivalent_key in output_keys:
+            continue
         if normalize_unit(equivalent_row.get("Ед. изм.")) != normalize_unit(source_row.get("Ед. изм.")):
             continue
-        if equivalent_key.rstrip(".,; ") != key.rstrip(".,; "):
+        if _norm_key(equivalent_name).rstrip(".,; ") != _norm_key(name).rstrip(".,; "):
             continue
+        equivalent_row = equivalent_row.copy()
+        equivalent_row['Регион поиска'] = source_row['Регион поиска']
         equivalent_plan = build_search_plan(
             equivalent_row.get(COL_NAME, ""),
             equivalent_row.get("Ед. изм.", ""),
@@ -3493,16 +3535,7 @@ def import_agent_market_result(
         output_rows.append(_build_output_row(equivalent_row, offers=offers, query=query, err="", plan=equivalent_plan))
         output_keys.add(equivalent_key)
     merged = _merge_rows(previous, output_rows)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.tmp.xlsx")
-    try:
-        merged.to_excel(temp_path, index=False)
-        temp_path.replace(output_path)
-    finally:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    write_excel(merged, output_path)
     offer_outcomes = [
         {
             "title": offer.title,
@@ -3528,6 +3561,20 @@ def import_agent_market_result(
         "report": str(output_path),
         "offer_outcomes": offer_outcomes,
     }
+
+
+
+def publish_agent_market_result(tender_id, position_payload, prepared):
+    """Publish verified evidence with no network and one read/merge/write lock."""
+    from autobot.atomic_output import output_lock
+    with output_lock(output_path_for_tender(str(tender_id))):
+        return _publish_prepared_agent_result(tender_id, position_payload, prepared)
+
+
+def import_agent_market_result(tender_id, position_payload, result):
+    """Compatibility entry point for a synchronous, directly requested import."""
+    prepared = prepare_agent_market_result(tender_id, position_payload, result)
+    return publish_agent_market_result(tender_id, position_payload, prepared)
 
 
 def run_tender(
@@ -3560,17 +3607,19 @@ def run_tender(
     md = load_tender_metadata().get(tid, {})
     region = str(md.get("region") or "").strip()
     sources = sources or ["web", "avito"]
-    prev = pd.DataFrame() if no_resume else _read_previous(out_path)
-    prev, revalidated_rows = _revalidate_previous(prev)
-    if revalidated_rows:
-        write_excel(prev, out_path)
-        print(f"Перепроверен масштаб сохранённых цен: {revalidated_rows} строк", flush=True)
-    index_backfill_enabled = (os.environ.get("MARKET_INDEX_BACKFILL", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
-    if index_backfill_enabled and not dry_run and not prev.empty:
-        prev, backfilled_offers = _backfill_price_index_from_report(tid, prev)
-        if backfilled_offers:
+    from autobot.atomic_output import output_lock
+    with output_lock(out_path):
+        prev = pd.DataFrame() if no_resume else _read_previous(out_path)
+        prev, revalidated_rows = _revalidate_previous(prev)
+        if revalidated_rows:
             write_excel(prev, out_path)
-            print(f"Локальный индекс: перенесено проверенных источников из отчёта — {backfilled_offers}", flush=True)
+            print(f"Перепроверен масштаб сохранённых цен: {revalidated_rows} строк", flush=True)
+        index_backfill_enabled = (os.environ.get("MARKET_INDEX_BACKFILL", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+        if index_backfill_enabled and not dry_run and not prev.empty:
+            prev, backfilled_offers = _backfill_price_index_from_report(tid, prev)
+            if backfilled_offers:
+                write_excel(prev, out_path)
+                print(f"Локальный индекс: перенесено проверенных источников из отчёта — {backfilled_offers}", flush=True)
     eligible = _eligible_rows(est)
     if only_without_verified:
         verified_keys = _verified_market_keys(prev, region=region)
@@ -3717,8 +3766,12 @@ def run_tender(
             if not dry_run:
                 indexed_stored += _store_verified_offers_in_index(tid, row, offers, region=region)
             new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))
-            merged = _merge_rows(prev, new_rows)
-            write_excel(merged, out_path)
+            from autobot.atomic_output import output_lock
+            with output_lock(out_path):
+                # Merge only this completed row against the latest file. An
+                # agent may have published another position during the search.
+                merged = _merge_rows(_read_previous(out_path), [new_rows[-1]])
+                write_excel(merged, out_path)
             verified_count = sum(1 for offer in offers if offer.verification == "verified")
             candidate_count = sum(1 for offer in offers if offer.verification == "candidate")
             health["processed"] += 1
@@ -3766,10 +3819,11 @@ def run_tender(
 
     if not new_rows and not prev.empty:
         return out_path
-    if new_rows:
-        write_excel(_merge_rows(prev, new_rows), out_path)
-    elif not out_path.is_file():
-        write_excel(pd.DataFrame(), out_path)
+    if not out_path.is_file():
+        from autobot.atomic_output import output_lock
+        with output_lock(out_path):
+            if not out_path.is_file():
+                write_excel(pd.DataFrame(), out_path)
     return out_path
 
 

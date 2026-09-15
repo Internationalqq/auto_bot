@@ -622,6 +622,10 @@ def test_agent_result_is_verified_by_autobot_before_market_import(tmp_path: Path
     def fake_verify(src_row, offers, plan, **kwargs):
         calls["adapter"] = offers[0].adapter
         calls["queries"] = plan.queries
+        from datetime import datetime, timezone
+        offers[0].observed_at = datetime.now(timezone.utc).isoformat()
+        offers[0].search_region = src_row['Регион поиска']
+        offers[0].region_evidence = 'Доставка по Ярославской области'
         offers[0].verification = "verified"
         offers[0].page_checked = True
         offers[0].verification_reason = "Страница и цена подтверждены AutoBot"

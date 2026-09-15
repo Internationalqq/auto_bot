@@ -33,3 +33,8 @@ accesslog = "-"
 errorlog = "-"
 capture_output = True
 preload_app = False
+
+
+def post_worker_init(worker):
+    from autobot.agent_market_delivery import start_delivery_recovery
+    start_delivery_recovery()

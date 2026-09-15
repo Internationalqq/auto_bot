@@ -86,3 +86,30 @@ def test_resume_limit_applies_to_missing_prices_not_already_completed_rows(monke
     assert len(saved) == 2
     assert saved.iloc[-1][COL_UNIT] == 'т'
     assert _processed_keys(saved) == {position_identity(good)}
+
+
+def test_search_finishing_does_not_erase_another_producers_completed_position(monkeypatch, tmp_path):
+    from autobot import real_market_scraper as scraper
+
+    pending = row(verification='candidate')
+    concurrent = row(unit='т', source='another.xlsx', price=2200)
+    estimate = tmp_path / 'estimate.xlsx'
+    output = tmp_path / 'market.xlsx'
+    pd.DataFrame([pending]).to_excel(estimate, index=False)
+    monkeypatch.setattr(scraper, 'estimate_path_for_tender', lambda _: estimate)
+    monkeypatch.setattr(scraper, 'output_path_for_estimate', lambda _: output)
+    monkeypatch.setattr(scraper, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(scraper, 'load_tender_metadata', lambda: {})
+    monkeypatch.setattr(scraper, '_revalidate_previous', lambda df: (df, 0))
+    def event(tid, kind, *args, **kwargs):
+        if kind == 'done':
+            current = pd.read_excel(output)
+            from autobot.atomic_output import write_excel, output_lock
+            with output_lock(output):
+                write_excel(scraper._merge_rows(current, [concurrent]), output)
+    monkeypatch.setattr(scraper, 'append_market_web_event', event)
+    scraper.run_tender('123456', max_rows=1, dry_run=True, pause=0)
+    saved = pd.read_excel(output)
+    assert len(saved) == 2
+    assert set(saved[COL_UNIT]) == {'м3', 'т'}
+    assert position_identity(concurrent) in _processed_keys(saved)

@@ -296,7 +296,6 @@ estimate_upload_workers: set[str] = set()
 estimate_market_jobs: dict[str, dict] = {}
 estimate_market_lock = threading.Lock()
 tender_delete_lock = threading.Lock()
-agent_market_import_lock = threading.Lock()
 
 
 def _agent_market_token() -> str:
@@ -12192,7 +12191,8 @@ def api_agent_market_worker_status():
     auth_error = _require_agent_market_token()
     if auth_error:
         return auth_error
-    return jsonify({"ok": True, "schema_version": 1, "service": "autobot-agent-market"})
+    return jsonify({"ok": True, "schema_version": 1, "service": "autobot-agent-market",
+                    "features": ["lease_token", "durable_completion"]})
 
 
 def _agent_market_lease_seconds(data: dict, *, default: int = 600) -> int:
@@ -12244,7 +12244,7 @@ def api_agent_market_heartbeat(job_id: str):
         lease_seconds = _agent_market_lease_seconds(data)
     except ValueError:
         return jsonify({"ok": False, "message": "lease_seconds должен быть целым числом"}), 400
-    if not heartbeat_job(job_id, worker_id, lease_seconds=lease_seconds):
+    if not heartbeat_job(job_id, worker_id, lease_seconds=lease_seconds, lease_token=data.get('lease_token')):
         return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
     return jsonify({"ok": True})
 
@@ -12254,25 +12254,26 @@ def api_agent_market_complete(job_id: str):
     auth_error = _require_agent_market_token()
     if auth_error:
         return auth_error
-    from autobot.agent_market_queue import complete_job, get_job
-    from autobot.real_market_scraper import import_agent_market_result
+    from autobot.agent_market_queue import get_job
+    from autobot.agent_market_delivery import complete_agent_result, DeliveryConflict
 
-    data = request.get_json(silent=True) or {}
-    worker_id = str(data.get("worker_id") or "").strip()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Тело запроса должно быть JSON-объектом'}), 400
+    worker_id = str(data.get('worker_id') or '').strip()
     job = get_job(job_id)
-    if not job or job.get("status") != "leased" or job.get("worker_id") != worker_id:
-        return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
+    if not job:
+        return jsonify({'ok': False, 'message': 'Задание не найдено'}), 409
     try:
-        validated = _validate_agent_market_result(data.get("result"), str(job.get("position_key") or ""))
-        with agent_market_import_lock:
-            imported = import_agent_market_result(str(job.get("tender_id") or ""), job.get("payload") or {}, validated)
-        validated["import"] = imported
+        validated = _validate_agent_market_result(data.get('result'), str(job.get('position_key') or ''))
+        completed = complete_agent_result(job_id, worker_id, validated, lease_token=data.get('lease_token'))
+    except DeliveryConflict as exc:
+        return jsonify({'ok': False, 'message': str(exc)}), 409
     except (OSError, ValueError, TypeError) as exc:
-        return jsonify({"ok": False, "message": f"Результат не принят: {str(exc)[:500]}"}), 422
-    completed = complete_job(job_id, worker_id, validated)
-    if not completed:
-        return jsonify({"ok": False, "message": "Не удалось завершить задание"}), 409
-    return jsonify({"ok": True, "job_id": job_id, "import": imported})
+        return jsonify({'ok': False, 'message': f'Результат не принят: {str(exc)[:500]}'}), 422
+    pending = bool(completed.get('delivery_pending'))
+    return jsonify({'ok': True, 'job_id': job_id, 'delivery_pending': pending,
+                    'import': (completed.get('result') or {}).get('import') or {}}), 202 if pending else 200
 
 
 @app.route("/api/agent-market/v1/jobs/<job_id>/fail", methods=["POST"])
@@ -12280,42 +12281,41 @@ def api_agent_market_fail(job_id: str):
     auth_error = _require_agent_market_token()
     if auth_error:
         return auth_error
-    from autobot.agent_market_queue import complete_job, fail_job, get_job
-    from autobot.real_market_scraper import import_agent_market_result, probe_agent_market_start_urls
+    from autobot.agent_market_queue import fail_job, get_job, owns_current_lease
+    from autobot.agent_market_delivery import complete_agent_result, DeliveryConflict
+    from autobot.real_market_scraper import probe_agent_market_start_urls
 
-    data = request.get_json(silent=True) or {}
-    worker_id = str(data.get("worker_id") or "").strip()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Тело запроса должно быть JSON-объектом'}), 400
+    worker_id = str(data.get('worker_id') or '').strip()
+    lease_token = data.get('lease_token')
+    if not owns_current_lease(job_id, worker_id, lease_token=lease_token):
+        return jsonify({'ok': False, 'message': 'Попытка задания истекла или больше не принадлежит этому агенту'}), 409
     job = get_job(job_id)
-    if job and job.get("status") == "leased" and job.get("worker_id") == worker_id:
-        payload = job.get("payload") or {}
-        if str(job.get("job_mode") or "web") == "web" and payload.get("start_urls"):
-            try:
-                recovered = probe_agent_market_start_urls(str(job.get("tender_id") or ""), payload, max_sources=1)
-                if recovered.get("offers"):
-                    validated = _validate_agent_market_result(recovered, str(job.get("position_key") or ""))
-                    validated["_autobot_direct_probe"] = True
-                    with agent_market_import_lock:
-                        imported = import_agent_market_result(str(job.get("tender_id") or ""), payload, validated)
-                    validated["import"] = imported
-                    completed = complete_job(job_id, worker_id, validated)
-                    if completed:
-                        return jsonify({"ok": True, "recovered": True, "job_id": job_id, "import": imported})
-            except (OSError, ValueError, TypeError):
-                # The original worker failure remains the authoritative result
-                # when the bounded direct-source fallback cannot be verified.
-                pass
+    payload = job.get('payload') or {}
+    if str(job.get('job_mode') or 'web') == 'web' and payload.get('start_urls'):
+        try:
+            recovered = probe_agent_market_start_urls(str(job.get('tender_id') or ''), payload, max_sources=1)
+            if recovered.get('offers'):
+                validated = _validate_agent_market_result(recovered, str(job.get('position_key') or ''))
+                validated['_autobot_direct_probe'] = True
+                completed = complete_agent_result(job_id, worker_id, validated, lease_token=lease_token)
+                pending = bool(completed.get('delivery_pending'))
+                return jsonify({'ok': True, 'recovered': True, 'job_id': job_id, 'delivery_pending': pending,
+                                'import': (completed.get('result') or {}).get('import') or {}}), 202 if pending else 200
+        except DeliveryConflict as exc:
+            return jsonify({'ok': False, 'message': str(exc)}), 409
+        except (OSError, ValueError, TypeError):
+            pass
     try:
-        ok = fail_job(
-            job_id,
-            worker_id,
-            str(data.get("error") or "Ошибка агента"),
-            retry=bool(data.get("retry")),
-        )
+        ok = fail_job(job_id, worker_id, str(data.get('error') or 'Ошибка агента'),
+                      retry=bool(data.get('retry')), lease_token=lease_token)
     except (TypeError, ValueError) as exc:
-        return jsonify({"ok": False, "message": str(exc)}), 400
+        return jsonify({'ok': False, 'message': str(exc)}), 400
     if not ok:
-        return jsonify({"ok": False, "message": "Задание не принадлежит этому агенту"}), 409
-    return jsonify({"ok": True})
+        return jsonify({'ok': False, 'message': 'Задание больше не принадлежит этому агенту'}), 409
+    return jsonify({'ok': True})
 
 
 @app.route("/api/reports-coverage")
@@ -12623,4 +12623,6 @@ if __name__ == "__main__":
     # REPORT_SITE_PUBLIC_BASE_URL=http://<IP_ПК>:8765
     _host = (os.environ.get("WEB_UI_HOST") or "127.0.0.1").strip() or "127.0.0.1"
     _port = int((os.environ.get("WEB_UI_PORT") or "8765").strip() or "8765")
+    from autobot.agent_market_delivery import start_delivery_recovery
+    start_delivery_recovery()
     app.run(host=_host, port=_port, debug=False)

@@ -390,7 +390,7 @@ def record_verified_offers(
                 },
             )
             host = urlparse(url).netloc.casefold().split(":", 1)[0]
-            connection.execute(
+            cursor = connection.execute(
                 """INSERT INTO market_prices
                    (normalized_key,category_key,category_tokens_json,unit,bucket,position_type,brand_model,
                     original_position,tender_id,source,source_host,title,price,currency,url,confidence,
@@ -404,7 +404,8 @@ def record_verified_offers(
                      verification=excluded.verification,observed_at=excluded.observed_at,
                      expires_at=excluded.expires_at,audit_record_path=excluded.audit_record_path,
                      snapshot_path=excluded.snapshot_path,snapshot_sha256=excluded.snapshot_sha256,
-                     updated_at=excluded.updated_at""",
+                     updated_at=excluded.updated_at
+                   WHERE excluded.observed_at >= market_prices.observed_at""",
                 (
                     identity.normalized_key,
                     identity.category_key,
@@ -433,7 +434,7 @@ def record_verified_offers(
                     now,
                 ),
             )
-            stored += 1
+            stored += cursor.rowcount
         _refresh_summary(connection, identity.normalized_key, now)
     return stored
 

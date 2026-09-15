@@ -161,8 +161,9 @@ class AgentMarketApiTests(unittest.TestCase):
                 )
                 self.assertEqual(reason, "Подтверждённая цена не найдена")
 
-    @patch("autobot.real_market_scraper.import_agent_market_result")
-    def test_claim_and_complete_normalizes_agent_result(self, import_result) -> None:
+    @patch("autobot.agent_market_delivery.publish_agent_market_result", return_value={"imported": 1, "verified": 1, "offer_outcomes": []})
+    @patch("autobot.agent_market_delivery.prepare_agent_market_result")
+    def test_claim_and_complete_normalizes_agent_result(self, import_result, publish_result) -> None:
         import_result.return_value = {"imported": 1}
         claimed = self.client.post(
             "/api/agent-market/v1/claim",
@@ -228,9 +229,10 @@ class AgentMarketApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
-    @patch("autobot.real_market_scraper.import_agent_market_result")
+    @patch("autobot.agent_market_delivery.publish_agent_market_result", return_value={"imported": 1, "verified": 1, "offer_outcomes": []})
+    @patch("autobot.agent_market_delivery.prepare_agent_market_result")
     @patch("autobot.real_market_scraper.probe_agent_market_start_urls")
-    def test_worker_failure_recovers_from_trusted_direct_source(self, probe_sources, import_result) -> None:
+    def test_worker_failure_recovers_from_trusted_direct_source(self, probe_sources, import_result, publish_result) -> None:
         queue.patch_queued_job_payloads(
             "12345678",
             {"start_urls": ["https://supplier.example/sand/"], "max_attempts": 1},

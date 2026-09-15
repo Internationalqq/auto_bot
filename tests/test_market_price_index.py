@@ -103,6 +103,15 @@ class MarketPriceIndexTests(unittest.TestCase):
         self.assertEqual(index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3',
                                                      region='Ярославль', offers=[offer]), 0)
 
+    def test_replayed_old_observation_cannot_replace_newer_index_price(self) -> None:
+        now = time.time()
+        offer = {'verification':'verified', 'price':1000, 'url':'https://supplier.example/sand',
+                 'matched_unit':'м3', 'observed_at':now, 'evidence':'Песок строительный 1000 руб/м3'}
+        self.assertEqual(index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3', offers=[offer]), 1)
+        old = dict(offer, price=900, observed_at=now-600, evidence='Песок строительный 900 руб/м3')
+        self.assertEqual(index.record_verified_offers(tender_id='456', name='Песок строительный', unit='м3', offers=[old]), 0)
+        self.assertEqual(index.lookup_verified_offers(name='Песок строительный', unit='м3')[0]['price'], 1000)
+
     def test_weighted_median_prefers_trusted_cluster(self) -> None:
         value = index.weighted_median([(800, 0.9), (820, 0.8), (250, 0.1)])
         self.assertEqual(value, 800)
