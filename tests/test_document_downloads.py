@@ -209,6 +209,7 @@ def test_navigation_retries_cannot_reset_document_discovery_deadline(monkeypatch
 
 def test_refresh_api_reserves_once_and_uses_catalogue_url_not_request_body(monkeypatch, tmp_path):
     from autobot import web_ui
+    monkeypatch.setattr(web_ui, 'DATA_DIR', tmp_path)
     import copy
     monkeypatch.setattr(web_ui, 'parse_state', dict(copy.deepcopy(web_ui.parse_state), running=False))
     monkeypatch.setattr(web_ui, '_merge_site_busy', lambda: False)
@@ -233,8 +234,9 @@ def test_refresh_api_reserves_once_and_uses_catalogue_url_not_request_body(monke
     assert client.post('/api/tenders/87654321/refresh-documents').status_code == 404
 
 
-def test_refresh_launch_failure_releases_reservation(monkeypatch):
+def test_refresh_launch_failure_releases_reservation(monkeypatch, tmp_path):
     from autobot import web_ui
+    monkeypatch.setattr(web_ui, 'DATA_DIR', tmp_path)
     import copy
     monkeypatch.setattr(web_ui, 'parse_state', dict(copy.deepcopy(web_ui.parse_state), running=False))
     monkeypatch.setattr(web_ui, '_merge_site_busy', lambda: False)

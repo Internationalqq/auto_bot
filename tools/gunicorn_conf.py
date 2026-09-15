@@ -18,9 +18,9 @@ _port = _env_int("WEB_UI_PORT", 8765, minimum=1, maximum=65535)
 
 bind = f"{_host}:{_port}"
 
-# AutoBot keeps job progress and executor state in-process. One process plus a
-# thread pool preserves that state while still allowing health/status requests
-# to be served during longer operations. More workers are opt-in only.
+# The legacy merge workflow still keeps state in-process. Keep one web process
+# until that boundary is migrated too; main search/document jobs are durable.
+# The thread pool keeps health/status requests responsive during operations.
 worker_class = "gthread"
 workers = _env_int("WEB_UI_WORKERS", 1, minimum=1, maximum=4)
 threads = _env_int("WEB_UI_THREADS", 8, minimum=2, maximum=32)
@@ -43,3 +43,7 @@ def post_worker_init(worker):
     start_delivery_recovery()
     from autobot.market_web_worker import start_web_worker
     start_web_worker()
+
+    from autobot.main_job_runtime import start_recovery
+    from autobot.web_ui import DATA_DIR, _parse_env
+    start_recovery(DATA_DIR / 'main_jobs.sqlite3', env=_parse_env())

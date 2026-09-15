@@ -4,10 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-detail-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-detail-jobs-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-cashflow-1" />
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
+  <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
 <body>
@@ -86,7 +87,13 @@
     </section>
     {% endif %}
 
-    <p class="market-health-alert" id="documentRefreshStatus" role="status" tabindex="-1" hidden></p>
+    <section class="document-job" id="documentJobPanel" aria-label="Обработка документов" hidden>
+      <p id="documentRefreshStatus" role="status" tabindex="-1"></p>
+      <details id="documentJobDetails" hidden>
+        <summary>Журнал обработки</summary>
+        <pre id="documentJobLog"></pre>
+      </details>
+    </section>
 
     {% if tender.active_tab == "overview" %}
 
@@ -994,67 +1001,6 @@
 
     document.getElementById("sourceFileSearch")?.addEventListener("input", filterSourceFiles);
     document.getElementById("sourceFileKind")?.addEventListener("change", filterSourceFiles);
-
-    const documentRefreshButtons = [...document.querySelectorAll("[data-refresh-documents], [data-rebuild-report]")];
-    const documentRefreshStatus = document.getElementById("documentRefreshStatus");
-    let documentRunId = null;
-    async function pollDocumentRefresh() {
-      if (!documentRunId) return;
-      try {
-        const response = await fetch("/api/parse-status?tender_id=" + encodeURIComponent(TENDER_ID), {cache: "no-store"});
-        if (!response.ok) throw new Error("status");
-        const state = await response.json();
-        if (state.run_id !== documentRunId) {
-          documentRefreshStatus.textContent = "Состояние запуска изменилось. Обновите карточку и проверьте документы.";
-          documentRunId = null;
-          documentRefreshButtons.forEach(button => button.disabled = false);
-          return;
-        }
-        if (!state.running) {
-          documentRunId = null;
-          documentRefreshButtons.forEach(button => button.disabled = false);
-          if (state.exit_code === 0) {
-            documentRefreshStatus.textContent = "Документы обработаны. Обновляю карточку…";
-            window.location.reload();
-          } else {
-            documentRefreshStatus.textContent = "Загрузка или разбор не завершились. " + ([...(state.document_status?.errors || []), ...(state.document_parse?.errors || [])].join(" · ") || "Подробности доступны в журнале обработки. Повторите попытку позже.");
-          }
-          return;
-        }
-        documentRefreshStatus.textContent = "Обрабатываю документы и разбираю смету. Страницу можно закрыть.";
-      } catch (error) {
-        documentRefreshStatus.textContent = "Не удалось получить состояние загрузки. Проверяю повторно…";
-      }
-      window.setTimeout(pollDocumentRefresh, 2500);
-    }
-    documentRefreshButtons.forEach(button => button.addEventListener("click", async function() {
-      documentRefreshButtons.forEach(item => item.disabled = true);
-      documentRefreshStatus.hidden = false;
-      const rebuild = button.hasAttribute("data-rebuild-report");
-      documentRefreshStatus.textContent = rebuild ? "Запускаю разбор сохранённых документов…" : "Запускаю загрузку документов…";
-      documentRefreshStatus.focus();
-      try {
-        const response = await fetch(rebuild ? "/api/reports/rebuild" : "/api/tenders/" + encodeURIComponent(TENDER_ID) + "/refresh-documents", {
-          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(rebuild ? {tender_id:TENDER_ID} : {})
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.message || "Не удалось запустить загрузку");
-        documentRunId = data.run_id;
-        pollDocumentRefresh();
-      } catch (error) {
-        documentRefreshStatus.textContent = error.message || "Не удалось запустить загрузку. Повторите попытку.";
-        documentRefreshButtons.forEach(item => item.disabled = false);
-      }
-    }));
-
-    fetch("/api/parse-status?tender_id=" + encodeURIComponent(TENDER_ID), {cache: "no-store"})
-      .then(response => response.ok ? response.json() : null).then(state => {
-        if (!state || !state.running || state.tender_id !== TENDER_ID || !state.run_id || documentRunId) return;
-        documentRunId = state.run_id;
-        documentRefreshStatus.hidden = false;
-        documentRefreshButtons.forEach(button => button.disabled = true);
-        pollDocumentRefresh();
-      }).catch(function() {});
 
     async function postRun(resetMarket, sampleRows) {
       if (marketButton) { marketButton.disabled = true; marketButton.textContent = "Запускаю…"; }

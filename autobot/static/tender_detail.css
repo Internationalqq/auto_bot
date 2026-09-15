@@ -78,6 +78,11 @@ button { color: inherit; }
 .action-panel strong { color: var(--ink); font-size: 17px; overflow-wrap: anywhere; }.action-panel span { max-width: 680px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 .market-health-alert { margin-top: 14px; padding: 16px 20px; display: grid; grid-template-columns: minmax(210px, .55fr) 1fr; gap: 18px; align-items: center; border: 1px solid #f0c7a7; border-radius: 12px; background: #fff8f2; color: #70401d; }
 .market-health-alert div { display: grid; gap: 3px; }.market-health-alert small { color: #a65d26; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }.market-health-alert strong { font-size: 15px; }.market-health-alert p { min-width: 0; overflow-wrap: anywhere; margin: 0; color: #80512f; font-size: 13px; line-height: 1.5; }
+.document-job { margin-top: 14px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.document-job p { margin: 0; }
+.document-job details { margin-top: 9px; }
+.document-job summary { color: var(--blue); cursor: pointer; }
+.document-job pre { max-height: 220px; margin: 10px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
 .action-buttons { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
 .btn { min-height: 42px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 9px; font-size: 13px; font-weight: 800; text-decoration: none; cursor: pointer; transition: transform .15s, background .15s; }
 .btn:hover { transform: translateY(-1px); }.btn:disabled { opacity: .55; cursor: wait; transform: none; }

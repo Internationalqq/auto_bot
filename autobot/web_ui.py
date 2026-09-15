@@ -17,6 +17,7 @@ import sys
 import time
 import traceback
 import threading
+import sqlite3
 import html as html_mod
 from datetime import datetime, timezone
 from pathlib import Path
@@ -4599,6 +4600,11 @@ def tender_detail_page(tender_id: str):
     response = make_response(render_template("tender_detail.html", tender=tender))
     response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
+
+
+@app.get('/tenders/document-jobs.js')
+def tender_document_jobs_client():
+    return app.send_static_file('document_jobs.js')
 
 
 @app.get('/api/tenders/<tender_id>/economics-source')
@@ -11007,132 +11013,85 @@ def _cmd_display(cmd: list[str]) -> str:
     return " ".join(repr(x) if any(c in x for c in " \t\"") else x for x in cmd)
 
 
-def _stream_main_py(cli_args: list[str], *, log_cap: int = 400) -> int:
-    """Один запуск main.py; дописывает строки в parse_state['log_lines']. Возвращает код выхода."""
-    cmd = [sys.executable, "-u", str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            env=_parse_env(),
-            bufsize=1,
-        )
-    except OSError as e:
-        with parse_lock:
-            parse_state["log_lines"].append(f"Ошибка запуска процесса: {e}")
-            parse_state["log_lines"] = parse_state["log_lines"][-log_cap:]
-        return -1
+def _main_job_path():
+    return DATA_DIR / 'main_jobs.sqlite3'
 
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.rstrip("\n")
-        with parse_lock:
-            parse_state["log_lines"].append(line)
-            parse_state["log_lines"] = parse_state["log_lines"][-log_cap:]
-    return proc.wait()
+
+def _remember_main_job(row):
+    from autobot.main_jobs import public_status
+    payload = public_status(row)
+    if payload:
+        parse_state.update({key: value for key, value in payload.items() if key not in ('log_tail', 'log_lines_count')})
+        parse_state['log_lines'] = list(row['logs'])
+
+
+def _main_job_busy():
+    """Legacy consumers must see the durable reservation after a web restart."""
+    from autobot import main_jobs as jobs
+    try:
+        jobs.recover_interrupted(_main_job_path())
+        row = jobs.latest(_main_job_path())
+    except (OSError, ValueError, sqlite3.Error, TimeoutError):
+        # Do not delete inputs or start another workflow while state is unknown.
+        return True
+    with parse_lock:
+        if row:
+            _remember_main_job(row)
+        return bool(parse_state.get('running'))
 
 
 def _run_main_worker(cli_args: list[str], task: str, run_id: str | None = None, tender_id: str | None = None) -> None:
-    """Запуск main.py тем же Python, что и веб-сервер (не py.exe из PATH)."""
-    cmd = [sys.executable, "-u", str(_TOOLS_RUN_MODULE), "autobot.main"] + cli_args
-    cmd_display = _cmd_display(cmd)
-    with parse_lock:
-        parse_state["running"] = True
-        parse_state["task"] = task
-        parse_state["run_id"] = run_id
-        parse_state["tender_id"] = tender_id
-        parse_state["command"] = cmd_display
-        parse_state["started_at"] = datetime.now().isoformat(timespec="seconds")
-        parse_state["ended_at"] = None
-        parse_state["exit_code"] = None
-        parse_state["log_lines"] = [f">>> {cmd_display}"]
-    exit_code = -1
+    from autobot import main_jobs as jobs
+    from autobot.main_job_runtime import launch
+    path = _main_job_path()
+    if run_id is None:
+        row, _ = jobs.enqueue(path, {'kind': 'main', 'argv': cli_args}, task, tender_id)
+        run_id = row['run_id']
     try:
-        exit_code = _stream_main_py(cli_args, log_cap=300)
-    except Exception:
-        err = traceback.format_exc(limit=8)
-        with parse_lock:
-            parse_state["log_lines"].append("!!! Внутренняя ошибка фонового парсинга:")
-            parse_state["log_lines"].extend(err.rstrip().splitlines())
-            parse_state["log_lines"] = parse_state["log_lines"][-300:]
+        launch(path, run_id, env=_parse_env())
     finally:
+        row = jobs.get(path, run_id)
         with parse_lock:
-            parse_state["running"] = False
-            parse_state["task"] = ""
-            parse_state["command"] = ""
-            parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
-            parse_state["exit_code"] = exit_code
-            if exit_code == 0:
-                parse_state["log_lines"].append(
-                    "--- Готово. Обновите страницу (F5), чтобы подтянуть список тендеров. ---"
-                )
+            if row and parse_state.get('run_id') == run_id:
+                _remember_main_job(row)
 
 
-def _run_rebuild_all_worker() -> None:
-    """Последовательно пересобирает Excel/HTML для каждого тендера из tenders.json (как --from-downloaded-tender-id)."""
-    meta = load_tender_metadata()
-    ids = sorted(meta.keys(), key=lambda x: x)
-    started = datetime.now().isoformat(timespec="seconds")
-    with parse_lock:
-        parse_state["running"] = True
-        parse_state["task"] = "пересбор всех отчётов"
-        parse_state["command"] = f"{len(ids)} тендеров"
-        parse_state["started_at"] = started
-        parse_state["ended_at"] = None
-        parse_state["exit_code"] = None
-        if not ids:
-            parse_state["log_lines"] = ["В tenders.json нет тендеров — нечего пересобирать."]
-            parse_state["running"] = False
-            parse_state["task"] = ""
-            parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
-            parse_state["exit_code"] = 0
-            return
-        parse_state["log_lines"] = [
-            f">>> Пересбор отчётов для {len(ids)} тендеров из tenders.json (по очереди, тот же алгоритм, что «Пересобрать отчёт»)."
-        ]
-
-    failed: list[tuple[str, int]] = []
-    cap = 600
-    for i, tid in enumerate(ids, 1):
+def _admit_main_job(plan, task, tender_id=None, success_code=200):
+    from autobot import main_jobs as jobs
+    data = request.get_json(silent=True)
+    operation = data.get('operation_id') if isinstance(data, dict) else None
+    if operation is not None:
+        import uuid
+        try:
+            operation = uuid.UUID(operation).hex
+        except (ValueError, TypeError, AttributeError):
+            return jsonify({'ok': False, 'message': 'Некорректный номер операции.'}), 400
+    path = _main_job_path()
+    try:
+        jobs.recover_interrupted(path)
         with parse_lock:
-            parse_state["task"] = f"пересбор {i}/{len(ids)}: {tid}"
-            parse_state["command"] = _cmd_display(
-                [
-                    sys.executable,
-                    str(_TOOLS_RUN_MODULE),
-                    "autobot.main",
-                    "--from-downloaded-tender-id",
-                    tid,
-                ]
-            )
-            parse_state["log_lines"].append(f"--- [{i}/{len(ids)}] {tid} ---")
-            parse_state["log_lines"] = parse_state["log_lines"][-cap:]
-
-        code = _stream_main_py(["--from-downloaded-tender-id", tid], log_cap=cap)
-        if code != 0:
-            failed.append((tid, code))
-        with parse_lock:
-            parse_state["log_lines"].append(f"--- конец {tid}, код {code} ---")
-            parse_state["log_lines"] = parse_state["log_lines"][-cap:]
-
-    with parse_lock:
-        parse_state["running"] = False
-        parse_state["task"] = ""
-        parse_state["command"] = ""
-        parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
-        parse_state["exit_code"] = 0 if not failed else 1
-        parse_state["log_lines"].append(
-            "--- Пересбор всех отчётов завершён. Обновите страницу (F5). ---"
-        )
-        if failed:
-            parse_state["log_lines"].append(
-                "Тендеры с ненулевым кодом выхода: " + ", ".join(f"{t} ({c})" for t, c in failed)
-            )
-        parse_state["log_lines"] = parse_state["log_lines"][-cap:]
+            if parse_state.get('running') and operation != parse_state.get('run_id'):
+                current = jobs.latest(path)
+                if current is None:
+                    return jsonify({'ok': False, 'message': 'Сейчас выполняется другая работа с документами.'}), 409
+            row, duplicate = jobs.enqueue(path, plan, task, tender_id, run_id=operation)
+            _remember_main_job(jobs.latest(path) if duplicate else row)
+    except (jobs.JobBusy, jobs.JobConflict) as error:
+        return jsonify({'ok': False, 'message': str(error)}), 409
+    except ValueError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 400
+    except (OSError, sqlite3.Error, TimeoutError):
+        return jsonify({'ok': False, 'message': 'Не удалось сохранить задание. Исполнитель не запущен; повторите попытку.'}), 503
+    if not duplicate:
+        try:
+            threading.Thread(target=_run_main_worker, kwargs={'cli_args': row['plan'].get('argv', []),
+                'task': task, 'run_id': row['run_id'], 'tender_id': tender_id}, daemon=True).start()
+        except RuntimeError:
+            jobs.launch_failed(path, row['run_id'])
+            with parse_lock:
+                _remember_main_job(jobs.get(path, row['run_id']))
+            return jsonify({'ok': False, 'message': 'Не удалось запустить исполнителя. Повторите попытку.'}), 500
+    return jsonify({'ok': True, 'tender_id': tender_id, 'run_id': row['run_id'], 'duplicate': duplicate}), success_code
 
 
 def _nmck_upload_allowed(filename: str) -> bool:
@@ -11209,9 +11168,6 @@ def api_search_profiles():
 def api_start_parse():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сначала дождитесь окончания подготовки сравнений цен."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({'ok': False, 'message': 'Ожидается JSON-объект'}), 400
@@ -11269,32 +11225,12 @@ def api_start_parse():
         except ValueError as error:
             return jsonify({'ok': False, 'message': str(error)}), 409
         args.append('--resume-downloads')
-    worker = threading.Thread(
-        target=_run_main_worker,
-        kwargs={"cli_args": args, "task": "продолжение скачивания документов" if mode == "resume" else "поиск закупок для каталога" if catalog_only else "поиск новых закупок"},
-        daemon=True,
-    )
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
-        parse_state["running"] = True
-        parse_state["task"] = "продолжение скачивания документов" if mode == "resume" else "поиск закупок для каталога" if catalog_only else "запуск поиска новых закупок"
-        parse_state["command"] = ""
-        parse_state["started_at"] = datetime.now().isoformat(timespec="seconds")
-        parse_state["ended_at"] = None
-        parse_state["exit_code"] = None
-        parse_state["log_lines"] = ["Подготавливаем запуск поиска…"]
-    try:
-        worker.start()
-    except RuntimeError as e:
-        with parse_lock:
-            parse_state["running"] = False
-            parse_state["task"] = ""
-            parse_state["ended_at"] = datetime.now().isoformat(timespec="seconds")
-            parse_state["exit_code"] = -1
-            parse_state["log_lines"].append(f"Не удалось запустить фоновую задачу: {e}")
-        return jsonify({"ok": False, "message": "Не удалось запустить фоновую задачу поиска."}), 500
-    return jsonify({"ok": True})
+    if filters is None and mode == 'fresh':
+        from autobot.tender_search_profiles import default_filters
+        snapshot = dict(default_filters(), max_pages=max_pages, max_tenders=max_tenders, days_back=days_back)
+        args.extend(['--search-filters-json', json.dumps(snapshot, ensure_ascii=False)])
+    task = 'продолжение скачивания документов' if mode == 'resume' else 'поиск закупок для каталога' if catalog_only else 'поиск новых закупок'
+    return _admit_main_job({'kind': 'main', 'argv': args}, task)
 
 
 @app.post('/api/tenders/<tender_id>/refresh-documents')
@@ -11316,23 +11252,7 @@ def api_refresh_tender_documents(tender_id):
 def _start_document_job(tender_id, cli_args, task, success_code=200):
     if _merge_site_busy():
         return jsonify({'ok': False, 'message': 'Дождитесь завершения текущего сравнения цен.'}), 409
-    import uuid
-    run_id = uuid.uuid4().hex
-    with parse_lock:
-        if parse_state['running']:
-            return jsonify({'ok': False, 'message': 'Сейчас выполняется другая работа с документами.'}), 409
-        parse_state.update(running=True, task=task, command='', run_id=run_id, tender_id=tender_id,
-            started_at=datetime.now().isoformat(timespec='seconds'), ended_at=None,
-            exit_code=None, log_lines=['Подготавливаем обработку документов…'])
-    try:
-        threading.Thread(target=_run_main_worker, kwargs={'cli_args': cli_args,
-            'task': task, 'run_id': run_id, 'tender_id': tender_id}, daemon=True).start()
-    except RuntimeError:
-        with parse_lock:
-            parse_state.update(running=False, ended_at=datetime.now().isoformat(timespec='seconds'), exit_code=-1,
-                               log_lines=['Не удалось запустить загрузку. Повторите попытку.'])
-        return jsonify({'ok': False, 'message': 'Не удалось запустить загрузку.'}), 500
-    return jsonify({'ok': True, 'tender_id': tender_id, 'run_id': run_id}), success_code
+    return _admit_main_job({'kind': 'main', 'argv': cli_args}, task, tender_id, success_code)
 
 
 @app.route("/api/reports/rebuild", methods=["POST"])
@@ -11356,9 +11276,6 @@ def api_rebuild_report():
 def api_rebuild_all_reports():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сначала дождитесь окончания подготовки сравнений цен."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Уже выполняется задание"}), 409
     if not _AUTOBOT_MAIN_FILE.is_file():
         return jsonify({"ok": False, "message": f"Не найден {_AUTOBOT_MAIN_FILE}"}), 500
     if not TENDERS_JSON.is_file():
@@ -11366,8 +11283,10 @@ def api_rebuild_all_reports():
     meta = load_tender_metadata()
     if not meta:
         return jsonify({"ok": False, "message": "В tenders.json нет тендеров"}), 400
-    threading.Thread(target=_run_rebuild_all_worker, daemon=True).start()
-    return jsonify({"ok": True, "count": len(meta)})
+    response, status = _admit_main_job({'kind': 'batch', 'tender_ids': sorted(meta)}, 'пересбор всех отчётов')
+    if status == 200:
+        response = jsonify(dict(response.get_json(), count=len(meta)))
+    return response, status
 
 
 @app.route("/api/parse-status")
@@ -11385,6 +11304,23 @@ def api_parse_status():
             "log_lines_count": len(parse_state["log_lines"]),
             "log_tail": parse_state["log_lines"][-80:],
         }
+    from autobot import main_jobs as jobs
+    try:
+        requested_run = request.args.get('run_id')
+        if requested_run and not re.fullmatch(r'[0-9a-f]{32}', requested_run):
+            return jsonify({'ok': False, 'message': 'Некорректный номер запуска.'}), 400
+        selected_tender = request.args.get('tender_id', '')
+        row = jobs.get(_main_job_path(), requested_run) if requested_run else jobs.latest(_main_job_path())
+        if not requested_run and re.fullmatch(r'[0-9]{8,25}', selected_tender):
+            row = jobs.latest_for_tender(_main_job_path(), selected_tender) or row
+        if requested_run and row is None:
+            return jsonify({'ok': False, 'message': 'Сохранённое задание не найдено.'}), 404
+        if row and row['status'] == 'running' and jobs.recover_interrupted(_main_job_path()):
+            row = jobs.get(_main_job_path(), row['run_id'])
+        if row:
+            payload.update(jobs.public_status(row))
+    except (OSError, ValueError, sqlite3.Error):
+        return jsonify({'ok': False, 'message': 'Не удалось прочитать сохранённое задание; состояние не изменено.'}), 503
     from autobot import tender_search_state as search_state
     payload['search_summary'] = search_state.public_summary(DATA_DIR, running=payload['running'])
     payload['search_resume'] = search_state.public_resume(DATA_DIR)
@@ -11439,8 +11375,7 @@ def api_delete_tender(tender_id: str):
     data = request.get_json(silent=True) or {}
     if str(data.get("confirm_tender_id") or "").strip() != tid:
         return jsonify({"ok": False, "message": "Удаление не подтверждено номером тендера."}), 400
-    with parse_lock:
-        parse_running = bool(parse_state.get("running"))
+    parse_running = _main_job_busy()
     with merge_site_lock:
         merge_running = bool(merge_site_state.get("running"))
     if parse_running or merge_running:
@@ -12408,8 +12343,8 @@ def api_storage_overview():
 @app.route("/api/push-state")
 def api_push_state():
     cov = _compute_reports_coverage()
+    pr_running = _main_job_busy()
     with parse_lock:
-        pr_running = bool(parse_state.get("running"))
         pr_exit = parse_state.get("exit_code")
         pr_end = parse_state.get("ended_at")
     with merge_site_lock:
@@ -12433,9 +12368,8 @@ def api_push_state():
 def api_generate_merge_site_all():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     threading.Thread(target=_run_merge_site_all_worker, kwargs={"only_missing": False}, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -12444,9 +12378,8 @@ def api_generate_merge_site_all():
 def api_generate_merge_site_missing():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     threading.Thread(target=_run_merge_site_all_worker, kwargs={"only_missing": True}, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -12455,9 +12388,8 @@ def api_generate_merge_site_missing():
 def api_generate_merge_site_selected():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     raw_ids = data.get("tender_ids")
     if not isinstance(raw_ids, list):
@@ -12487,9 +12419,8 @@ def api_generate_merge_site_selected():
 def api_generate_merge_site_one():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
@@ -12502,9 +12433,8 @@ def api_generate_merge_site_one():
 def api_generate_merge_site_one_rerun_market():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
@@ -12522,9 +12452,8 @@ def api_generate_merge_site_one_sample_market():
     """Recheck a small batch without deleting the remaining market report."""
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not tid:
@@ -12551,9 +12480,8 @@ def api_generate_avito_safe_sample():
     """Collect a small fresh Avito sample after the persistent cooldown expires."""
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     tid = str(data.get("tender_id", "")).strip()
     if not re.fullmatch(r"\d{8,25}", tid):
@@ -12621,9 +12549,8 @@ def api_generate_avito_safe_sample():
 def api_generate_merge_site_by_link():
     if _merge_site_busy():
         return jsonify({"ok": False, "message": "Сравнения цен уже подготавливаются."}), 409
-    with parse_lock:
-        if parse_state["running"]:
-            return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
+    if _main_job_busy():
+        return jsonify({"ok": False, "message": "Сначала дождитесь окончания текущей работы с документами."}), 409
     data = request.get_json(silent=True) or {}
     raw = str(data.get("tender_link", "")).strip()
     tid = _extract_tender_id(raw)
@@ -12700,4 +12627,6 @@ if __name__ == "__main__":
     start_delivery_recovery()
     from autobot.market_web_worker import start_web_worker
     start_web_worker()
+    from autobot.main_job_runtime import start_recovery
+    start_recovery(_main_job_path(), env=_parse_env())
     app.run(host=_host, port=_port, debug=False)

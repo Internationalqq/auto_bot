@@ -56,3 +56,9 @@ data/agent_market_worker.token
 /data/search_runs/
 /data/search_profiles.json
 /data/search_profiles.json.lock
+
+# Durable document/search execution state
+/data/main_jobs.sqlite3
+/data/main_jobs.sqlite3-*
+/data/main_jobs.sqlite3.executor.lock
+/data/main_jobs.sqlite3.schema.lock

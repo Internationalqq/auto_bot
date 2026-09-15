@@ -197,6 +197,7 @@ def test_pdf_page_and_render_limits_without_allocating_pixels(tmp_path, monkeypa
 def test_rebuild_api_reserves_once_retains_200_and_exposes_run_id(tmp_path, monkeypatch):
     import copy
     from autobot import web_ui
+    monkeypatch.setattr(web_ui, 'DATA_DIR', tmp_path)
     monkeypatch.setattr(web_ui, 'parse_state', dict(copy.deepcopy(web_ui.parse_state), running=False))
     monkeypatch.setattr(web_ui, '_merge_site_busy', lambda: False)
     monkeypatch.setattr(web_ui, 'load_tender_metadata', lambda: {TID: {}})

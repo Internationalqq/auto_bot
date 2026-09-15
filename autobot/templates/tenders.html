@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-board-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-board-jobs-1" />
   <script defer src="{{ url_for('search_profiles_script') }}?v=20260915-2"></script>
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендеры</title>
@@ -612,9 +612,47 @@
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || data.ok === false) {
-        throw new Error(data.message || data.error || ("HTTP " + resp.status));
+        throw Object.assign(new Error(data.message || data.error || ("HTTP " + resp.status)), {status:resp.status});
       }
       return data;
+    }
+
+    let pendingMainJob = null;
+    async function postMainJob(url, body) {
+      const signature = JSON.stringify([url, body]);
+      if (!pendingMainJob || pendingMainJob.signature !== signature) {
+        const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID()
+          : [...crypto.getRandomValues(new Uint8Array(16))].map(value => value.toString(16).padStart(2,'0')).join('');
+        pendingMainJob = {signature, id};
+      }
+      try {
+        const data = await postJson(url, {...body, operation_id:pendingMainJob.id});
+        if (!/^[0-9a-f]{32}$/.test(data.run_id || '')) throw new Error('Не удалось подтвердить запуск. Повторите действие — проверим тот же запуск.');
+        pendingMainJob = null;
+        return data;
+      } catch (error) {
+        if (error.status && error.status < 500) pendingMainJob = null;
+        throw error;
+      }
+    }
+
+    function finishedWorkSummary(parse, merge) {
+      const hasParse = parse.exit_code !== null && parse.exit_code !== undefined;
+      const interrupted = hasParse && parse.job_status === 'interrupted';
+      const parseFailed = hasParse && Number(parse.exit_code) !== 0;
+      const mergeFailed = (merge.error_ids || []).length > 0;
+      const descriptions = [], logs = [];
+      if (hasParse) {
+        descriptions.push((parse.task || 'Поиск и документы') + ': ' +
+          (interrupted ? 'исполнитель остановился; проверьте файлы и повторите нужное действие.'
+            : parseFailed ? 'завершилось с ошибкой; откройте журнал.' : 'завершено.'));
+        logs.push('Поиск и документы', ...(parse.log_tail || []).slice(-14));
+      }
+      if (merge.last_summary || mergeFailed) {
+        descriptions.push('Последнее сравнение цен: ' + (merge.last_summary || 'есть ошибки.'));
+        logs.push('Сравнение цен', ...(merge.log_tail || []).slice(-14));
+      }
+      return {failed:parseFailed || mergeFailed, summary:descriptions.join(' '), logs:logs.join('\n')};
     }
 
     function closeTenderDeleteDialog() {
@@ -798,7 +836,7 @@
           liveLog.textContent = [
             ...(eventTexts.slice(-8)),
             ...((merge.log_tail || []).slice(-8))
-          ].join("\\n");
+          ].join("\n");
           return true;
         }
 
@@ -807,35 +845,37 @@
           setActionsLocked(true);
           const recent = lastText(parse.log_tail || []);
           setLiveState("is-running");
-          if (liveKicker) liveKicker.textContent = "AutoBot работает";
-          liveTitle.textContent = parse.task || "Сейчас идет поиск закупок";
-          liveSub.textContent = recent || "Система ищет подходящие закупки в ЕИС и добавляет их в каталог.";
+          if (liveKicker) liveKicker.textContent = parse.job_status === 'queued' ? "Задание сохранено" : "AutoBot работает";
+          liveTitle.textContent = parse.task || "Поиск и обработка документов";
+          liveSub.textContent = recent || "Страницу можно закрыть. Состояние задания сохранится.";
           livePercent.textContent = "";
           liveFill.style.width = "45%";
           renderFacts([
-            "Поиск в ЕИС",
+            parse.job_status === 'queued' ? "Ожидает запуска" : "Выполняется",
+            Number(parse.total) > 1 ? ("Тендеры: " + Number(parse.done || 0) + " из " + Number(parse.total)) : "",
             parse.started_at ? ("Старт: " + parse.started_at) : "",
             "Строк лога: " + Number(parse.log_lines_count || 0)
           ]);
-          liveLog.textContent = (parse.log_tail || []).slice(-14).join("\\n");
+          liveLog.textContent = (parse.log_tail || []).slice(-14).join("\n");
           return true;
         }
 
         const hadActivity = !livePanel.classList.contains("is-idle") || merge.last_summary || parse.exit_code !== null;
-        const failed = (parse.exit_code !== null && Number(parse.exit_code) !== 0) || (merge.error_ids || []).length > 0;
+        const completed = finishedWorkSummary(parse, merge);
+        const failed = completed.failed;
         setActionsLocked(false);
         if (hadActivity) {
           setLiveState(failed ? "is-error" : "is-done");
           if (liveKicker) liveKicker.textContent = failed ? "Нужно внимание" : "Система готова";
-          liveTitle.textContent = failed ? "Последняя задача завершилась с ошибками" : "Сейчас ничего не выполняется";
-          liveSub.textContent = merge.last_summary || (parse.exit_code !== null ? ("Код завершения поиска: " + parse.exit_code) : "Можно запускать следующий шаг.");
+          liveTitle.textContent = failed ? "Проверьте результаты обработки" : "Сейчас ничего не выполняется";
+          liveSub.textContent = completed.summary || "Можно запускать следующий шаг.";
           livePercent.textContent = failed ? "" : "готово";
           liveFill.style.width = failed ? "100%" : "0%";
           renderFacts([
             merge.last_ended_at ? ("Завершено: " + merge.last_ended_at) : "",
             (merge.error_ids || []).length ? ("Ошибок: " + (merge.error_ids || []).length) : ""
           ]);
-          liveLog.textContent = ((merge.log_tail || parse.log_tail || [])).slice(-14).join("\\n");
+          liveLog.textContent = completed.logs;
         }
         if (wasRunning && !reloadScheduled) {
           wasRunning = false;
@@ -948,7 +988,7 @@
         }
         setActionsLocked(true);
         showLive(spec[1], runDetail || ("Тендер " + tenderId));
-        const data = await postJson(spec[0], spec[2]);
+        const data = await (kind === 'download' || kind === 'rebuild' ? postMainJob : postJson)(spec[0], spec[2]);
         if (kind === "crm" && data.project_url) {
           navigateCrmProject(data.project_url);
           return;
@@ -1013,7 +1053,7 @@
       showLive(mode === 'resume' ? 'Продолжаем скачивание документов' : 'Ищем до ' + filters.max_tenders + ' закупок',
         mode === 'resume' ? 'Берём только незавершённые закупки сохранённого поиска.' : 'Добавляем подходящие карточки в каталог без анализа рынка.');
       try {
-        await postJson('/api/tender-search/start', mode === 'resume' ? {search_mode:'resume'} : {search_mode:'fresh', search_filters:filters, catalog_only:true});
+        await postMainJob('/api/tender-search/start', mode === 'resume' ? {search_mode:'resume'} : {search_mode:'fresh', search_filters:filters, catalog_only:true});
         wakeLiveStatusPolling(0);
         return true;
       } catch (e) {

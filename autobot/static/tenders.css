@@ -791,21 +791,17 @@ h1 em {
 
 .live-main strong {
   display: block;
-  overflow: hidden;
   font-size: 13px;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .live-sub {
   margin-top: 3px;
-  overflow: hidden;
   color: var(--ink-soft);
   font-size: 11px;
   line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .live-percent {
@@ -830,6 +826,8 @@ h1 em {
   border-radius: 99px;
   background: #e9eef5;
 }
+
+.live-panel:not(.is-running) .progress-track { display: none; }
 
 .progress-fill {
   width: 0;
@@ -2093,13 +2091,8 @@ h1 em {
   }
 
   .live-right {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-  }
-
-  .live-main {
-    padding-right: 86px;
+    justify-self: start;
+    margin-left: 46px;
   }
 
   .live-facts {
