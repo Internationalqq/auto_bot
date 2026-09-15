@@ -79,6 +79,31 @@ def test_parallel_reader_is_bounded_and_does_not_queue_web_requests(tmp_path):
             documents.build_source_file_preview(path)
 
 
+def test_pdf_page_is_rendered_in_a_bounded_process_with_original_unchanged(tmp_path):
+    import pymupdf
+    path=tmp_path/'source.pdf'
+    with pymupdf.open() as document:
+        for number in range(2):
+            page=document.new_page();page.insert_text((40,60),'Page '+str(number+1))
+        document.save(path)
+    before=path.read_bytes()
+    result=worker.run_reader('pdf-page',path=path,page=2)
+    assert result['page']==2 and result['pages']==2 and result['data'].startswith(b'\x89PNG\r\n\x1a\n')
+    assert result['width']*result['height']<=3000000 and len(result['data'])<=worker.RESULT_LIMIT
+    assert path.read_bytes()==before
+    with pytest.raises(worker.PreviewRejected,match='Страница недоступна'):worker.run_reader('pdf-page',path=path,page=3)
+    for invalid in [0,251,True,'1']:
+        with pytest.raises(worker.PreviewRejected,match='от 1 до 250'):worker.run_reader('pdf-page',path=path,page=invalid)
+
+
+def test_broken_pdf_does_not_block_the_next_preview(tmp_path):
+    path=tmp_path/'bad.pdf';path.write_bytes(b'broken PDF')
+    with pytest.raises(worker.PreviewRejected):worker.run_reader('pdf-page',path=path)
+    assert path.read_bytes()==b'broken PDF'
+    path=tmp_path/'good.zip';path.write_bytes(zipped([('readme.txt',b'OK')]))
+    assert documents.build_source_file_preview(path)['total']==1
+
+
 def test_excel_marks_row_and_column_truncation_and_preserves_cells(tmp_path):
     path = tmp_path / 'estimate.xlsx'
     pd.DataFrame([{f'Колонка {i}': f'строка {j}' for i in range(32)} for j in range(102)]).to_excel(path, index=False)

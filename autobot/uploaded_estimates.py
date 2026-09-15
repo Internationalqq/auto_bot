@@ -95,21 +95,47 @@ def _legacy(root, estimate_id, name, kind, default):
         raise StoreError('Не удалось прочитать исходную смету.') from error
 
 
-def load_meta(root, estimate_id):
-    value = meta(root, estimate_id)
-    return value if value is not None else _legacy(root, estimate_id, 'meta.json', dict, None)
-
-
-def load_rows(root, estimate_id):
-    value = rows(root, estimate_id)
-    if value is None:
+def original_document(root, estimate_id):
+    with _connection(root) as connection:
+        record = connection.execute('SELECT meta_json,rows_json FROM uploaded_estimates WHERE id=?',
+                                    (estimate_id,)).fetchone() if connection else None
+    if record:
+        metadata, value = _decode(record[0], dict), _decode(record[1], list)
+    else:
+        metadata = _legacy(root, estimate_id, 'meta.json', dict, None)
         value = _legacy(root, estimate_id, 'rows.json', list, [])
     if any(not isinstance(row, dict) for row in value):
         raise StoreError('Повреждены позиции сохранённой сметы.')
     # Old uploads did not persist physical IDs. The original ordinal is stable;
     # never derive identity from a title or from a filtered table's row number.
-    return [dict(row, position_id=row.get('position_id') or f'upload:{estimate_id}:{index}')
-            for index, row in enumerate(value, 1)]
+    return metadata, [dict(row, position_id=row.get('position_id') or f'upload:{estimate_id}:{index}')
+                      for index, row in enumerate(value, 1)]
+
+
+def load_original_meta(root, estimate_id):
+    value = meta(root, estimate_id)
+    return value if value is not None else _legacy(root, estimate_id, 'meta.json', dict, None)
+
+
+def load_document(root, estimate_id):
+    from autobot import uploaded_corrections as corrections
+    original = original_document(root, estimate_id)
+    if original[0] is None:
+        return original
+    with corrections.connection(root) as con:
+        saved = corrections.latest(con, estimate_id)
+    if saved is None:
+        return original
+    current = corrections.snapshot(root, estimate_id, original=original, saved=saved, supplied=True)
+    return current['meta'], current['rows']
+
+
+def load_meta(root, estimate_id):
+    return load_document(root, estimate_id)[0]
+
+
+def load_rows(root, estimate_id):
+    return load_document(root, estimate_id)[1]
 
 
 def report_frame(positions):

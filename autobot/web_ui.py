@@ -90,6 +90,8 @@ def _configured_max_upload_mb() -> int:
 MAX_UPLOAD_MB = _configured_max_upload_mb()
 
 app = Flask(__name__)
+from autobot.uploaded_review import blueprint as uploaded_review_blueprint
+app.register_blueprint(uploaded_review_blueprint)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 _estimate_capability_secret_raw = str(os.environ.get("AUTOBOT_BRIDGE_SIGNING_SECRET") or "")
 _ESTIMATE_IMPORT_CAPABILITY_SECRET = (
@@ -3564,11 +3566,11 @@ def _tender_estimate_materials_for_crm(tender_id: str) -> list[dict]:
     return materials
 
 
-def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
+def _estimate_materials_for_crm(estimate_id: str, *, document=None) -> list[dict]:
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
     if not estimate_id:
         return []
-    rows = _load_estimate_rows(estimate_id)
+    meta, rows = document if document is not None else _load_estimate_document(estimate_id)
     if not rows:
         return []
 
@@ -3578,22 +3580,32 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         max_rows = 10000
     max_rows = max(1, min(max_rows, 10000))
 
-    meta = _load_estimate_meta(estimate_id) or {}
+    meta = meta or {}
+    originals = {}
+    if any(str(row.get('estimate_version') or '').startswith('correction:') for row in rows):
+        from autobot.uploaded_estimates import original_document
+        originals = {row['position_id']:row for row in original_document(USER_ESTIMATES_DIR, estimate_id)[1]}
     file_name = str(meta.get("original_filename") or f"Смета {estimate_id}.xlsx").strip()
     estimate_title = str(meta.get("title") or Path(file_name).stem or f"Смета {estimate_id}").strip()
     materials: list[dict] = []
     for row_index, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
             continue
+        corrected = str(row.get('estimate_version') or '').startswith('correction:')
+        original_row = originals.get(row.get('position_id'), row)
         title = str(row.get("name") or "").strip()
-        if len(title) < 4:
+        if not title or (len(title) < 4 and not corrected):
             continue
         qty = _float_or_none(row.get("qty"))
         unit_price = _float_or_none(row.get("unit_price"))
         total = _float_or_none(row.get("total"))
-        if qty is None or qty <= 0:
+        if corrected and (qty is None or qty <= 0 or unit_price is None or unit_price < 0
+                          or total is None or total < 0 or not str(row.get('unit') or '').strip()):
+            from autobot.uploaded_corrections import CorrectionError
+            raise CorrectionError('Перед импортом уточните единицу, положительное количество, цену и сумму исправленной строки «' + title[:120] + '».', 422)
+        if not corrected and (qty is None or qty <= 0):
             qty = 1.0
-        if unit_price is None or (unit_price <= 0 and total is not None and total > 0):
+        if not corrected and (unit_price is None or (unit_price <= 0 and total is not None and total > 0)):
             unit_price = _float_or_none(total / qty) if total is not None and qty > 0 else 0.0
             unit_price = unit_price or 0.0
         notes = [f"Смета: {estimate_id}"]
@@ -3615,14 +3627,14 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
         type_key = str(row.get("type") or "").strip().lower()
         type_label = str(row.get("type_label") or "").strip()
         code_type = _estimate_code_type(basis_code)
-        if code_type:
+        if code_type and not corrected:
             type_key, type_label = code_type
         if type_label:
             notes.append(f"Тип: {type_label}")
         if total is not None and total > 0:
             notes.append(f"Сумма по смете: {total:.2f} руб.")
         item_kind = type_key if type_key in {"work", "material", "service", "product", "other"} else (type_label or "")
-        planned_total = _float_or_none(total if total is not None and total > 0 else qty * (unit_price or 0.0)) or 0.0
+        planned_total = total if corrected else (_float_or_none(total if total is not None and total > 0 else qty * (unit_price or 0.0)) or 0.0)
         if len(materials) >= max_rows:
             raise EstimateImportTooLargeError(
                 f"В смете «{estimate_title}» больше {max_rows} подходящих позиций. "
@@ -3649,12 +3661,12 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
                 "source_external_id": estimate_id,
                 "source_item_key": _crm_estimate_source_item_key(
                     source_scope=estimate_id,
-                    sheet=sheet,
-                    excel_row=excel_row,
-                    item_no=item_no,
+                    sheet=str(original_row.get('sheet') or ''),
+                    excel_row=original_row.get('excel_row'),
+                    item_no=str(original_row.get('item_no') or ''),
                     row_index=row_index,
-                    basis_code=basis_code,
-                    title=title,
+                    basis_code=str(original_row.get('basis_code') or original_row.get('code') or original_row.get('article') or ''),
+                    title=str(original_row.get('name') or ''),
                 ),
                 "notes": "; ".join(notes),
             }
@@ -3662,10 +3674,10 @@ def _estimate_materials_for_crm(estimate_id: str) -> list[dict]:
     return materials
 
 
-def _estimate_crm_prefill(estimate_id: str) -> dict:
+def _estimate_crm_prefill(estimate_id: str, *, document=None) -> dict:
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    meta = _load_estimate_meta(estimate_id) or {}
-    rows = _load_estimate_rows(estimate_id)
+    meta, rows = document if document is not None else _load_estimate_document(estimate_id)
+    meta = meta or {}
     summary = _summarize_estimate_rows(rows)
     type_counts = summary.get("type_counts") or {}
     type_labels = {
@@ -3715,6 +3727,7 @@ def _estimate_crm_prefill(estimate_id: str) -> dict:
         "total_sum": budget if budget > 0 else None,
         "total_sum_fmt": _fmt_money(budget) if budget > 0 else "—",
         "reconciliation": reconciliation,
+        "normalization": meta.get('normalization') or {},
         "project": {
             "title": estimate_title,
             "client_name": "Объект по смете",
@@ -3766,8 +3779,9 @@ def _build_estimate_crm_project_payload(estimate_id: str, overrides: dict | None
 def _build_estimate_crm_import_payload(estimate_id: str) -> dict:
     """Build the normalized, read-only payload that PM.bi imports as the signed-in user."""
     clean_estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    prefill = _estimate_crm_prefill(clean_estimate_id)
-    items = _estimate_materials_for_crm(clean_estimate_id)
+    document = _load_estimate_document(clean_estimate_id)
+    prefill = _estimate_crm_prefill(clean_estimate_id, document=document)
+    items = _estimate_materials_for_crm(clean_estimate_id, document=document)
     label = str(prefill.get("estimate_title") or f"Смета {clean_estimate_id}").strip()
     reference = f"/estimates/{clean_estimate_id}"
     source = {
@@ -3781,6 +3795,8 @@ def _build_estimate_crm_import_payload(estimate_id: str) -> dict:
     reconciliation = prefill.get("reconciliation")
     if isinstance(reconciliation, dict) and reconciliation:
         source["metadata"] = {"reconciliation": reconciliation}
+    if prefill.get('normalization'):
+        source.setdefault('metadata', {})['normalization'] = prefill['normalization']
     # Repeat the source identity on every row. A single CRM request can then
     # contain several estimates while preserving each one as an independently
     # replaceable source under the project.
@@ -4925,19 +4941,23 @@ def _safe_upload_filename(filename: str) -> str:
 
 def _uploaded_store_call(operation, *args):
     from autobot.uploaded_estimates import StoreError
+    from autobot.uploaded_corrections import CorrectionError
     try:
         return operation(USER_ESTIMATES_DIR, *args)
+    except CorrectionError as error:
+        abort(make_response(jsonify({'ok': False, 'message': str(error)}), error.status))
     except StoreError:
         abort(503, description="Хранилище смет временно недоступно. Повторите открытие позже.")
 
 
 def _uploaded_market_call(operation, *args, **kwargs):
     from autobot.uploaded_market import MarketError
+    from autobot.uploaded_corrections import CorrectionError
     from autobot.upload_admission import AdmissionError
     from autobot.uploaded_estimates import StoreError
     try:
         return operation(*args, **kwargs)
-    except (MarketError, AdmissionError) as error:
+    except (MarketError, AdmissionError, CorrectionError) as error:
         if request.path.startswith('/api/'):
             abort(make_response(jsonify({'ok':False,'message':str(error)}), error.status))
         abort(error.status, description=str(error))
@@ -4964,7 +4984,10 @@ def _read_estimates_index() -> list[dict]:
     from autobot import uploaded_estimates
     current = _uploaded_store_call(uploaded_estimates.catalogue)
     ids = {row['id'] for row in current}
-    return current + [row for row in _read_legacy_estimates_index() if str(row.get('id') or '') not in ids]
+    combined = current + [row for row in _read_legacy_estimates_index() if str(row.get('id') or '') not in ids]
+    if not (USER_ESTIMATES_DIR / '.corrections.sqlite3').exists():
+        return combined
+    return [_uploaded_store_call(uploaded_estimates.load_meta, row['id']) or row for row in combined]
 
 
 def _write_estimates_index(items: list[dict]) -> None:
@@ -5053,9 +5076,22 @@ def _load_estimate_meta(estimate_id: str) -> dict | None:
     return dict(value, **_uploaded_market_call(uploaded_market.settings, estimate_id)) if value else value
 
 
+def _load_estimate_original_meta(estimate_id: str):
+    from autobot.uploaded_estimates import load_original_meta
+    return _uploaded_store_call(load_original_meta, estimate_id)
+
+
 def _load_estimate_rows(estimate_id: str) -> list[dict]:
     from autobot import uploaded_estimates
     return _uploaded_store_call(uploaded_estimates.load_rows, estimate_id)
+
+
+def _load_estimate_document(estimate_id: str):
+    from autobot.uploaded_market import source_lock
+    if not re.fullmatch(r'[0-9a-fA-F-]{1,40}', estimate_id or ''):
+        return None, []
+    with source_lock(estimate_id, USER_ESTIMATES_DIR):
+        return _load_estimate_meta(estimate_id), _load_estimate_rows(estimate_id)
 
 
 def _json_num(v) -> float | None:
@@ -5147,12 +5183,14 @@ def _estimate_reconciliation_view(meta: dict) -> dict:
     signed_total = _float_or_none(diagnostics.get("signed_position_total"))
     difference = _float_or_none(diagnostics.get("unallocated_total"))
     adjustment_count = int(_float_or_none(diagnostics.get("excluded_adjustment_count")) or 0)
+    missing_total_count = int(_float_or_none(diagnostics.get('missing_total_count')) or 0)
     adjustment_total = _float_or_none(diagnostics.get("excluded_adjustment_total"))
     available = declared_total is not None or signed_total is not None or adjustment_count > 0
     has_difference = difference is not None and abs(difference) > 0.01
     return {
         "available": available,
-        "needs_attention": bool(adjustment_count or has_difference),
+        "needs_attention": bool(adjustment_count or has_difference or missing_total_count),
+        "missing_total_count": missing_total_count,
         "declared_total_fmt": _fmt_money(declared_total),
         "signed_total_fmt": _fmt_money(signed_total),
         "difference_fmt": _fmt_money(difference),
@@ -8260,10 +8298,9 @@ def api_research_items():
 @app.route("/estimates/<estimate_id>")
 def estimate_detail_page(estimate_id: str):
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    meta = _load_estimate_meta(estimate_id)
+    meta, rows_all = _load_estimate_document(estimate_id)
     if not meta:
         abort(404)
-    rows_all = _load_estimate_rows(estimate_id)
     q = (request.args.get("q", "") or "").strip()
     selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
     if not selected_types:
@@ -8357,7 +8394,7 @@ def estimate_detail_page(estimate_id: str):
     viability = _estimate_viability_overview(compare_df, compare_rows, scope_info)
     market_sections = _estimate_market_sections(estimate_id, rows, selected_types=selected_types)
     market_links = _estimate_market_links(estimate_id, market_sections, q=q, selected_types=selected_types)
-    crm_prefill = _estimate_crm_prefill(estimate_id)
+    crm_prefill = _estimate_crm_prefill(estimate_id, document=(meta, rows_all))
     reconciliation = _estimate_reconciliation_view(meta)
     return render_template(
         "estimate_detail.html",
@@ -8408,7 +8445,7 @@ def estimate_workspace_js():
 def estimate_original_download(estimate_id: str):
     if not re.fullmatch(r'[0-9a-fA-F-]{1,40}', estimate_id or ''):
         abort(404)
-    meta = _load_estimate_meta(estimate_id)
+    meta = _load_estimate_original_meta(estimate_id)
     path = _estimate_original_path(estimate_id, meta) if meta else None
     if path is None:
         abort(404)
@@ -8457,10 +8494,9 @@ def estimate_market_view_page(estimate_id: str):
 @app.route("/estimates/<estimate_id>/download.xlsx")
 def estimate_detail_download_xlsx(estimate_id: str):
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
-    meta = _load_estimate_meta(estimate_id)
+    meta, rows_all = _load_estimate_document(estimate_id)
     if not meta:
         abort(404)
-    rows_all = _load_estimate_rows(estimate_id)
     q = (request.args.get("q", "") or "").strip()
     selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
     if not selected_types:
@@ -10081,6 +10117,7 @@ def api_delete_tender(tender_id: str):
 @app.route("/api/estimates/<estimate_id>/crm-import-payload")
 def api_estimate_crm_import_payload(estimate_id: str):
     """Return estimate data only; the authenticated PM.bi parent performs the write."""
+    from autobot.uploaded_corrections import CorrectionError
     estimate_id = re.sub(r"[^0-9a-fA-F-]", "", estimate_id or "")[:40]
     fetch_site = str(request.headers.get("Sec-Fetch-Site") or "").strip().lower()
     if fetch_site and fetch_site != "same-origin":
@@ -10092,6 +10129,10 @@ def api_estimate_crm_import_payload(estimate_id: str):
         return jsonify({"ok": False, "message": "Смета не найдена."}), 404
     try:
         payload = _build_estimate_crm_import_payload(estimate_id)
+    except CorrectionError as exc:
+        response = jsonify({'ok': False, 'message': str(exc)})
+        response.headers['Cache-Control'] = 'no-store'
+        return response, exc.status
     except EstimateImportTooLargeError as exc:
         response = jsonify({"ok": False, "message": str(exc)})
         response.headers["Cache-Control"] = "no-store"

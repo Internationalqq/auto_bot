@@ -18,10 +18,13 @@ class PreviewRejected(ValueError):
     pass
 
 
-def run_reader(operation, *, path=None, data=None, filename='', member_token='', chain=None):
+def run_reader(operation, *, path=None, data=None, filename='', member_token='', chain=None, page=1):
     from autobot.atomic_output import output_lock
     from autobot.paths import DATA_DIR
     from autobot.archive_extraction import _stop_process
+
+    if operation == 'pdf-page' and (type(page) is not int or not 1 <= page <= 250):
+        raise PreviewRejected('Укажите страницу PDF от 1 до 250.')
 
     if path is not None:
         path = Path(path).absolute()
@@ -38,7 +41,7 @@ def run_reader(operation, *, path=None, data=None, filename='', member_token='',
                     path = scratch / 'input.bin'
                     path.write_bytes(data)
                 request = {'operation': operation, 'path': str(path), 'filename': filename,
-                           'member_token': member_token, 'chain': chain or []}
+                           'member_token': member_token, 'chain': chain or [], 'page': page}
                 (scratch / 'request.json').write_text(json.dumps(request), encoding='utf-8')
                 env = {k: v for k, v in os.environ.items() if not k.upper().startswith(
                     ('PMBI_', 'OPENAI_', 'TELEGRAM_', 'CLERK_', 'SMTP_', 'RESEND_', 'MARKET_'))}
@@ -96,15 +99,41 @@ def worker(folder):
             result = documents._build_source_bytes_preview(path.read_bytes(), request['filename'], request['chain'])
         elif request['operation'] == 'file':
             result = documents._build_source_file_preview(path)
+        elif request['operation'] == 'pdf-page':
+            result = render_pdf_page(path, request['page'])
+            (folder / 'member.bin').write_bytes(result.pop('data'))
+            result['has_data'] = True
         else:
             raise ValueError('Unknown reader operation')
     except FileNotFoundError:
         result = {'error': 'Файл внутри архива не найден', 'missing': True}
-    except (ArchiveRejected, SplitZipRejected, DocumentBundleRejected, documents.PreviewRejected) as error:
+    except (ArchiveRejected, SplitZipRejected, DocumentBundleRejected, documents.PreviewRejected, PreviewRejected) as error:
         result = {'error': str(error)}
     except Exception:
         result = {'error': 'Не удалось прочитать документ. Файл сохранён; скачайте оригинал для проверки.'}
     (folder / 'result.json').write_text(json.dumps(result, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+
+
+def render_pdf_page(path, page):
+    import math
+    import pymupdf
+    if type(page) is not int or not 1 <= page <= 250:
+        raise PreviewRejected('Укажите страницу PDF от 1 до 250.')
+    with pymupdf.open(path) as document:
+        if document.needs_pass or not 1 <= document.page_count <= 250 or page > document.page_count:
+            raise PreviewRejected('Страница недоступна, PDF защищён или превышает 250 страниц.')
+        source = document[page-1]
+        width,height = source.rect.width,source.rect.height
+        if not all(math.isfinite(value) and 0 < value <= 100000 for value in (width,height)):
+            raise PreviewRejected('Размер страницы PDF не поддерживается.')
+        scale = min(2., 1500/width, 2000/height)
+        pixmap = source.get_pixmap(matrix=pymupdf.Matrix(scale,scale),alpha=False,colorspace=pymupdf.csRGB)
+        if pixmap.width*pixmap.height > 3000000:
+            raise PreviewRejected('Страница превышает допустимое разрешение просмотра.')
+        data = pixmap.tobytes('png')
+        if len(data) > RESULT_LIMIT:
+            raise PreviewRejected('Изображение страницы слишком большое для просмотра.')
+        return {'kind':'pdf-page','page':page,'pages':document.page_count,'width':pixmap.width,'height':pixmap.height,'data':data}
 
 
 if __name__ == '__main__':

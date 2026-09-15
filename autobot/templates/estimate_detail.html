@@ -28,7 +28,7 @@
     <header class="estimate-heading">
       <div class="estimate-title-copy">
         <h1>{{ meta.title }}</h1>
-        <p>{{ meta.original_filename }} · {{ meta.created_at }}</p>
+        <p>{{ meta.original_filename }} · {{ meta.created_at }}{% if meta.normalization and meta.normalization.revision %} · редакция {{ meta.normalization.revision }}{% endif %}</p>
       </div>
       <div class="estimate-actions">
         {% if original_available %}<a class="btn secondary" href="/estimates/{{ meta.id }}/original">Оригинал сметы</a>{% else %}<span class="estimate-muted">Оригинал недоступен</span>{% endif %}
@@ -57,6 +57,7 @@
           <span>Позиции с корректировками: <b>{{ reconciliation.signed_total_fmt }}</b></span>
           <span>Разница: <b>{{ reconciliation.difference_fmt }}</b></span>
         </div>
+        {% if reconciliation.missing_total_count %}<p>У {{ reconciliation.missing_total_count }} позиций не определена сумма. Показан итог только заполненных строк.</p>{% endif %}
         {% if reconciliation.adjustment_count %}
         <div class="reconciliation-explain">
           В закупки вошли только положительные позиции. Отрицательные корректировки: {{ reconciliation.adjustment_count }} на {{ reconciliation.adjustment_total_fmt }} — они сохранены в исходном Excel и учтены при сверке.
@@ -152,6 +153,8 @@
               <td class="where">
                 {% if r.sheet %}лист: {{ r.sheet }}<br>{% endif %}
                 {% if r.excel_row %}строка Excel: {{ r.excel_row }}<br>{% endif %}
+                <a href="/estimates/{{ meta.id }}/review?position_id={{ r.position_id|urlencode }}">Проверить строку</a>
+                {% if r.estimate_version and r.estimate_version.startswith('correction:') %}<br>Исправлена вручную{% endif %}
               </td>
             </tr>
             {% endif %}

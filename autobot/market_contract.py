@@ -183,6 +183,9 @@ def position_identity(row: Mapping[str, Any]) -> str:
 
 
 def _compatible(left: Mapping, right: Mapping) -> bool:
+    lv, rv = clean(left.get('estimate_version')), clean(right.get('estimate_version'))
+    if (lv.startswith('correction:') or rv.startswith('correction:')) and lv != rv:
+        return False
     if key(left.get(COL_NAME)) != key(right.get(COL_NAME)):
         return False
     lu, ru = clean(left.get(COL_UNIT)), clean(right.get(COL_UNIT))

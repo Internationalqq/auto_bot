@@ -142,10 +142,9 @@ def enqueue(estimate_id, *, city='', selected_types=None, operation_id=None, roo
     types = sorted(set(types))
     root = Path(root or ESTIMATES_ROOT)
     with _connection(path, write=True) as connection, source_lock(estimate_id, root):
-        metadata = store.load_meta(root, estimate_id)
+        metadata, rows = store.load_document(root, estimate_id)
         if metadata is None:
             raise MarketError('Смета не найдена.', 404)
-        rows = store.load_rows(root, estimate_id)
         if not rows or len(rows) > 50000:
             raise MarketError('В смете нет строк или превышен предел 50 000 позиций.', 400)
         chosen = [row for row in rows if (not types or row.get('type') in types) and str(row.get('name') or '').strip()]
@@ -258,10 +257,9 @@ def import_context(tender_id, payload, *, root=None, path=None):
     if not run or run['run_id'] != payload.get('run_id'):
         raise MarketError('Этот поиск заменён новым запуском.')
     root = Path(root or ESTIMATES_ROOT)
-    metadata = store.load_meta(root,estimate_id)
+    metadata, rows = store.load_document(root,estimate_id)
     if metadata is None:
         raise MarketError('Смета удалена. Результат не сохранён.')
-    rows = store.load_rows(root,estimate_id)
     digest = source_digest(rows)
     if digest != run['plan']['source_digest'] or digest != payload.get('source_digest'):
         raise MarketError('Смета изменилась. Результат прежнего поиска не применён.')

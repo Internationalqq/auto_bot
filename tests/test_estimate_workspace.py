@@ -126,7 +126,7 @@ def test_original_never_serves_other_paths(tmp_path, monkeypatch, kind):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b'never disclose')
     corrupted = dict(meta, source_path=str(target.relative_to(tmp_path)) if kind == 'relative' else str(target))
-    monkeypatch.setattr(web_ui, '_load_estimate_meta', lambda _: corrupted)
+    monkeypatch.setattr(web_ui, '_load_estimate_original_meta', lambda _: corrupted)
     assert client.get('/estimates/' + meta['id'] + '/original').status_code == 404
     assert client.get('/estimates/invalid-id/original').status_code == 404
 
@@ -138,7 +138,7 @@ def test_original_refuses_symlink(tmp_path, monkeypatch):
         link.symlink_to(source)
     except OSError:
         pytest.skip('Host does not permit creating symlinks')
-    monkeypatch.setattr(web_ui, '_load_estimate_meta', lambda _: dict(meta, source_path=str(link)))
+    monkeypatch.setattr(web_ui, '_load_estimate_original_meta', lambda _: dict(meta, source_path=str(link)))
     assert client.get('/estimates/' + meta['id'] + '/original').status_code == 404
 
 
