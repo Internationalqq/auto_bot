@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260902-tabs-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-controls-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендеры</title>
 </head>
@@ -739,7 +739,7 @@
         const resumeButton = document.getElementById('resumeSearchButton');
         if (resumeButton) {
           resumeButton.hidden = !resume.available;
-          resumeButton.textContent = 'Продолжить скачивание · ' + Number(resume.remaining || 0) + ' закупок';
+          resumeButton.textContent = 'Продолжить скачивание · ' + Number(resume.remaining || 0);
         }
         const lastSearch = document.getElementById('lastSearchSummary');
         const searchSummary = parse.search_summary || {};

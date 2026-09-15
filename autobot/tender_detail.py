@@ -480,8 +480,9 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     estimate_files_count = 0
     if not estimate.empty and "Файл ЛСР" in estimate.columns:
         estimate_files_count = len({_clean(value) for value in estimate["Файл ЛСР"] if _clean(value)})
-    estimate_files_selected = _int(parse_manifest.get("selected_pdf_count")) or estimate_files_count
-    estimate_files_parsed = _int(parse_manifest.get("parsed_pdf_count")) or estimate_files_count
+    selected_pdf_count = _int(parse_manifest.get("selected_pdf_count"))
+    estimate_files_selected = selected_pdf_count if selected_pdf_count else estimate_files_count
+    estimate_files_parsed = _int(parse_manifest.get("parsed_pdf_count")) if selected_pdf_count else estimate_files_count
     estimate_empty_files = [
         _clean(value)
         for value in parse_manifest.get("empty_pdf_files", [])
@@ -494,15 +495,10 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         for value in parse_manifest.get("official_total_missing_files", [])
         if _clean(value)
     ] if isinstance(parse_manifest.get("official_total_missing_files"), list) else []
-    estimate_total_with_vat = estimate_official_total * 1.22 if estimate_official_total else None
+    # Compatibility field only: the source's tax basis has not been confirmed.
+    estimate_total_with_vat = None
     comparison_total = estimate_official_total or (estimate_total if estimate_total > 0 else None)
     comparison_basis = "official" if estimate_official_total else "positions"
-    if initial_price and initial_price > 0 and estimate_official_total and estimate_total_with_vat:
-        direct_diff = abs(initial_price - estimate_official_total)
-        vat_diff = abs(initial_price - estimate_total_with_vat)
-        if vat_diff < direct_diff:
-            comparison_total = estimate_total_with_vat
-            comparison_basis = "official_with_vat"
     estimate_ratio = comparison_total / initial_price if comparison_total and initial_price and initial_price > 0 else None
     estimate_match_pct = round(estimate_ratio * 100, 1) if estimate_ratio is not None else None
     estimate_gap = initial_price - comparison_total if initial_price is not None and comparison_total else None
@@ -510,35 +506,17 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     estimate_check_title = "Недостаточно данных для сверки"
     estimate_check_detail = "Нужны начальная цена и распознанные позиции смет."
     if estimate_ratio is not None:
-        direct_diff = abs(1 - estimate_ratio)
-        if direct_diff <= 0.06:
-            estimate_check_class = "good"
-            if comparison_basis == "official_with_vat":
-                estimate_check_title = "Итоги ЛСР близки к НМЦК с учётом НДС"
-                estimate_check_detail = "Сравнение использует строку «ВСЕГО по смете» каждого ЛСР и ориентир с НДС 22%. Расхождение не превышает 6%."
-            else:
-                estimate_check_title = "Итоги ЛСР близки к начальной цене"
-                estimate_check_detail = "Расхождение официальных итогов ЛСР с НМЦК не превышает 6%."
-        elif estimate_ratio < 0.75:
-            estimate_check_class = "bad"
-            estimate_check_title = "Найдена только часть смет"
-            estimate_check_detail = "Сумма распознанных позиций покрывает меньше 75% начальной цены — нужно искать пропущенные ЛСР или разделы."
-        elif estimate_ratio < 0.94:
-            estimate_check_class = "warn"
-            estimate_check_title = "Есть заметное расхождение"
-            estimate_check_detail = "Возможно, не учтены НДС, коэффициенты, оборудование или отдельные локальные сметы."
-        elif estimate_ratio > 1.06:
-            estimate_check_class = "warn"
-            estimate_check_title = "Сумма позиций выше начальной цены"
-            estimate_check_detail = "Возможны дубли позиций или смешение нескольких версий смет."
+        estimate_check_title = "Условия сравнения требуют проверки"
+        estimate_check_detail = ("Суммы показаны как в источниках. Режим НДС, коэффициенты и состав документов "
+                                 "ещё не подтверждены. Совпадение с НМЦК не доказывает полноту сметы; "
+                                 "расхождение само по себе не определяет пропущенные работы.")
     if estimate_files_selected > estimate_files_parsed:
-        if estimate_check_class == "good":
-            estimate_check_class = "warn"
-            estimate_check_title = "Не все ЛСР распознаны"
+        estimate_check_class = "warn"
+        estimate_check_title = "Не все ЛСР распознаны"
         missing_label = ", ".join(estimate_empty_files[:3]) or "неизвестный файл"
         estimate_check_detail = f"Без позиций: {missing_label}. {estimate_check_detail}"
     if estimate_files_selected and estimate_official_files_count < estimate_files_selected:
-        if estimate_check_class == "good":
+        if estimate_check_class == "neutral":
             estimate_check_class = "warn"
             estimate_check_title = "Не все итоги ЛСР распознаны"
         missing_label = ", ".join(estimate_official_missing_files[:3]) or "неизвестный файл"
@@ -550,7 +528,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         estimate_check_class = "warn"
         estimate_check_title = "Не все документы распакованы"
         estimate_check_detail = ("Новый разбор не завершён; последний сохранённый отчёт не изменён. " + " · ".join(archive_status['errors'])
-                                 + ". Исходные архивы доступны во вкладке «Документы».")
+                                 + ". Архивы доступны во вкладке «Исходные файлы».")
     steps = (
         {"key": "documents", "label": "Документы", "done": bool(workflow.get("has_downloads"))},
         {"key": "estimate", "label": "Смета", "done": estimate_path.is_file() and not archive_status['failed_count']},
@@ -610,7 +588,7 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
         "estimate_match_bar": min(100, max(0, estimate_match_pct or 0)),
         "estimate_gap": estimate_gap,
         "estimate_gap_fmt": _fmt_money(abs(estimate_gap)) if estimate_gap is not None else "—",
-        "estimate_gap_direction": "не хватает" if estimate_gap is not None and estimate_gap >= 0 else "выше НМЦК на",
+        "estimate_gap_direction": "меньше НМЦК на" if estimate_gap is not None and estimate_gap >= 0 else "больше НМЦК на",
         "estimate_check_class": estimate_check_class,
         "estimate_check_title": estimate_check_title,
         "estimate_check_detail": estimate_check_detail,

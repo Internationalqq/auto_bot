@@ -102,6 +102,20 @@ def test_parse_manifest_keeps_same_named_pdf_sources_separate(tmp_path):
     assert json.loads(path.read_text(encoding='utf-8'))['official_total_files_count'] == 0
 
 
+def test_standalone_report_does_not_guess_vat_or_render_source_markup(tmp_path):
+    from autobot.main import write_tender_estimate_html
+    tender = Tender('12345678', 'Test', '', '', '', 12200, None)
+    frame = _build_tender_clean_df([{'source_file': '<script>file</script>.xlsx', 'item_no': '<b>1</b>',
+        'work_name': '<img src=x onerror=alert(1)>Работа', 'unit': '<iframe>', 'qty': 1,
+        'qty_with_unit': '<em>raw</em>', 'unit_price_rub': 10000, 'price_from_estimate_rub': 10000}])
+    path = write_tender_estimate_html(tender, frame, {'reports': tmp_path})
+    body = path.read_text(encoding='utf-8')
+    assert 'Режим НДС и коэффициенты не подтверждены' in body
+    assert 'check ok' not in body and 'НДС 22' not in body
+    assert '<img src=x' not in body and '<script>file' not in body and '<iframe>' not in body
+    assert '&lt;img' in body and '&lt;script&gt;file' in body
+
+
 def test_build_tender_clean_df_sorts_files_and_pdf_pages_naturally():
     rows = [
         {"source_file": "11 - video - LSR.pdf", "sheet_name": "PDF, стр. 2", "work_name": "section eleven", "price_from_estimate_rub": 11},

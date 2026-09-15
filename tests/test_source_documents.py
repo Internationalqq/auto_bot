@@ -134,6 +134,27 @@ def test_tender_files_tab_and_safe_text_preview(monkeypatch, tmp_path):
     assert "attachment" in download_response.headers.get("Content-Disposition", "")
 
 
+def test_archive_error_is_visible_before_any_estimate_exists(monkeypatch, tmp_path):
+    import json
+    tid = '12345678'
+    monkeypatch.setattr(tender_detail, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(web_ui, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(source_documents, 'DOWNLOADS_DIR', tmp_path / 'downloads')
+    monkeypatch.setattr(tender_detail, 'latest_parser_health', lambda _: {})
+    monkeypatch.setattr(web_ui, 'load_tender_metadata', lambda: {tid: {'title': 'Проверка документов'}})
+    monkeypatch.setattr(web_ui, '_tenders_items', lambda: ([{'tender_id': tid, 'has_downloads': True}], {}))
+    (tmp_path / f'ARCHIVES_{tid}.json').write_text(json.dumps({'failed_count': 1, 'archives': [
+        {'archive': '<img src=x onerror=alert(1)>.zip', 'status': 'failed', 'message': 'Повреждён архив'}]}), encoding='utf-8')
+    client = web_ui.app.test_client()
+    for suffix in ('', '?tab=files'):
+        response = client.get(f'/tenders/{tid}' + suffix)
+        body = response.get_data(as_text=True)
+        assert response.status_code == 200
+        assert 'Разбор документов не завершён' in body
+        assert 'Открыть исходные файлы' in body
+        assert '&lt;img' in body and '<img src=x onerror' not in body
+
+
 def test_archive_member_preview_and_download_routes(monkeypatch, tmp_path):
     tender_id = "12345678"
     folder = tmp_path / tender_id

@@ -1779,7 +1779,7 @@ h1 em {
 
 .autobot-workflow {
   display: grid;
-  grid-template-columns: minmax(330px, .9fr) minmax(380px, 1.1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
   gap: 28px;
   align-items: center;
   padding: 13px 18px 14px 24px;
@@ -2338,7 +2338,6 @@ h1 em {
   }
 
   .autobot-workflow {
-    grid-template-columns: 1fr;
     gap: 13px;
   }
 

@@ -113,11 +113,6 @@ SKIP_ROW_HINTS = (
 )
 USE_FALLBACK_EXTRACTION = False
 
-# НМЦК в закупке часто «с НДС», строки ЛСР в файлах — часто без НДС; плюс в смете бывают добавочные коэффициенты (зимние, индексные, районные и т.д.).
-NDS_RATE = 0.22
-NDS_MULTIPLIER = 1.0 + NDS_RATE
-# Считать контроль «зелёным», если сумма отчёта × (1+НДС) близка к НМЦК (остаток — коэффициенты, неполный охват ЛСР).
-NMCK_NEAR_VAT_MAX_REL_DIFF = 0.06
 
 
 @dataclass
@@ -2518,7 +2513,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
         try:
             return f"{float(v):,.2f}".replace(",", " ").replace(".", ",")
         except Exception:
-            return str(v)
+            return html.escape(str(v))
 
     def source_badge(raw) -> str:
         src = str(raw or "").strip()
@@ -2538,18 +2533,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
     tender_price = to_float(tender.price_rub)
     diff_val = (total_sum_val - tender_price) if tender_price is not None else None
     diff_text = fmt_num(diff_val) if diff_val is not None else "—"
-    tolerance = max(5000.0, abs(tender_price or 0) * 0.02)
-    sum_with_vat_hint = total_sum_val * NDS_MULTIPLIER
-    sum_with_vat_text = fmt_num(sum_with_vat_hint)
-    near_nmck_via_vat = False
-    if tender_price is not None and tender_price > 0 and total_sum_val > 0:
-        near_nmck_via_vat = abs(sum_with_vat_hint - tender_price) / tender_price <= NMCK_NEAR_VAT_MAX_REL_DIFF
-    indicator_class = (
-        "ok"
-        if (diff_val is not None and abs(diff_val) <= tolerance)
-        or near_nmck_via_vat
-        else "warn"
-    )
+    indicator_class = "neutral"
 
     groups_html = []
     if not clean_df.empty:
@@ -2562,12 +2546,12 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
                 rows_html.append(
                     "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
                     "<td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td></tr>".format(
-                        row.get("№ п/п", ""),
+                        html.escape(str(row.get("№ п/п", ""))),
                         source_badge(row.get("Источник извлечения", "")),
-                        row.get("Название работы/услуги", ""),
-                        row.get("Ед. изм.", ""),
+                        html.escape(str(row.get("Название работы/услуги", ""))),
+                        html.escape(str(row.get("Ед. изм.", ""))),
                         fmt_num(row.get("Кол-во", "")),
-                        row.get("Объем", ""),
+                        html.escape(str(row.get("Объем", ""))),
                         fmt_num(row.get("Цена за ед., руб", "")),
                         fmt_num(row.get("Сумма, руб", "")),
                     )
@@ -2576,7 +2560,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
                 f"""
 <details class="group" open>
   <summary>
-    <span class="fname">{file_name}</span>
+    <span class="fname">{html.escape(str(file_name))}</span>
     <span class="fmeta">Позиции: {len(grp)} | Сумма: {fmt_num(file_sum)} руб.</span>
   </summary>
   <table>
@@ -2628,8 +2612,7 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
     .report-header.scrolled .sum {{ font-size: 13px; margin-top: 2px; }}
     .check {{ margin-top:8px; font-size:14px; padding:8px 10px; border-radius:10px; transition: margin 0.26s ease, padding 0.26s ease, font-size 0.26s ease; }}
     .report-header.scrolled .check {{ margin-top: 6px; padding: 6px 8px; font-size: 11px; line-height: 1.35; }}
-    .check.ok {{ background:#203a2f; color:#a8f4c8; border:1px solid #3d8a67; }}
-    .check.warn {{ background:#3a2c20; color:#ffd7a8; border:1px solid #8a6340; }}
+    .check.neutral {{ background:#1d2742; color:#d8e4ff; border:1px solid #3c4f83; }}
     .group {{ margin-bottom:14px; border:1px solid #273055; border-radius:12px; overflow:visible; background:#13182b; }}
     .group > summary {{ cursor:pointer; list-style:none; padding:10px 12px; background:#1e2644; display:flex; justify-content:space-between; gap:12px; border-radius:12px 12px 0 0; }}
     .group > summary::-webkit-details-marker {{ display:none; }}
@@ -2680,19 +2663,17 @@ def write_tender_estimate_html(tender: Tender, clean_df: pd.DataFrame, out_paths
     <div class="meta report-pos-line">Позиции: {len(clean_df)}</div>
     <div class="sum">Общая сумма по позициям: {total_sum} руб.</div>
     <div class="check {indicator_class}">
-      Контроль: сумма по строкам отчёта {total_sum} руб.
+      Справочно: сумма по строкам отчёта {total_sum} руб.
       | НМЦК тендера: {fmt_num(tender_price) if tender_price is not None else "—"} руб.
       | Разница: {diff_text} руб.
     </div>
     <div class="report-header-extra">
       <div class="meta">
-        Ориентир, если в ЛСР суммы без НДС, а НМЦК с НДС {int(NDS_RATE * 100)}%: {total_sum} × {NDS_MULTIPLIER:g} ≈ {sum_with_vat_text} руб.
-        (остаток до НМЦК часто закрывают добавочные коэффициенты в смете — зимние, индексные, районные и др. — и то, что в отчёт не попали все разделы.)
+        Суммы показаны как в источниках. Режим НДС и коэффициенты не подтверждены, пересчёт не выполнялся.
       </div>
       <div class="meta">
-        Сумма в таблице — только позиции из локальных ЛСР (файлы в отчёте). НМЦК закупки обычно шире: все разделы сметы,
-        объектные сметы, непредвиденные, НДС и коэффициенты, поэтому полное совпадение с «голой» суммой позиций редко.
-        Номер позиции в парсере только из колонки A (не из B).
+        В таблицу входят распознанные позиции перечисленных файлов. Совпадение суммы с НМЦК не подтверждает
+        полноту сметы. Для оценки участия нужны проверенный состав работ, реальные затраты и условия конкретного тендера.
       </div>
     </div>
   </div>

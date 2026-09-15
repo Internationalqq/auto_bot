@@ -24,6 +24,36 @@ def test_archive_failure_prevents_complete_estimate_status(tmp_path, monkeypatch
     assert not next(step for step in detail['steps'] if step['key'] == 'estimate')['done']
 
 
+def test_unconfirmed_tax_is_never_guessed_to_match_initial_price(tmp_path, monkeypatch):
+    tid = '0171200001926000664'
+    monkeypatch.setattr(tender_detail, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(tender_detail, 'latest_parser_health', lambda _: {})
+    (tmp_path / f'ESTIMATE_PARSE_{tid}.json').write_text(json.dumps({
+        'selected_pdf_count': 1, 'parsed_pdf_count': 1,
+        'official_total_rub': 10000, 'official_total_files_count': 1}), encoding='utf-8')
+    for price in (10000, 12200):
+        detail = tender_detail.build_tender_detail(tid, {'price_rub': price}, {})
+        assert detail['estimate_check_class'] != 'good'
+        assert detail['estimate_total_with_vat'] is None
+        assert detail['estimate_comparison_basis'] == 'official'
+        assert detail['estimate_gap'] == price - 10000
+        assert 'не доказывает полноту' in detail['estimate_check_detail']
+
+
+def test_zero_parsed_pdfs_is_not_replaced_by_old_report_file_count(tmp_path, monkeypatch):
+    tid = '0171200001926000664'
+    monkeypatch.setattr(tender_detail, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(tender_detail, 'latest_parser_health', lambda _: {})
+    pd.DataFrame([{'Файл ЛСР': 'old.xlsx', COL_NAME: 'Поставка материала', COL_UNIT: 'м3', COL_QTY: 1,
+                   COL_UNIT_PRICE: 100, COL_SUM: 100}]).to_excel(tmp_path / f'ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx', index=False)
+    (tmp_path / f'ESTIMATE_PARSE_{tid}.json').write_text(json.dumps({
+        'selected_pdf_count': 1, 'parsed_pdf_count': 0, 'empty_pdf_files': ['new.pdf']}), encoding='utf-8')
+    detail = tender_detail.build_tender_detail(tid, {}, {})
+    assert detail['estimate_files_parsed'] == 0
+    assert detail['estimate_check_class'] == 'warn'
+    assert detail['estimate_check_title'] == 'Не все ЛСР распознаны'
+
+
 def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypatch):
     tender_id = "0171200001926000664"
     monkeypatch.setattr(tender_detail, "REPORTS_DIR", tmp_path)

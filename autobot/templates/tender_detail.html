@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260914-coverage-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-controls-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
 </head>
@@ -63,6 +63,13 @@
       <a class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}">Обзор и анализ</a>
       <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Исходные файлы <span>{{ tender.documents.count }}</span></a>
     </nav>
+
+    {% if tender.archive_extraction.failed_count %}
+    <section class="market-health-alert" role="alert" aria-label="Ошибка обработки документов">
+      <div><strong>Разбор документов не завершён</strong></div>
+      <p>{{ tender.estimate_check_detail }} <a href="/tenders/{{ tender.tender_id }}?tab=files">Открыть исходные файлы</a></p>
+    </section>
+    {% endif %}
 
     {% if tender.active_tab == "overview" %}
 
@@ -130,14 +137,14 @@
     {% if tender.has_estimate %}
     <section class="estimate-check estimate-check-{{ tender.estimate_check_class }}" data-feature-content="estimateModal" aria-label="Сверка сметы с начальной ценой">
       <header>
-        <div><small>Контроль полноты смет</small><strong>{{ tender.estimate_check_title }}</strong></div>
-        {% if tender.estimate_match_pct is not none %}<span>{{ tender.estimate_match_pct_fmt }}%</span>{% endif %}
+        <div><small>Справочное сопоставление сумм</small><strong>{{ tender.estimate_check_title }}</strong></div>
+        {% if tender.estimate_match_pct is not none %}<span>{{ tender.estimate_match_pct_fmt }}% от НМЦК</span>{% endif %}
       </header>
       <div class="estimate-check-grid">
         <div><small>Начальная цена</small><b>{{ tender.price_fmt }}</b></div>
-        <div><small>Итог ЛСР без НДС</small><b>{{ tender.estimate_official_total_fmt }}</b></div>
-        <div><small>Ориентир с НДС 22%</small><b>{{ tender.estimate_total_with_vat_fmt }}</b></div>
-        <div><small>Разница</small><b>{{ tender.estimate_gap_direction }} {{ tender.estimate_gap_fmt }}</b></div>
+        <div><small>Итоги ЛСР из файлов</small><b>{{ tender.estimate_official_total_fmt }}</b></div>
+        <div><small>Режим НДС источников</small><b>Не подтверждён</b></div>
+        <div><small>{{ tender.estimate_gap_direction if tender.estimate_gap is not none else "Разница" }}</small><b>{{ tender.estimate_gap_fmt }}</b></div>
       </div>
       <div class="estimate-check-track" aria-hidden="true"><i style="width: {{ tender.estimate_match_bar }}%"></i></div>
       <footer>
@@ -400,7 +407,7 @@
   <aside class="feature-modal" id="estimateModal" hidden aria-labelledby="estimateModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Только просмотр · ничего не запускается</small><h2 id="estimateModalTitle">Смета против НМЦК</h2><p>Показывает, сходится ли сумма извлечённых локальных смет с начальной ценой тендера.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><small>Только просмотр · ничего не запускается</small><h2 id="estimateModalTitle">Смета против НМЦК</h2><p>Сравнивает суммы из файлов с НМЦК; налоговый режим и состав сметы проверяются отдельно.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
