@@ -1,0 +1,358 @@
+
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>{{ meta.title }} · Смета</title>
+  <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
+  <link rel="stylesheet" href="/estimates/workspace.css?v=20260915-1" />
+</head>
+<body class="autobot-page estimate-workspace-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/estimates">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
+      <a class="topnav-primary" href="/tenders">Тендеры</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
+  <main class="estimate-workspace">
+    <a class="estimate-back" href="/estimates">← Все сметы</a>
+    <header class="estimate-heading">
+      <div class="estimate-title-copy">
+        <h1>{{ meta.title }}</h1>
+        <p>{{ meta.original_filename }} · {{ meta.created_at }}</p>
+      </div>
+      <div class="estimate-actions">
+        {% if original_available %}<a class="btn secondary" href="/estimates/{{ meta.id }}/original">Оригинал сметы</a>{% else %}<span class="estimate-muted">Оригинал недоступен</span>{% endif %}
+        <button class="btn secondary" id="estimateCrmOpenBtn" type="button">Добавить в объект</button>
+        <details class="estimate-more">
+          <summary>Ещё</summary>
+          <button class="btn secondary danger-soft" type="button" onclick="deleteEstimate(this)">Удалить смету</button>
+        </details>
+      </div>
+    </header>
+
+    <section class="estimate-panel estimate-overview" aria-label="Сводка сметы">
+      <div class="estimate-metrics">
+        <div><span>Позиций в таблице</span><strong>{{ summary.row_count }} <small>из {{ meta.row_count }}</small></strong></div>
+        <div><span>{% if q or selected_types %}Сумма выбранных строк{% else %}Сумма сметы{% endif %}</span><strong>{{ summary.total_sum_fmt }}</strong></div>
+        <div class="estimate-check-note"><span>Проверка исходника</span><b>{% if reconciliation.needs_attention %}Есть расхождение — проверьте итог{% elif reconciliation.available %}Сверка доступна ниже{% else %}Сверьте позиции с оригиналом{% endif %}</b></div>
+      </div>
+      <details class="estimate-inspection" {% if reconciliation.needs_attention %}open{% endif %}>
+        <summary>Объёмы и сверка сметы</summary>
+        <div class="estimate-measures"><span>Количество / объём: <b>{{ summary.qty_text }}</b></span><span>Средняя цена: <b>{{ summary.avg_price_fmt }}</b></span></div>
+      {% if reconciliation.available %}
+      <div class="reconciliation-note{% if reconciliation.needs_attention %} needs-attention{% endif %}" role="note">
+        <strong>Сверка исходной сметы</strong>
+        <div class="reconciliation-values">
+          <span>Итог файла: <b>{{ reconciliation.declared_total_fmt }}</b></span>
+          <span>Позиции с корректировками: <b>{{ reconciliation.signed_total_fmt }}</b></span>
+          <span>Разница: <b>{{ reconciliation.difference_fmt }}</b></span>
+        </div>
+        {% if reconciliation.adjustment_count %}
+        <div class="reconciliation-explain">
+          В закупки вошли только положительные позиции. Отрицательные корректировки: {{ reconciliation.adjustment_count }} на {{ reconciliation.adjustment_total_fmt }} — они сохранены в исходном Excel и учтены при сверке.
+        </div>
+        {% endif %}
+        {% if reconciliation.has_difference %}
+        <div class="reconciliation-explain">
+          Разница итога не добавлена отдельной закупкой: проверьте итоговые начисления в исходном Excel.
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      </details>
+    </section>
+
+    <section class="estimate-panel estimate-market" aria-labelledby="estimateMarketTitle">
+      <div class="estimate-market-heading">
+        <div><p class="estimate-eyebrow">Следующий шаг</p><h2 id="estimateMarketTitle">{% if has_market_raw or has_market_merged %}Уточните рыночные цены{% else %}Найдём цены для сравнения{% endif %}</h2><p class="estimate-muted">Цифры любят порядок: проверьте позиции, затем сравните их с предложениями рынка.</p></div>
+        <div class="estimate-market-form">
+          <label for="marketCityInput">Город для поиска</label>
+          <div><input type="text" id="marketCityInput" value="{{ market_city }}" placeholder="Например, Челябинск" maxlength="120" /><button class="btn" type="button" id="marketStartBtn" onclick="toggleEstimateMarket()" disabled>Найти цены</button></div>
+        </div>
+      </div>
+      <p class="estimate-scope">Поиск работает по выбранным ниже типам позиций. Текстовый фильтр применяется только к таблице.</p>
+      {% if scope_info.has_notice %}<div class="reconciliation-note needs-attention"><strong>{{ scope_info.title }}</strong><div>{{ scope_info.text }}</div></div>{% endif %}
+      <div class="estimate-market-status" role="status" aria-live="polite"><div id="marketStatusMain">{% if has_market_raw or has_market_merged %}Сохранённые цены доступны во вкладках.{% else %}Поиск ещё не запускался.{% endif %}</div><div id="marketStatusDetail"></div></div>
+      <details class="estimate-log" id="marketLogDetails" hidden><summary>Журнал поиска</summary><pre id="marketLogs"></pre></details>
+    </section>
+
+    <section class="estimate-panel estimate-data" aria-label="Позиции и рыночные цены">
+      <div class="estimate-data-toolbar">
+        <div class="estimate-tabs" role="tablist" aria-label="Таблицы сметы">
+          <button class="estimate-tab{% if active_table_view == 'estimate' %} is-active{% endif %}" role="tab" id="estimateTabPositions" aria-controls="estimatePanelPositions" type="button" data-estimate-view-btn="estimate" data-download-href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" data-download-label="Позиции">Позиции</button>
+          <button class="estimate-tab{% if active_table_view == 'compare' %} is-active{% endif %}" role="tab" id="estimateTabCompare" aria-controls="estimatePanelCompare" type="button" data-estimate-view-btn="compare" data-download-href="/estimates/{{ meta.id }}/market-compare.xlsx?{{ filter_query }}" data-download-label="Сравнение" {% if not compare_table.available %}disabled title="{% if not summary.row_count %}Измените фильтр — в таблице нет строк{% else %}Сначала найдите рыночные цены{% endif %}"{% endif %}>Сравнение цен</button>
+          <button class="estimate-tab{% if active_table_view == 'sources' %} is-active{% endif %}" role="tab" id="estimateTabSources" aria-controls="estimatePanelSources" type="button" data-estimate-view-btn="sources" data-download-href="/estimates/{{ meta.id }}/market-sources.xlsx?{{ filter_query }}" data-download-label="Источники" {% if not sources_table.available %}disabled title="{% if not summary.row_count %}Измените фильтр — в таблице нет строк{% else %}Сначала найдите источники цен{% endif %}"{% endif %}>Источники</button>
+        </div>
+        <a class="btn secondary" id="activeTableDownloadBtn" href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" {% if not summary.row_count %}hidden{% endif %}>Скачать Excel</a>
+      </div>
+      <form class="estimate-filter-bar" method="get" action="/estimates/{{ meta.id }}" id="estimateFilterForm">
+        <input type="hidden" name="table_view" id="estimateTableViewInput" value="{{ active_table_view }}" />
+        <label for="estimateRowSearch">Найти строку</label>
+        <div><input id="estimateRowSearch" type="search" name="q" value="{{ q }}" placeholder="Название работы или материала" /><button class="btn secondary" type="submit">Применить</button>{% if q or selected_types %}<a class="estimate-reset" href="/estimates/{{ meta.id }}">Сбросить</a>{% endif %}</div>
+      </form>
+      <fieldset class="estimate-types"><legend>Типы позиций</legend>
+        {% for opt in type_options %}<label><input type="checkbox" name="types" value="{{ opt.key }}" form="estimateFilterForm" {% if opt.key in selected_types %}checked{% endif %} /><span>{{ opt.label }}</span><small>{{ opt.count }}</small></label>{% endfor %}
+      </fieldset>
+      <div class="table-panel" role="tabpanel" id="estimatePanelPositions" aria-labelledby="estimateTabPositions" data-estimate-view-panel="estimate" {% if active_table_view != 'estimate' %}hidden{% endif %}>
+        <div class="table-panel-head">
+          <h2 class="table-panel-title">Позиции сметы</h2>
+        </div>
+      <div class="table-wrap">
+        <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>Тип</th>
+              <th class="name">Наименование</th>
+              <th>Ед.</th>
+              <th class="num">Кол-во</th>
+              <th class="num">Цена за ед.</th>
+              <th class="num">Сумма</th>
+              <th>Где найдено</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+            {% if r._is_section %}
+            <tr class="section-row">
+              <td colspan="8">{{ r.section_title }}</td>
+            </tr>
+            {% elif r._is_sheet_total %}
+            <tr class="sheet-total-row">
+              <td colspan="6">Итого по листу: {{ r.sheet_title or "без названия" }}</td>
+              <td class="num">{{ r.sheet_total_fmt }}</td>
+              <td></td>
+            </tr>
+            {% elif r._is_sheet_break %}
+            <tr class="sheet-break-row">
+              <td colspan="8"></td>
+            </tr>
+            {% else %}
+            <tr>
+              <td>{{ r.display_no }}</td>
+              <td><span class="tag">{{ r.type_label }}</span></td>
+              <td class="name">{{ r.name }}</td>
+              <td>{{ r.unit or "—" }}</td>
+              <td class="num">{{ r.qty_fmt }}</td>
+              <td class="num">{{ r.unit_price_fmt }}</td>
+              <td class="num">{{ r.total_fmt }}</td>
+              <td class="where">
+                {% if r.sheet %}лист: {{ r.sheet }}<br>{% endif %}
+                {% if r.excel_row %}строка Excel: {{ r.excel_row }}<br>{% endif %}
+              </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+            {% if not rows %}
+            <tr><td colspan="8" class="estimate-empty">По фильтру ничего не найдено.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+      </div>
+      <div class="table-panel" role="tabpanel" id="estimatePanelCompare" aria-labelledby="estimateTabCompare" data-estimate-view-panel="compare" {% if active_table_view != 'compare' %}hidden{% endif %}>
+        <div class="table-panel-head">
+          <h2 class="table-panel-title">Сравнение цен</h2>
+        </div>
+        {% if compare_table.available %}
+      {% if viability.title %}
+      <div class="viability-box {{ viability.tone }}">
+        <h2 class="viability-title">{{ viability.title }}</h2>
+        <div class="viability-sub">{{ viability.subtitle }}</div>
+        {% if viability.facts %}
+        <div class="viability-facts">
+          {% for fact in viability.facts %}
+          <div class="viability-fact">
+            <span>{{ fact.label }}</span>
+            <b>{{ fact.value }}</b>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if viability.groups %}
+        <details class="estimate-breakdown"><summary>По типам позиций</summary><div class="viability-groups">
+          {% for group in viability.groups %}
+          <div class="viability-group">
+            <div class="viability-group-title">{{ group.title }}</div>
+            <div class="viability-group-line"><span class="tone-good">Выше рынка: {{ group.good }}</span></div>
+            <div class="viability-group-line"><span class="tone-warn">Около рынка: {{ group.warn }}</span></div>
+            <div class="viability-group-line"><span class="tone-bad">Ниже рынка: {{ group.bad }}</span></div>
+            <div class="viability-group-line">Без данных: {{ group.none }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}        {% if market_links %}
+        <details class="estimate-breakdown"><summary>Открыть отдельное сравнение по типу</summary><div class="market-links">
+          {% for link in market_links %}
+          <a class="market-link-chip" href="{{ link.href }}">{{ link.label }} · {{ link.count }}</a>
+          {% endfor %}
+        </div></details>
+        {% endif %}
+
+        <div class="table-wrap">
+          <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Раздел</th>
+                <th>Тип</th>
+                <th class="name">Наименование</th>
+                <th class="num">Цена сметы</th>
+                <th class="num">Цена рынка</th>
+                <th>Сайт</th>
+                <th>Вывод</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in compare_rows %}
+              <tr>
+                <td class="where">{{ row.section }}</td>
+                <td><span class="tag">{{ row.type_label }}</span></td>
+                <td class="name">{{ row.name }}</td>
+                <td class="num">{{ row.estimate_price }}</td>
+                <td class="num">{{ row.market_price }}</td>
+                <td class="where">
+                  {% if row.site_url %}
+                  <a href="{{ row.site_url }}" target="_blank" rel="noopener noreferrer">{{ row.site }}</a>
+                  {% else %}
+                  {{ row.site }}
+                  {% endif %}
+                </td>
+                <td class="where">
+                  {% if row.compare_class == 'good' %}
+                  <span class="tone-good">{{ row.status }}</span>
+                  {% elif row.compare_class == 'bad' %}
+                  <span class="tone-bad">{{ row.status }}</span>
+                  {% else %}
+                  <span class="tone-warn">{{ row.status }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not compare_rows %}<tr><td colspan="7" class="estimate-empty">По фильтру ничего не найдено.</td></tr>{% endif %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        {% else %}
+        <div class="status-box">Сравнение рынка пока не готово. Сначала выполните поиск цен по этой смете.</div>
+        {% endif %}
+      </div>
+      <div class="table-panel" role="tabpanel" id="estimatePanelSources" aria-labelledby="estimateTabSources" data-estimate-view-panel="sources" {% if active_table_view != 'sources' %}hidden{% endif %}>
+        <div class="table-panel-head">
+          <h2 class="table-panel-title">Источники цен</h2>
+          <p class="estimate-muted">Найденные предложения для проверки. В сравнение цен входят только подтверждённые сопоставимые предложения.</p>
+        </div>
+        {% if sources_table.available %}
+        <div class="table-wrap">
+          <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Раздел</th>
+                <th class="name">Наименование</th>
+                <th>Найденная цена</th>
+                <th>Сайт</th>
+                <th>Статус</th>
+                <th>Запрос</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in source_rows %}
+              <tr>
+                <td class="where">{{ row.section }}</td>
+                <td class="name">{{ row.name }}</td>
+                <td class="where">{{ row.market_price }}</td>
+                <td class="where">{% if row.site_url %}<a href="{{ row.site_url }}" target="_blank" rel="noopener noreferrer">{{ row.site }}</a>{% else %}{{ row.site }}{% endif %}</td>
+                <td class="where">{{ row.status }}</td>
+                <td class="where">{{ row.query }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        {% else %}
+        <div class="status-box">Источники цен пока не готовы. Сначала выполните поиск цен по этой смете.</div>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+  <div class="crm-drawer" id="estimateCrmDrawer" hidden>
+    <div class="crm-drawer-backdrop" id="estimateCrmBackdrop"></div>
+    <aside class="crm-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="estimateCrmDrawerTitle">
+      <div class="crm-drawer-head">
+        <div>
+          <h2 class="crm-drawer-title" id="estimateCrmDrawerTitle">Добавить смету в объект</h2>
+          <div class="crm-drawer-sub">Выберите доступный объект PM.bi. Смета импортируется с вашими текущими правами, а повторная отправка обновит позиции без дублей.</div>
+        </div>
+        <button class="crm-drawer-close" id="estimateCrmCloseBtn" type="button">Закрыть</button>
+      </div>
+      <div class="crm-drawer-body">
+        <div class="crm-source-card">
+          <strong>На основе сметы: {{ crm_prefill.estimate_title }}</strong>
+          <span>{{ crm_prefill.original_filename }} · строк: {{ crm_prefill.row_count }} · сумма: {{ crm_prefill.total_sum_fmt }}</span>
+        </div>
+        <form id="estimateCrmForm" class="crm-form-grid">
+          <label>Объект CRM
+            <select id="estimateCrmProject" name="project_id">
+              <option value="">{% if legacy_crm_export_allowed %}Создать новый объект{% else %}Выберите объект{% endif %}</option>
+            </select>
+            <small id="estimateCrmProjectHint">Загружаю доступные объекты…</small>
+          </label>
+          <div class="crm-new-project-fields" id="estimateCrmNewProjectFields">
+          <label>Название объекта
+            <input type="text" id="estimateCrmTitle" name="title" required />
+          </label>
+          <label>Клиент / заказчик
+            <input type="text" id="estimateCrmClient" name="client_name" />
+          </label>
+          <label>Адрес
+            <input type="text" id="estimateCrmAddress" name="address" />
+          </label>
+          <label>Регион
+            <input type="text" id="estimateCrmRegion" name="region" />
+          </label>
+          <label>Код / договор
+            <input type="text" id="estimateCrmContractNo" name="contract_no" />
+          </label>
+          <label>Бюджет
+            <input type="text" id="estimateCrmBudget" name="budget" inputmode="decimal" />
+          </label>
+          <label>Описание
+            <textarea id="estimateCrmDescription" name="description"></textarea>
+          </label>
+          </div>
+          <div class="crm-status" id="estimateCrmStatus"></div>
+          <div class="crm-drawer-foot">
+            <button class="btn secondary" id="estimateCrmCancelBtn" type="button">Отмена</button>
+            <button class="btn" type="submit" id="estimateCrmSubmitBtn">Создать объект</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+  </div>
+  <script id="estimatePageConfig" type="application/json">{{ {
+    'estimateId': meta.id, 'title': meta.title, 'marketRevision': market_revision,
+    'activeTableView': active_table_view, 'crmPrefill': crm_prefill,
+    'legacyCrmAllowed': legacy_crm_export_allowed, 'importCapability': estimate_import_capability
+  }|tojson }}</script>
+  <script src="/estimates/workspace.js?v=20260915-1"></script>
+</body>
+</html>

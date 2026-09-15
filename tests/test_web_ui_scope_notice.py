@@ -46,5 +46,5 @@ def test_estimate_detail_page_explains_scope_mismatch(monkeypatch, tmp_path):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "РЫНОК НЕ СОБРАН ДЛЯ ЭТОГО ТИПА" in html
+    assert "Рынок собран не для всех выбранных типов" in html
     assert "Сейчас в файле рынка есть только: Услуги." in html

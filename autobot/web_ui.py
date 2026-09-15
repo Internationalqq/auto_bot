@@ -4969,6 +4969,39 @@ def _estimate_market_merged_path(estimate_id: str) -> Path:
     return USER_ESTIMATES_DIR / estimate_id / "market_compare.xlsx"
 
 
+def _estimate_market_revision(estimate_id: str) -> str:
+    """Fingerprint saved reports without exposing paths or rereading whole workbooks."""
+    versions = []
+    for path in (_estimate_market_raw_path(estimate_id), _estimate_market_merged_path(estimate_id)):
+        try:
+            stat = path.stat()
+            versions.append([stat.st_mtime_ns, stat.st_size] if path.is_file() else None)
+        except OSError:
+            versions.append(None)
+    return hashlib.sha256(json.dumps(versions).encode('ascii')).hexdigest()[:24]
+
+
+def _estimate_original_path(estimate_id: str, meta: dict) -> Path | None:
+    """An original belongs to this estimate directory, never an arbitrary metadata path."""
+    if not re.fullmatch(r'[0-9a-fA-F-]{1,40}', estimate_id or ''):
+        return None
+    source = str(meta.get('source_path') or '').strip()
+    if not source:
+        return None
+    path = Path(source)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    folder = USER_ESTIMATES_DIR / estimate_id
+    try:
+        if (folder.is_symlink() or path.is_symlink() or not path.is_file()
+                or folder.resolve().parent != USER_ESTIMATES_DIR.resolve()
+                or path.resolve().parent != folder.resolve() or not _estimate_upload_allowed(path.name)):
+            return None
+        return path.resolve()
+    except (OSError, ValueError):
+        return None
+
+
 def _estimate_dir_path(estimate_id: str) -> Path:
     return USER_ESTIMATES_DIR / estimate_id
 
@@ -5316,7 +5349,7 @@ def _estimate_market_links(estimate_id: str, market_sections: list[dict], *, q: 
     return out
 
 
-def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict]) -> pd.DataFrame:
+def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict], *, preserve_candidates: bool = False) -> pd.DataFrame:
     from autobot.market_contract import merge_market_frames
     from autobot.merge_estimate_market import _normalize_market_columns
 
@@ -5326,6 +5359,10 @@ def _estimate_market_df_for_rows(path: Path, rows_filtered: list[dict]) -> pd.Da
         market = _normalize_market_columns(pd.read_excel(path))
     except (OSError, ValueError):
         return pd.DataFrame()
+    if preserve_candidates:
+        # The sources table is an audit of offers, including rejected/unverified ones.
+        # Matching to selected estimate rows still happens in _estimate_source_rows.
+        return market
     # Include all requested estimate rows in the denominator, even when the
     # persisted market file contains only a successful subset.
     estimate = _estimate_rows_to_report_df(rows_filtered)
@@ -5512,25 +5549,23 @@ def _estimate_compare_rows(rows_filtered: list[dict], compare_df: pd.DataFrame) 
 
 
 def _estimate_source_rows(rows_filtered: list[dict], raw_df: pd.DataFrame) -> list[dict]:
-    from autobot.market_analytics import COL_NAME
-    from autobot.merge_estimate_market import _norm_key
-
-    from autobot.market_contract import match_market_rows
+    from autobot.market_contract import clean, match_market_rows
     matches = match_market_rows(_estimate_rows_to_report_df(rows_filtered), raw_df)
     out: list[dict] = []
     for src, matched in zip(rows_filtered, matches):
         merged = matched or {}
-        text = str(merged.get("Рыночные источники") or "").strip()
-        query = str(merged.get("Поисковый запрос рынка") or "").strip()
-        status = str(merged.get("Ошибка / статус") or "").strip() or ("Есть источники" if text else "Нет источников")
-        first_url = _first_url_from_text(text) or _first_url_from_text(merged.get("Ссылки (строго)") or "")
+        text = clean(merged.get("Рыночные источники"))
+        query = clean(merged.get("Поисковый запрос рынка"))
+        first_url = _first_url_from_text(text) or _first_url_from_text(clean(merged.get("Ссылки (строго)")))
+        status = clean(merged.get("Ошибка / статус")) or ("Источник для проверки" if first_url else "Нет источников")
         site = urlparse(first_url).netloc.replace("www.", "") if first_url else ""
         out.append(
             {
                 "section": _normalize_section_title(str(src.get("section") or "")) or "Без раздела",
                 "name": str(src.get("name") or ""),
-                "market_price": str(merged.get("Цены за ед. (рынок, руб)") or merged.get("Рынок цены за ед. (итог)") or "—").strip() or "—",
+                "market_price": clean(merged.get("Цены за ед. (рынок, руб)")) or clean(merged.get("Рынок цены за ед. (итог)")) or "—",
                 "site": site or "—",
+                "site_url": first_url,
                 "status": status,
                 "query": query or "—",
             }
@@ -8307,995 +8342,6 @@ RESEARCH_TEMPLATE = """
 """
 
 
-ESTIMATE_DETAIL_TEMPLATE = """
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <title>{{ meta.title }} · Смета</title>
-  <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
-  <style>
-    :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --border:#d9e3ef; --muted:#62748b; --text:#172235; --accent:#1f72dc; }
-    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#ffffff 0,#f4f7fb 100%); color:var(--text); }
-    .page { max-width:1240px; margin:0 auto; padding:18px 14px 34px; }
-    a { color:#1f72dc; }
-    .page-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px; }
-    .page-head-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-    .top-back {
-      display:inline-flex;
-      align-items:center;
-      gap:8px;
-      padding:9px 13px;
-      border-radius:999px;
-      border:1px solid #cfd9e8;
-      background:linear-gradient(180deg,#ffffff,#f4f8fd);
-      color:#35506f;
-      text-decoration:none;
-      font-size:13px;
-      font-weight:700;
-      box-shadow:0 10px 24px rgba(43, 78, 131, 0.08);
-    }
-    .top-back:hover { background:#eef5fd; border-color:#9ec0ef; color:#173a65; }
-    h1 { margin:0 0 6px; font-size:24px; }
-    .muted { color:var(--muted); }
-    .panel { background:linear-gradient(180deg,#ffffff,#f8fbff); border:1px solid var(--border); border-radius:16px; padding:12px; margin-bottom:12px; box-shadow:0 16px 34px rgba(28,49,84,.08); }
-    .filters { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
-    label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
-    input,select,textarea { background:#fff; border:1px solid #cfd9e8; color:var(--text); border-radius:10px; padding:8px 10px; min-width:190px; }
-    textarea { min-height:96px; resize:vertical; font-family:inherit; }
-    .btn { border:1px solid #2e80e8; background:linear-gradient(180deg,#2e80e8,#1f72dc); color:white; border-radius:10px; padding:8px 12px; font-weight:700; cursor:pointer; text-decoration:none; font-size:12px; display:inline-flex; align-items:center; justify-content:center; }
-    .btn.secondary { background:#f4f8fd; border-color:#cfd9e8; color:#35506f; }
-    .btn.danger-soft { background:linear-gradient(180deg,#fff4f4,#fdeaea); border-color:#efcaca; color:#a24c4c; }
-    .btn.danger-soft:hover { background:linear-gradient(180deg,#feecec,#fbdede); border-color:#e5b2b2; color:#933f3f; }
-    .btn.icon-only { width:38px; height:38px; padding:0; border-radius:999px; }
-    .btn.icon-only:disabled { opacity:.6; cursor:wait; }
-    .icon-trash {
-      width: 16px;
-      height: 16px;
-      display: block;
-      stroke: currentColor;
-      fill: none;
-      stroke-width: 1.9;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      pointer-events: none;
-    }
-    .btn.is-stop { background:linear-gradient(180deg,#f7e2e2,#efcdcd); border-color:#ddb1b1; color:#8a3f3f; }
-    .btn.is-stop:hover { background:linear-gradient(180deg,#f4d6d6,#ebc2c2); border-color:#d39c9c; color:#7a3232; }
-    .actions-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-    .crm-callout { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; padding:10px 12px; border-radius:14px; background:linear-gradient(180deg,#eef5ff,#f7fbff); border:1px solid #d7e5f6; }
-    .crm-callout-note { color:#45627f; font-size:12px; line-height:1.45; }
-    .crm-callout-note strong { color:#1b2a41; }
-    .type-picker { margin-top:10px; padding:10px; background:#f8fbff; border:1px solid #dfe7f1; border-radius:14px; }
-    .type-picker-title { margin:0 0 8px; font-size:13px; font-weight:700; color:#1b2a41; }
-    .type-checks { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }
-    .type-check { display:flex; align-items:flex-start; gap:8px; padding:8px 10px; background:#fff; border:1px solid #dfe7f1; border-radius:12px; min-height:48px; }
-    .type-check input { min-width:18px; width:18px; height:18px; margin-top:2px; accent-color:#2e80e8; }
-    .type-check strong { display:block; font-size:13px; color:#1b2a41; }
-    .type-check span { display:block; color:#62748b; font-size:11px; margin-top:2px; }
-    .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
-    .summary-item { padding:9px 10px; background:#fff; border:1px solid #dfe7f1; border-radius:12px; }
-    .summary-item span { display:block; color:var(--muted); font-size:11px; }
-    .summary-item b { display:block; margin-top:4px; font-size:15px; }
-    .reconciliation-note { margin-top:10px; padding:11px 12px; border:1px solid #dfe7f1; border-radius:12px; background:linear-gradient(180deg,#fbfdff,#f6f9fd); color:#52657d; font-size:12px; line-height:1.45; }
-    .reconciliation-note.needs-attention { border-color:#ead9ad; background:linear-gradient(180deg,#fffdf8,#fff8e9); color:#66562f; }
-    .reconciliation-note strong { display:block; margin-bottom:6px; color:#283b52; font-size:13px; }
-    .reconciliation-values { display:flex; flex-wrap:wrap; gap:5px 14px; }
-    .reconciliation-values span { white-space:nowrap; }
-    .reconciliation-explain { margin-top:6px; }
-    .download-box { margin-top:10px; padding:10px; background:#f8fbff; border:1px solid #dfe7f1; border-radius:12px; }
-    .download-title { margin:0 0 8px; font-size:13px; font-weight:700; color:#1b2a41; }
-    .download-links { display:flex; flex-wrap:wrap; gap:8px; }
-    .download-note { margin-top:8px; color:#62748b; font-size:11px; line-height:1.35; }
-    .table-switch { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-    .table-switch .btn.is-active { background:linear-gradient(180deg,#2e80e8,#1f72dc); border-color:#2e80e8; color:#fff; }
-    .table-switch .btn[disabled] { opacity:.45; cursor:not-allowed; }
-    .table-panel[hidden] { display:none; }
-    .table-panel-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:center; margin-bottom:8px; }
-    .table-panel-title { margin:0; font-size:15px; color:#1b2a41; }
-    .viability-box { margin-top:10px; padding:12px; border-radius:14px; border:1px solid #c6d8f0; background:linear-gradient(180deg,#f7fbff,#eef5fd); }
-    .viability-box.good { border-color:#bfe5cc; background:linear-gradient(180deg,#f3fcf6,#e8f8ee); }
-    .viability-box.warn { border-color:#f0deb1; background:linear-gradient(180deg,#fffaf0,#fff4dd); }
-    .viability-box.bad { border-color:#f0c5c5; background:linear-gradient(180deg,#fff7f7,#fff0f0); }
-    .viability-title { margin:0; font-size:24px; font-weight:800; letter-spacing:.04em; }
-    .viability-sub { margin-top:6px; color:#445870; font-size:13px; line-height:1.45; }
-    .viability-facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; margin-top:10px; }
-    .viability-fact { padding:9px 10px; border-radius:12px; background:#fff; border:1px solid #dfe7f1; }
-    .viability-fact span { display:block; font-size:10px; color:#62748b; text-transform:uppercase; letter-spacing:.06em; }
-    .viability-fact b { display:block; margin-top:4px; font-size:16px; color:#1b2a41; }
-    .viability-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; margin-top:10px; }
-    .viability-group { padding:10px; border-radius:12px; background:#fff; border:1px solid #dfe7f1; }
-    .viability-group-title { font-size:13px; font-weight:700; color:#1b2a41; margin-bottom:6px; }
-    .viability-group-line { font-size:11px; color:#4e6582; line-height:1.4; }
-    .tone-good { color:#2e8b57; }
-    .tone-warn { color:#a06b18; }
-    .tone-bad { color:#c05757; }
-    .table-wrap { overflow:hidden; border-radius:14px; border:1px solid var(--border); background:#fff; position:relative; }
-    .table-scroll { overflow:auto; max-height:calc(100vh - 190px); border-radius:14px; }
-    table { width:100%; border-collapse:collapse; font-size:11px; min-width:900px; }
-    th,td { padding:6px 7px; border-bottom:1px solid #e5ecf4; vertical-align:top; }
-    th { position:sticky; top:0; background:#f1f6fc; color:#35506f; text-align:left; z-index:2; }
-    tr:hover td { background:#f7faff; }
-    tr.section-row td { background:#edf4fd; color:#1b2a41; font-weight:700; border-bottom-color:#d4e0ef; }
-    tr.section-row:hover td { background:#edf4fd; }
-    tr.sheet-total-row td { background:#fff3f3; color:#a94444; font-weight:700; border-top:1px solid #f0c5c5; border-bottom:1px solid #f0c5c5; }
-    tr.sheet-break-row td { background:#f9dde0; border-bottom:0; height:14px; padding:0; }
-    .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-    .name { min-width:300px; }
-    .tag { display:inline-flex; border-radius:999px; padding:2px 7px; border:1px solid #cfd9e8; background:#f4f8fd; color:#35506f; font-size:10px; white-space:nowrap; }
-    .where { color:#62748b; font-size:10px; line-height:1.3; }
-    .market-box { display:grid; gap:10px; }
-    .market-links { display:flex; flex-wrap:wrap; gap:10px; }
-    .market-link-chip { display:inline-flex; align-items:center; gap:8px; text-decoration:none; border:1px solid #cfd9e8; background:#fff; color:#1f3957; border-radius:12px; padding:10px 14px; font-weight:700; }
-    .market-link-chip:hover { border-color:#9ec0ef; color:#173a65; background:#f5f9ff; }
-    .market-links-note { font-size:12px; line-height:1.45; }
-    .status-box { background:#f8fbff; border:1px solid #dfe7f1; border-radius:12px; padding:12px; }
-    .status-line { color:var(--muted); font-size:12px; }
-    .logs { margin:0; background:#fff; border:1px solid #dfe7f1; border-radius:12px; padding:10px; max-height:200px; overflow:auto; white-space:pre-wrap; font-size:12px; color:#576a84; }
-    .crm-drawer[hidden] { display:none; }
-    .crm-drawer { position:fixed; inset:0; z-index:90; }
-    .crm-drawer-backdrop {
-      position:absolute;
-      inset:0;
-      background:rgba(17, 32, 53, 0.34);
-      backdrop-filter:blur(2px);
-      opacity:0;
-      transition:opacity .26s ease;
-    }
-    .crm-drawer-panel {
-      position:absolute;
-      top:0;
-      right:0;
-      width:min(50vw, 760px);
-      height:100%;
-      background:linear-gradient(180deg,#ffffff,#f8fbff);
-      border-left:1px solid #dfe7f1;
-      box-shadow:-16px 0 40px rgba(33, 63, 110, 0.14);
-      display:flex;
-      flex-direction:column;
-      transform:translateX(100%);
-      transition:transform .3s cubic-bezier(.2,.8,.2,1);
-    }
-    .crm-drawer.is-open .crm-drawer-backdrop { opacity:1; }
-    .crm-drawer.is-open .crm-drawer-panel { transform:translateX(0); }
-    .crm-drawer-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:18px 18px 12px; border-bottom:1px solid #e6edf6; }
-    .crm-drawer-title { margin:0; font-size:20px; color:#1b2a41; }
-    .crm-drawer-sub { margin:6px 0 0; color:#62748b; font-size:12px; line-height:1.45; }
-    .crm-drawer-close { border:1px solid #d8e2ef; background:#f7fbff; color:#506985; border-radius:10px; padding:8px 10px; font-size:12px; font-weight:700; cursor:pointer; }
-    .crm-drawer-body { padding:14px 18px 18px; overflow:auto; display:grid; gap:12px; }
-    .crm-source-card { padding:12px; border-radius:14px; border:1px solid #dfe7f1; background:linear-gradient(180deg,#eef5ff,#f8fbff); }
-    .crm-source-card strong { display:block; color:#1b2a41; font-size:14px; }
-    .crm-source-card span { display:block; margin-top:4px; color:#62748b; font-size:12px; line-height:1.45; }
-    .crm-form-grid { display:grid; gap:10px; }
-    .crm-new-project-fields { display:grid; gap:10px; }
-    .crm-new-project-fields[hidden] { display:none; }
-    .crm-form-grid label { font-size:12px; }
-    .crm-form-grid label small { display:block; margin-top:5px; color:#718198; line-height:1.35; }
-    .crm-status { min-height:18px; color:#62748b; font-size:12px; line-height:1.4; }
-    .crm-status.is-error { color:#b14b4b; }
-    .crm-status.is-success { color:#257347; }
-    .crm-drawer-foot { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; padding-top:4px; }
-    @media (max-width:760px){
-      .filters{align-items:stretch;flex-direction:column}
-      .btn,input,select,textarea{width:100%;box-sizing:border-box}
-      .crm-drawer-panel { width:100vw; }
-    }
-  </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
-</head>
-<body class="autobot-page estimate-detail-page">
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы AutoBot">
-      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
-      <a class="topnav-primary" href="/tenders">Тендеры</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
-  <div class="page">
-    <div class="page-head">
-      <a class="top-back" href="/estimates">← Все сметы</a>
-      <div class="page-head-actions">
-        <button class="btn danger-soft icon-only" type="button" onclick="deleteEstimate(this)" title="Удалить смету" aria-label="Удалить смету">
-          <svg class="icon-trash" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 7h16"></path>
-            <path d="M10 11v6"></path>
-            <path d="M14 11v6"></path>
-            <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"></path>
-            <path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"></path>
-          </svg>
-        </button>
-      </div>
-    </div>
-    <h1>{{ meta.title }}</h1>
-    <div class="muted">{{ meta.original_filename }} · загружено {{ meta.created_at }} · всего строк {{ meta.row_count }}</div>
-
-    <section class="panel">
-      <form class="filters" method="get" action="/estimates/{{ meta.id }}" id="estimateFilterForm">
-        <input type="hidden" name="table_view" id="estimateTableViewInput" value="{{ active_table_view }}" />
-        <label>Поиск по наименованию
-          <input type="text" name="q" value="{{ q }}" placeholder="например: бетон, демонтаж, труба" />
-        </label>
-        <button class="btn" type="submit">Применить</button>
-        <a class="btn secondary" href="/estimates/{{ meta.id }}">Сбросить</a>
-      </form>
-      <div class="type-picker">
-        <div class="type-picker-title">Фильтр по типам позиций</div>
-        <div class="type-checks">
-          {% for opt in type_options %}
-          <label class="type-check">
-            <input type="checkbox" name="types" value="{{ opt.key }}" form="estimateFilterForm" {% if opt.key in selected_types %}checked{% endif %} />
-            <span>
-              <strong>{{ opt.label }}</strong>
-              <span>Строк: {{ opt.count }}</span>
-            </span>
-          </label>
-          {% endfor %}
-        </div>
-      </div>
-      <div class="summary" style="margin-top:12px;">
-        <div class="summary-item"><span>Строк после фильтра</span><b>{{ summary.row_count }}</b></div>
-        <div class="summary-item"><span>Общее количество / объём</span><b>{{ summary.qty_text }}</b></div>
-        <div class="summary-item"><span>Общая сумма</span><b>{{ summary.total_sum_fmt }}</b></div>
-        <div class="summary-item"><span>Средняя цена</span><b>{{ summary.avg_price_fmt }}</b></div>
-      </div>
-      {% if reconciliation.available %}
-      <div class="reconciliation-note{% if reconciliation.needs_attention %} needs-attention{% endif %}" role="note">
-        <strong>Сверка исходной сметы</strong>
-        <div class="reconciliation-values">
-          <span>Итог файла: <b>{{ reconciliation.declared_total_fmt }}</b></span>
-          <span>Позиции с корректировками: <b>{{ reconciliation.signed_total_fmt }}</b></span>
-          <span>Разница: <b>{{ reconciliation.difference_fmt }}</b></span>
-        </div>
-        {% if reconciliation.adjustment_count %}
-        <div class="reconciliation-explain">
-          В закупки вошли только положительные позиции. Отрицательные корректировки: {{ reconciliation.adjustment_count }} на {{ reconciliation.adjustment_total_fmt }} — они сохранены в исходном Excel и учтены при сверке.
-        </div>
-        {% endif %}
-        {% if reconciliation.has_difference %}
-        <div class="reconciliation-explain">
-          Разница итога не добавлена отдельной закупкой: проверьте итоговые начисления в исходном Excel.
-        </div>
-        {% endif %}
-      </div>
-      {% endif %}
-      <div class="crm-callout">
-        <button class="btn" id="estimateCrmOpenBtn" type="button">Добавить в объекты</button>
-        <div class="crm-callout-note">
-          На основе сметы <strong>{{ crm_prefill.estimate_title }}</strong>. Поля объекта можно открыть и отредактировать перед созданием.
-        </div>
-      </div>
-      <div class="download-box">
-        <div class="download-title">Таблица ниже</div>
-        <div class="table-switch">
-          <button class="btn secondary{% if active_table_view == 'estimate' %} is-active{% endif %}" type="button" data-estimate-view-btn="estimate" data-download-href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" data-download-label="Смета">Смета</button>
-          <button class="btn secondary{% if active_table_view == 'compare' %} is-active{% endif %}" type="button" data-estimate-view-btn="compare" data-download-href="/estimates/{{ meta.id }}/market-compare.xlsx?{{ filter_query }}" data-download-label="Смета vs Рынок" {% if not compare_table.available %}disabled{% endif %}>Смета vs Рынок</button>
-          <button class="btn secondary{% if active_table_view == 'sources' %} is-active{% endif %}" type="button" data-estimate-view-btn="sources" data-download-href="/estimates/{{ meta.id }}/market-sources.xlsx?{{ filter_query }}" data-download-label="Источники цен" {% if not sources_table.available %}disabled{% endif %}>Источники цен</button>
-          <a class="btn" id="activeTableDownloadBtn" href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}">Скачать Excel</a>
-        </div>
-        <div class="download-note">Сначала выберите нужную таблицу, потом нажмите скачать Excel для текущей вкладки.</div>
-      </div>
-      {% if viability.title %}
-      <div class="viability-box {{ viability.tone }}">
-        <h2 class="viability-title">{{ viability.title }}</h2>
-        <div class="viability-sub">{{ viability.subtitle }}</div>
-        {% if viability.facts %}
-        <div class="viability-facts">
-          {% for fact in viability.facts %}
-          <div class="viability-fact">
-            <span>{{ fact.label }}</span>
-            <b>{{ fact.value }}</b>
-          </div>
-          {% endfor %}
-        </div>
-        {% endif %}
-        {% if viability.groups %}
-        <div class="viability-groups">
-          {% for group in viability.groups %}
-          <div class="viability-group">
-            <div class="viability-group-title">{{ group.title }}</div>
-            <div class="viability-group-line"><span class="tone-good">Выше рынка: {{ group.good }}</span></div>
-            <div class="viability-group-line"><span class="tone-warn">Около рынка: {{ group.warn }}</span></div>
-            <div class="viability-group-line"><span class="tone-bad">Ниже рынка: {{ group.bad }}</span></div>
-            <div class="viability-group-line">Без данных: {{ group.none }}</div>
-          </div>
-          {% endfor %}
-        </div>
-        {% endif %}
-      </div>
-      {% endif %}
-    </section>
-
-    <section class="panel">
-      <div style="display:grid;gap:10px;">
-        <div>
-          <h2 style="margin:0 0 8px;">Сравнение по найденным ценам</h2>
-          <div class="muted market-links-note">Откройте нужный тип позиций, чтобы посмотреть сайты, цены и найденные источники.</div>
-        </div>
-        {% if market_links %}
-        <div class="market-links">
-          {% for link in market_links %}
-          <a class="market-link-chip" href="{{ link.href }}">{{ link.label }} · {{ link.count }}</a>
-          {% endfor %}
-        </div>
-        {% else %}
-        <div class="status-box">
-          <div>Пока нет сохранённых сравнений по текущему фильтру.</div>
-          <div class="status-line">Запустите поиск цен, затем обновите страницу — здесь появятся ссылки на отдельные страницы сравнения.</div>
-        </div>
-        {% endif %}
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="market-box">
-        <div>
-          <h2 style="margin:0 0 8px;">Поиск цен по этой смете</h2>
-          <div class="muted">Ищем цены по интернету и на Авито для строк этой сметы. Можно указать город, чтобы сузить выдачу.</div>
-        </div>
-        <div class="filters">
-          <label>Город для поиска
-            <input type="text" id="marketCityInput" value="{{ market_city }}" placeholder="например: Челябинск" />
-          </label>
-          <button class="btn" type="button" id="marketStartBtn" onclick="toggleEstimateMarket()">Найти цены</button>
-          <a class="btn secondary" id="marketMergedBtn" href="/estimates/{{ meta.id }}/market-compare.xlsx" {% if not has_market_merged %}hidden{% endif %}>Excel: смета vs рынок</a>
-          <a class="btn secondary" id="marketRawBtn" href="/estimates/{{ meta.id }}/market-sources.xlsx" {% if not has_market_raw %}hidden{% endif %}>Excel: источники рынка</a>
-        </div>
-        <div class="status-box">
-          <div id="marketStatusMain">Пока поиск рынка не запускался.</div>
-          <div class="status-line" id="marketStatusDetail"></div>
-        </div>
-        <pre class="logs" id="marketLogs">—</pre>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="table-panel" data-estimate-view-panel="estimate" {% if active_table_view != 'estimate' %}hidden{% endif %}>
-        <div class="table-panel-head">
-          <h2 class="table-panel-title">Смета</h2>
-        </div>
-      <div class="table-wrap">
-        <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>№</th>
-              <th>Тип</th>
-              <th class="name">Наименование</th>
-              <th>Ед.</th>
-              <th class="num">Кол-во</th>
-              <th class="num">Цена за ед.</th>
-              <th class="num">Сумма</th>
-              <th>Где найдено</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in rows %}
-            {% if r._is_section %}
-            <tr class="section-row">
-              <td colspan="8">{{ r.section_title }}</td>
-            </tr>
-            {% elif r._is_sheet_total %}
-            <tr class="sheet-total-row">
-              <td colspan="6">Итого по листу: {{ r.sheet_title or "без названия" }}</td>
-              <td class="num">{{ r.sheet_total_fmt }}</td>
-              <td></td>
-            </tr>
-            {% elif r._is_sheet_break %}
-            <tr class="sheet-break-row">
-              <td colspan="8"></td>
-            </tr>
-            {% else %}
-            <tr>
-              <td>{{ r.display_no }}</td>
-              <td><span class="tag">{{ r.type_label }}</span></td>
-              <td class="name">{{ r.name }}</td>
-              <td>{{ r.unit or "—" }}</td>
-              <td class="num">{{ r.qty_fmt }}</td>
-              <td class="num">{{ r.unit_price_fmt }}</td>
-              <td class="num">{{ r.total_fmt }}</td>
-              <td class="where">
-                {% if r.sheet %}лист: {{ r.sheet }}<br>{% endif %}
-                {% if r.excel_row %}строка Excel: {{ r.excel_row }}<br>{% endif %}
-              </td>
-            </tr>
-            {% endif %}
-            {% endfor %}
-            {% if not rows %}
-            <tr><td colspan="8" style="text-align:center;color:#9fb0d6;padding:24px;">По фильтру ничего не найдено.</td></tr>
-            {% endif %}
-          </tbody>
-        </table>
-        </div>
-      </div>
-      </div>
-      <div class="table-panel" data-estimate-view-panel="compare" {% if active_table_view != 'compare' %}hidden{% endif %}>
-        <div class="table-panel-head">
-          <h2 class="table-panel-title">Смета vs Рынок</h2>
-        </div>
-        {% if compare_table.available %}
-        <div class="table-wrap">
-          <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Раздел</th>
-                <th>Тип</th>
-                <th class="name">Наименование</th>
-                <th class="num">Цена сметы</th>
-                <th class="num">Цена рынка</th>
-                <th>Сайт</th>
-                <th>Вывод</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in compare_rows %}
-              <tr>
-                <td class="where">{{ row.section }}</td>
-                <td><span class="tag">{{ row.type_label }}</span></td>
-                <td class="name">{{ row.name }}</td>
-                <td class="num">{{ row.estimate_price }}</td>
-                <td class="num">{{ row.market_price }}</td>
-                <td class="where">
-                  {% if row.site_url %}
-                  <a href="{{ row.site_url }}" target="_blank" rel="noopener noreferrer">{{ row.site }}</a>
-                  {% else %}
-                  {{ row.site }}
-                  {% endif %}
-                </td>
-                <td class="where">
-                  {% if row.compare_class == 'good' %}
-                  <span class="tone-good">{{ row.status }}</span>
-                  {% elif row.compare_class == 'bad' %}
-                  <span class="tone-bad">{{ row.status }}</span>
-                  {% else %}
-                  <span class="tone-warn">{{ row.status }}</span>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          </div>
-        </div>
-        {% else %}
-        <div class="status-box">Сравнение рынка пока не готово. Сначала выполните поиск цен по этой смете.</div>
-        {% endif %}
-      </div>
-      <div class="table-panel" data-estimate-view-panel="sources" {% if active_table_view != 'sources' %}hidden{% endif %}>
-        <div class="table-panel-head">
-          <h2 class="table-panel-title">Источники цен</h2>
-        </div>
-        {% if sources_table.available %}
-        <div class="table-wrap">
-          <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Раздел</th>
-                <th class="name">Наименование</th>
-                <th>Цена рынка</th>
-                <th>Сайт</th>
-                <th>Статус</th>
-                <th>Запрос</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in source_rows %}
-              <tr>
-                <td class="where">{{ row.section }}</td>
-                <td class="name">{{ row.name }}</td>
-                <td class="where">{{ row.market_price }}</td>
-                <td class="where">{{ row.site }}</td>
-                <td class="where">{{ row.status }}</td>
-                <td class="where">{{ row.query }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          </div>
-        </div>
-        {% else %}
-        <div class="status-box">Источники цен пока не готовы. Сначала выполните поиск цен по этой смете.</div>
-        {% endif %}
-      </div>
-    </section>
-  </div>
-  <div class="crm-drawer" id="estimateCrmDrawer" hidden>
-    <div class="crm-drawer-backdrop" id="estimateCrmBackdrop"></div>
-    <aside class="crm-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="estimateCrmDrawerTitle">
-      <div class="crm-drawer-head">
-        <div>
-          <h2 class="crm-drawer-title" id="estimateCrmDrawerTitle">Добавить смету в объект</h2>
-          <div class="crm-drawer-sub">Выберите доступный объект PM.bi. Смета импортируется с вашими текущими правами, а повторная отправка обновит позиции без дублей.</div>
-        </div>
-        <button class="crm-drawer-close" id="estimateCrmCloseBtn" type="button">Закрыть</button>
-      </div>
-      <div class="crm-drawer-body">
-        <div class="crm-source-card">
-          <strong>На основе сметы: {{ crm_prefill.estimate_title }}</strong>
-          <span>{{ crm_prefill.original_filename }} · строк: {{ crm_prefill.row_count }} · сумма: {{ crm_prefill.total_sum_fmt }}</span>
-        </div>
-        <form id="estimateCrmForm" class="crm-form-grid">
-          <label>Объект CRM
-            <select id="estimateCrmProject" name="project_id">
-              <option value="">{% if legacy_crm_export_allowed %}Создать новый объект{% else %}Выберите объект{% endif %}</option>
-            </select>
-            <small id="estimateCrmProjectHint">Загружаю доступные объекты…</small>
-          </label>
-          <div class="crm-new-project-fields" id="estimateCrmNewProjectFields">
-          <label>Название объекта
-            <input type="text" id="estimateCrmTitle" name="title" required />
-          </label>
-          <label>Клиент / заказчик
-            <input type="text" id="estimateCrmClient" name="client_name" />
-          </label>
-          <label>Адрес
-            <input type="text" id="estimateCrmAddress" name="address" />
-          </label>
-          <label>Регион
-            <input type="text" id="estimateCrmRegion" name="region" />
-          </label>
-          <label>Код / договор
-            <input type="text" id="estimateCrmContractNo" name="contract_no" />
-          </label>
-          <label>Бюджет
-            <input type="text" id="estimateCrmBudget" name="budget" inputmode="decimal" />
-          </label>
-          <label>Описание
-            <textarea id="estimateCrmDescription" name="description"></textarea>
-          </label>
-          </div>
-          <div class="crm-status" id="estimateCrmStatus"></div>
-          <div class="crm-drawer-foot">
-            <button class="btn secondary" id="estimateCrmCancelBtn" type="button">Отмена</button>
-            <button class="btn" type="submit" id="estimateCrmSubmitBtn">Создать объект</button>
-          </div>
-        </form>
-      </div>
-    </aside>
-  </div>
-  <script>
-    let estimateMarketRenderFresh = {{ 'true' if (compare_table.available or sources_table.available) else 'false' }};
-    let estimateMarketReloadPending = false;
-    let estimateCrmDrawerTimer = null;
-    let estimateCrmProjectsLoaded = false;
-    const estimateCrmPrefill = {{ crm_prefill|tojson }};
-    const estimateCrmBridge = window.AutoBotCrmBridge || { embedded: false, available: false };
-    const estimateCrmEmbedded = Boolean(estimateCrmBridge.embedded);
-    const estimateCrmLegacyAllowed = {{ 'true' if legacy_crm_export_allowed else 'false' }};
-    const estimateImportCapability = {{ estimate_import_capability|tojson }};
-
-    function setEstimateCrmStatus(message, tone) {
-      const box = document.getElementById("estimateCrmStatus");
-      if (!box) return;
-      box.textContent = message || "";
-      box.classList.toggle("is-error", tone === "error");
-      box.classList.toggle("is-success", tone === "success");
-    }
-
-    function fillEstimateCrmForm(data) {
-      const project = data && data.project ? data.project : {};
-      const budget = project.budget == null ? "" : String(project.budget);
-      const map = {
-        estimateCrmTitle: project.title || "",
-        estimateCrmClient: project.client_name || "",
-        estimateCrmAddress: project.address || "",
-        estimateCrmRegion: project.region || "",
-        estimateCrmContractNo: project.contract_no || "",
-        estimateCrmBudget: budget,
-        estimateCrmDescription: project.description || "",
-      };
-      Object.entries(map).forEach(([id, value]) => {
-        const node = document.getElementById(id);
-        if (node) node.value = value;
-      });
-    }
-
-    function getEstimateCrmFieldValue(id) {
-      const node = document.getElementById(id);
-      return node ? (node.value || "") : "";
-    }
-
-    function syncEstimateCrmMode() {
-      const select = document.getElementById("estimateCrmProject");
-      const submit = document.getElementById("estimateCrmSubmitBtn");
-      const hint = document.getElementById("estimateCrmProjectHint");
-      const newProjectFields = document.getElementById("estimateCrmNewProjectFields");
-      const titleInput = document.getElementById("estimateCrmTitle");
-      const adding = Boolean(select && select.value);
-      if (newProjectFields) newProjectFields.hidden = estimateCrmEmbedded;
-      if (titleInput) titleInput.required = !estimateCrmEmbedded;
-      if (estimateCrmEmbedded && select && select.options.length) select.options[0].textContent = "Выберите объект";
-      if (submit) submit.textContent = estimateCrmEmbedded || adding ? "Добавить смету" : "Создать объект";
-      if (hint && estimateCrmProjectsLoaded) {
-        if (estimateCrmEmbedded) {
-          hint.textContent = adding
-            ? "Смета будет добавлена к выбранному объекту с вашими правами PM.bi."
-            : "Выберите объект, в который нужно добавить смету.";
-        } else {
-          hint.textContent = adding
-            ? "Смета будет добавлена отдельным файлом к выбранному объекту."
-            : "Будет создан новый объект с данными из этой сметы.";
-        }
-      }
-    }
-
-    async function loadEstimateCrmProjects() {
-      if (estimateCrmProjectsLoaded) return;
-      const select = document.getElementById("estimateCrmProject");
-      const hint = document.getElementById("estimateCrmProjectHint");
-      if (!select) return;
-      try {
-        let data = {};
-        if (estimateCrmEmbedded) {
-          if (!estimateCrmBridge.available) {
-            throw new Error(estimateCrmBridge.originMismatch
-              ? "Адрес PM.bi не совпадает с настройкой AutoBot."
-              : "На сервере AutoBot не настроен адрес PM.bi.");
-          }
-          data = await estimateCrmBridge.requestProjects();
-        } else {
-          if (!estimateCrmLegacyAllowed) {
-            throw new Error("Откройте AutoBot внутри PM.bi, чтобы выбрать доступный объект.");
-          }
-          const response = await fetch("/api/tenders/crm/projects", { headers: { "Accept": "application/json" }, cache: "no-store" });
-          data = await response.json().catch(function() { return {}; });
-          if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
-        }
-        const projects = Array.isArray(data.projects) ? data.projects : [];
-        projects.forEach(function(project) {
-          const projectId = Number(project && project.id);
-          if (!Number.isInteger(projectId) || projectId <= 0) return;
-          const option = document.createElement("option");
-          option.value = String(projectId);
-          const contractNo = project.contract_no || project.contractNo || "";
-          option.textContent = "#" + projectId + " · " + (project.title || "Без названия") + (contractNo ? " · " + contractNo : "");
-          select.appendChild(option);
-        });
-        estimateCrmProjectsLoaded = true;
-        if (hint) {
-          hint.textContent = projects.length
-            ? (estimateCrmEmbedded ? "Выберите доступный вам объект." : "Выберите объект или создайте новый.")
-            : (estimateCrmEmbedded ? "У вас пока нет доступных объектов." : "Доступных объектов пока нет — будет создан новый.");
-        }
-        syncEstimateCrmMode();
-      } catch (error) {
-        if (hint) hint.textContent = "Не удалось загрузить объекты: " + (error.message || error);
-      }
-    }
-
-    function navigateEstimateCrmProject(url) {
-      if (!url) return;
-      if (estimateCrmEmbedded) {
-        if (!estimateCrmBridge.navigate(url)) {
-          setEstimateCrmStatus("Смета добавлена. Откройте объект в PM.bi.", "success");
-        }
-        return;
-      }
-      window.location.href = url;
-    }
-
-    window.openEstimateCrmDrawer = function() {
-      const drawer = document.getElementById("estimateCrmDrawer");
-      if (!drawer) return;
-      if (estimateCrmDrawerTimer) {
-        clearTimeout(estimateCrmDrawerTimer);
-        estimateCrmDrawerTimer = null;
-      }
-      fillEstimateCrmForm(estimateCrmPrefill);
-      setEstimateCrmStatus(
-        estimateCrmEmbedded
-          ? "Выберите объект PM.bi для сметы «" + (estimateCrmPrefill.estimate_title || "") + "»."
-          : (estimateCrmLegacyAllowed
-            ? "На основе сметы «" + (estimateCrmPrefill.estimate_title || "") + "»."
-            : "Для добавления сметы откройте AutoBot внутри PM.bi."),
-        estimateCrmEmbedded || estimateCrmLegacyAllowed ? "" : "error"
-      );
-      drawer.hidden = false;
-      requestAnimationFrame(() => drawer.classList.add("is-open"));
-      document.body.style.overflow = "hidden";
-      syncEstimateCrmMode();
-      loadEstimateCrmProjects();
-    };
-
-    window.closeEstimateCrmDrawer = function() {
-      const drawer = document.getElementById("estimateCrmDrawer");
-      if (!drawer) return;
-      drawer.classList.remove("is-open");
-      if (estimateCrmDrawerTimer) clearTimeout(estimateCrmDrawerTimer);
-      estimateCrmDrawerTimer = setTimeout(() => {
-        drawer.hidden = true;
-        estimateCrmDrawerTimer = null;
-      }, 320);
-      document.body.style.overflow = "";
-    };
-
-    window.submitEstimateCrmForm = async function(event) {
-      event.preventDefault();
-      const submitBtn = document.getElementById("estimateCrmSubmitBtn");
-      const payload = {
-        project_id: getEstimateCrmFieldValue("estimateCrmProject") || null,
-        title: getEstimateCrmFieldValue("estimateCrmTitle"),
-        client_name: getEstimateCrmFieldValue("estimateCrmClient"),
-        address: getEstimateCrmFieldValue("estimateCrmAddress"),
-        region: getEstimateCrmFieldValue("estimateCrmRegion"),
-        contract_no: getEstimateCrmFieldValue("estimateCrmContractNo"),
-        budget: getEstimateCrmFieldValue("estimateCrmBudget"),
-        description: getEstimateCrmFieldValue("estimateCrmDescription"),
-      };
-      const addingToExisting = Boolean(payload.project_id);
-      if (estimateCrmEmbedded && !addingToExisting) {
-        setEstimateCrmStatus("Выберите объект PM.bi.", "error");
-        return;
-      }
-      if (!estimateCrmEmbedded && !estimateCrmLegacyAllowed) {
-        setEstimateCrmStatus("Откройте AutoBot внутри PM.bi — так импорт выполнится с вашими правами.", "error");
-        return;
-      }
-      if (submitBtn) submitBtn.disabled = true;
-      setEstimateCrmStatus(addingToExisting ? "Добавляю смету в выбранный объект…" : "Создаю объект в CRM…", "");
-      try {
-        if (estimateCrmEmbedded) {
-          setEstimateCrmStatus("Подготавливаю позиции сметы…", "");
-          const payloadResponse = await fetch("/api/estimates/{{ meta.id }}/crm-import-payload", {
-            method: "GET",
-            headers: {
-              "Accept": "application/json",
-              "X-AutoBot-Estimate-Capability": estimateImportCapability,
-            },
-            cache: "no-store",
-            credentials: "same-origin",
-          });
-          const prepared = await payloadResponse.json().catch(function() { return {}; });
-          if (!payloadResponse.ok || !prepared.ok) {
-            throw new Error(prepared.message || ("Не удалось подготовить смету (HTTP " + payloadResponse.status + ")."));
-          }
-          const importPayload = {
-            items: Array.isArray(prepared.items) ? prepared.items : [],
-            source: prepared.source || {},
-            sourceLabel: prepared.sourceLabel || prepared.label || "Смета",
-            sourceReference: prepared.sourceReference || prepared.reference || "",
-            replace_source: prepared.replace_source !== false,
-          };
-          setEstimateCrmStatus("Передаю смету в PM.bi с вашими правами…", "");
-          const bridgeResponse = await estimateCrmBridge.importEstimate(payload.project_id, importPayload);
-          const data = bridgeResponse.result && typeof bridgeResponse.result === "object"
-            ? bridgeResponse.result
-            : bridgeResponse;
-          const projectId = Number(data.project_id || data.projectId || payload.project_id);
-          const materialsSent = Number(data.materials_sent || data.materialsSent || data.imported || importPayload.items.length);
-          const projectUrl = data.project_url || data.projectUrl || (projectId > 0 ? "/app/projects?openProject=" + projectId + "&tab=schedule" : "");
-          setEstimateCrmStatus("Готово: смета добавлена в объект #" + projectId + ". Строк обработано: " + materialsSent + ".", "success");
-          if (projectUrl) window.setTimeout(function() { navigateEstimateCrmProject(projectUrl); }, 350);
-          return;
-        }
-        const resp = await fetch("/api/estimates/{{ meta.id }}/export-to-crm", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        let data = {};
-        try { data = await resp.json(); } catch (e) {}
-        if (!resp.ok || !data.ok) {
-          setEstimateCrmStatus(data.message || ("Не удалось добавить смету (HTTP " + resp.status + ")."), "error");
-          return;
-        }
-        if (data.added_to_existing) {
-          setEstimateCrmStatus("Готово: смета добавлена в объект #" + data.project_id + ". Строк обновлено: " + (data.materials_sent || 0) + ".", "success");
-          if (data.project_url) navigateEstimateCrmProject(data.project_url);
-          return;
-        }
-        const summary = data.summary || {};
-        setEstimateCrmStatus("Готово: объект #" + data.project_id + " создан. Материалов отправлено: " + (data.materials_sent || 0) + ".", "success");
-        if (data.project_url) navigateEstimateCrmProject(data.project_url);
-      } catch (e) {
-        setEstimateCrmStatus("Не удалось отправить данные в CRM: " + e, "error");
-      } finally {
-        if (submitBtn) submitBtn.disabled = false;
-      }
-    };
-
-    const estimateCrmOpenBtn = document.getElementById("estimateCrmOpenBtn");
-    if (estimateCrmOpenBtn) estimateCrmOpenBtn.addEventListener("click", window.openEstimateCrmDrawer);
-    const estimateCrmBackdrop = document.getElementById("estimateCrmBackdrop");
-    if (estimateCrmBackdrop) estimateCrmBackdrop.addEventListener("click", window.closeEstimateCrmDrawer);
-    const estimateCrmCloseBtn = document.getElementById("estimateCrmCloseBtn");
-    if (estimateCrmCloseBtn) estimateCrmCloseBtn.addEventListener("click", window.closeEstimateCrmDrawer);
-    const estimateCrmCancelBtn = document.getElementById("estimateCrmCancelBtn");
-    if (estimateCrmCancelBtn) estimateCrmCancelBtn.addEventListener("click", window.closeEstimateCrmDrawer);
-    const estimateCrmForm = document.getElementById("estimateCrmForm");
-    if (estimateCrmForm) estimateCrmForm.addEventListener("submit", window.submitEstimateCrmForm);
-    const estimateCrmProject = document.getElementById("estimateCrmProject");
-    if (estimateCrmProject) estimateCrmProject.addEventListener("change", syncEstimateCrmMode);
-
-    async function deleteEstimate(btn) {
-      const title = String({{ meta.title|tojson }});
-      const ok = confirm(`Удалить смету "${title}"?\n\nБудут удалены карточка сметы, её строки и все сохранённые файлы рынка по этой смете.`);
-      if (!ok) return;
-      const initialHtml = btn ? btn.innerHTML : "";
-      if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = "...";
-      }
-      try {
-        const resp = await fetch("/api/estimates/{{ meta.id }}/delete", {
-          method: "POST",
-          headers: { "Accept": "application/json" },
-        });
-        let data = {};
-        try { data = await resp.json(); } catch (e) {}
-        if (!resp.ok || !data.ok) {
-          alert(data.message || ("Не удалось удалить смету (HTTP " + resp.status + ")."));
-          if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = initialHtml;
-          }
-          return;
-        }
-        window.location.href = "/estimates";
-      } catch (e) {
-        alert("Не удалось удалить смету: " + e);
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = initialHtml;
-        }
-      }
-    }
-
-    function setEstimateTableView(viewKey) {
-      const buttons = Array.from(document.querySelectorAll("[data-estimate-view-btn]"));
-      const panels = Array.from(document.querySelectorAll("[data-estimate-view-panel]"));
-      const activeBtn = buttons.find((btn) => btn.getAttribute("data-estimate-view-btn") === viewKey && !btn.disabled) || buttons.find((btn) => !btn.disabled);
-      const nextKey = activeBtn ? activeBtn.getAttribute("data-estimate-view-btn") : "estimate";
-      buttons.forEach((btn) => btn.classList.toggle("is-active", btn === activeBtn));
-      panels.forEach((panel) => {
-        panel.hidden = panel.getAttribute("data-estimate-view-panel") !== nextKey;
-      });
-      const hiddenInput = document.getElementById("estimateTableViewInput");
-      if (hiddenInput) hiddenInput.value = nextKey;
-      const downloadBtn = document.getElementById("activeTableDownloadBtn");
-      if (downloadBtn && activeBtn) {
-        downloadBtn.href = activeBtn.getAttribute("data-download-href") || "#";
-        const label = activeBtn.getAttribute("data-download-label") || "";
-        downloadBtn.textContent = label ? ("Скачать Excel: " + label) : "Скачать Excel";
-      }
-    }
-
-    document.querySelectorAll("[data-estimate-view-btn]").forEach((btn) => {
-      btn.addEventListener("click", function() {
-        if (btn.disabled) return;
-        setEstimateTableView(btn.getAttribute("data-estimate-view-btn") || "estimate");
-      });
-    });
-
-    async function refreshEstimateMarketStatus() {
-      try {
-        const resp = await fetch("/api/estimates/{{ meta.id }}/market-status");
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const main = document.getElementById("marketStatusMain");
-        const detail = document.getElementById("marketStatusDetail");
-        const logs = document.getElementById("marketLogs");
-        const startBtn = document.getElementById("marketStartBtn");
-        const mergedBtn = document.getElementById("marketMergedBtn");
-        const rawBtn = document.getElementById("marketRawBtn");
-        const compareBtn = document.querySelector('[data-estimate-view-btn="compare"]');
-        const sourcesBtn = document.querySelector('[data-estimate-view-btn="sources"]');
-        if (startBtn) {
-          startBtn.dataset.running = data.running ? "1" : "0";
-          startBtn.disabled = startBtn.dataset.busy === "1";
-          startBtn.textContent = data.running ? "Остановить поиск" : "Найти цены";
-          startBtn.classList.toggle("is-stop", !!data.running);
-        }
-        if (mergedBtn) mergedBtn.hidden = !data.has_merged;
-        if (rawBtn) rawBtn.hidden = !data.has_raw;
-        if (!data.running && !estimateMarketRenderFresh && (data.has_merged || data.has_raw) && !estimateMarketReloadPending) {
-          estimateMarketRenderFresh = true;
-          estimateMarketReloadPending = true;
-          if (compareBtn && data.has_merged) compareBtn.disabled = false;
-          if (sourcesBtn && data.has_raw) sourcesBtn.disabled = false;
-          const nextUrl = new URL(window.location.href);
-          nextUrl.searchParams.set("table_view", data.has_merged ? "compare" : "sources");
-          window.location.replace(nextUrl.toString());
-          return;
-        }
-        if (main) {
-          if (data.running) {
-            main.textContent = "Идёт поиск цен: " + (data.done || 0) + " / " + (data.total || 0);
-          } else if (data.result_ok) {
-            main.textContent = "Поиск рынка завершён.";
-          } else if (data.error) {
-            main.textContent = "Поиск завершился с ошибкой.";
-          } else {
-            main.textContent = "Пока поиск рынка не запускался.";
-          }
-        }
-        if (detail) {
-          const bits = [];
-          if (data.stage) bits.push(data.stage);
-          if (data.detail) bits.push(data.detail);
-          if (data.city) bits.push("город: " + data.city);
-          detail.textContent = bits.join(" · ");
-        }
-        if (logs) {
-          const arr = Array.isArray(data.log_tail) ? data.log_tail : [];
-          logs.textContent = arr.length ? arr.join("\\n") : "—";
-          logs.scrollTop = logs.scrollHeight;
-        }
-      } catch (e) {}
-    }
-
-    async function toggleEstimateMarket() {
-      const btn = document.getElementById("marketStartBtn");
-      const isRunning = btn && btn.dataset.running === "1";
-      if (isRunning) {
-        await stopEstimateMarket();
-      } else {
-        await startEstimateMarket();
-      }
-    }
-
-    async function startEstimateMarket() {
-      const cityInput = document.getElementById("marketCityInput");
-      const city = cityInput ? String(cityInput.value || "").trim() : "";
-      const selectedTypes = Array.from(document.querySelectorAll('input[name="types"]:checked')).map(x => String(x.value || ""));
-      const btn = document.getElementById("marketStartBtn");
-      if (btn) {
-        btn.dataset.busy = "1";
-        btn.disabled = true;
-      }
-      try {
-        const resp = await fetch("/api/estimates/{{ meta.id }}/market-start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city, selected_types: selectedTypes })
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          alert(data.message || "Не удалось запустить поиск рынка");
-        }
-      } catch (e) {
-        alert("Не удалось запустить поиск рынка");
-      } finally {
-        if (btn) btn.dataset.busy = "0";
-        refreshEstimateMarketStatus();
-      }
-    }
-
-    async function stopEstimateMarket() {
-      const btn = document.getElementById("marketStartBtn");
-      if (btn) {
-        btn.dataset.busy = "1";
-        btn.disabled = true;
-      }
-      try {
-        const resp = await fetch("/api/estimates/{{ meta.id }}/market-stop", { method: "POST" });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          alert(data.message || "Не удалось остановить поиск");
-        }
-      } catch (e) {
-        alert("Не удалось остановить поиск");
-      } finally {
-        if (btn) btn.dataset.busy = "0";
-        refreshEstimateMarketStatus();
-      }
-    }
-
-    setEstimateTableView("{{ active_table_view }}");
-    refreshEstimateMarketStatus();
-    setInterval(refreshEstimateMarketStatus, 3000);
-  </script>
-</body>
-</html>
-"""
 
 
 ESTIMATE_MARKET_VIEW_TEMPLATE = """
@@ -9725,18 +8771,20 @@ def estimate_detail_page(estimate_id: str):
                 "sheet_total_fmt": _fmt_money(current_sheet_total if current_sheet_has_sum else None),
             }
         )
+    # Capture before reading: a report replaced during rendering triggers a fresh page next poll.
+    market_revision = _estimate_market_revision(estimate_id)
     market_path = _estimate_market_raw_path(estimate_id)
     if not market_path.is_file():
         market_path = _estimate_market_merged_path(estimate_id)
     compare_df = _estimate_market_df_for_rows(market_path, rows)
-    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows)
+    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows, preserve_candidates=True)
     compare_rows = _estimate_compare_rows(rows, compare_df)
     source_rows = _estimate_source_rows(rows, raw_df)
     scope_info = _estimate_market_scope_info(meta, selected_types)
     table_views = {
         "estimate": {"available": bool(rows)},
-        "compare": {"available": bool(compare_rows)},
-        "sources": {"available": bool(source_rows)},
+        "compare": {"available": not compare_df.empty},
+        "sources": {"available": bool(rows) and not raw_df.empty},
     }
     active_table_view = _pick_estimate_active_table_view(request.args.get("table_view", ""), table_views)
     viability = _estimate_viability_overview(compare_df, compare_rows, scope_info)
@@ -9744,9 +8792,12 @@ def estimate_detail_page(estimate_id: str):
     market_links = _estimate_market_links(estimate_id, market_sections, q=q, selected_types=selected_types)
     crm_prefill = _estimate_crm_prefill(estimate_id)
     reconciliation = _estimate_reconciliation_view(meta)
-    return render_template_string(
-        ESTIMATE_DETAIL_TEMPLATE,
+    return render_template(
+        "estimate_detail.html",
         meta=meta,
+        original_available=_estimate_original_path(estimate_id, meta) is not None,
+        market_revision=market_revision,
+        scope_info=scope_info,
         rows=rows_view,
         q=q,
         selected_types=selected_types,
@@ -9769,6 +8820,32 @@ def estimate_detail_page(estimate_id: str):
         estimate_import_capability=_issue_estimate_import_capability(estimate_id),
         legacy_crm_export_allowed=_legacy_browser_crm_export_allowed(),
     )
+
+
+@app.get('/estimates/workspace.css')
+def estimate_workspace_css():
+    return app.send_static_file('estimate_workspace.css')
+
+
+@app.get('/estimates/workspace.js')
+def estimate_workspace_js():
+    return app.send_static_file('estimate_workspace.js')
+
+
+@app.get('/estimates/<estimate_id>/original')
+def estimate_original_download(estimate_id: str):
+    if not re.fullmatch(r'[0-9a-fA-F-]{1,40}', estimate_id or ''):
+        abort(404)
+    meta = _load_estimate_meta(estimate_id)
+    path = _estimate_original_path(estimate_id, meta) if meta else None
+    if path is None:
+        abort(404)
+    name = re.split(r'[/\\]', str(meta.get('original_filename') or path.name))[-1]
+    name = re.sub(r'[\x00-\x1f\x7f]', '', name) or path.name
+    response = send_file(path, as_attachment=True, download_name=name, max_age=0)
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 
 @app.route("/estimates/<estimate_id>/market-view")
@@ -9925,7 +9002,7 @@ def estimate_market_sources_download_xlsx(estimate_id: str):
     q = (request.args.get("q", "") or "").strip()
     selected_types = _normalize_selected_estimate_types(request.args.getlist("types"))
     rows = _filter_estimate_rows(rows_all, q=q, selected_types=selected_types)
-    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows)
+    raw_df = _estimate_market_df_for_rows(_estimate_market_raw_path(estimate_id), rows, preserve_candidates=True)
     source_rows = _estimate_source_rows(rows, raw_df)
     if not source_rows:
         abort(404)
@@ -10044,6 +9121,7 @@ def api_estimate_market_status(estimate_id: str):
         "ended_at": job.get("ended_at"),
         "has_raw": _estimate_market_raw_path(estimate_id).is_file(),
         "has_merged": _estimate_market_merged_path(estimate_id).is_file(),
+        "market_revision": _estimate_market_revision(estimate_id),
     }
     return jsonify(payload)
 

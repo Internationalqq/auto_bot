@@ -10,6 +10,8 @@ class SecureCrmEmbedBridgeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.web_ui = (REPO_ROOT / "autobot" / "web_ui.py").read_text(encoding="utf-8")
         cls.bridge = (REPO_ROOT / "autobot" / "static" / "embed_bridge.js").read_text(encoding="utf-8")
+        cls.estimate_script = (REPO_ROOT / "autobot" / "static" / "estimate_workspace.js").read_text(encoding="utf-8")
+        cls.estimate_template = (REPO_ROOT / "autobot" / "templates" / "estimate_detail.html").read_text(encoding="utf-8")
 
     def test_bridge_uses_correlated_messages_and_exact_parent_origin(self) -> None:
         for message_type in (
@@ -34,14 +36,15 @@ class SecureCrmEmbedBridgeTests(unittest.TestCase):
         self.assertNotIn("cookie", self.bridge.casefold())
 
     def test_embedded_estimate_flow_reads_local_payload_then_asks_parent_to_write(self) -> None:
-        embedded_branch = self.web_ui.split("if (estimateCrmEmbedded) {", 4)[4].split(
-            'const resp = await fetch("/api/estimates/{{ meta.id }}/export-to-crm"', 1
-        )[0]
+        self.assertIn('/estimates/workspace.js', self.estimate_template)
+        submit = self.estimate_script.split('window.submitEstimateCrmForm =', 1)[1]
+        embedded_branch = submit.split("if (estimateCrmEmbedded) {", 1)[1].split('const resp = await fetch(', 1)[0]
         self.assertIn('/crm-import-payload"', embedded_branch)
         self.assertIn("X-AutoBot-Estimate-Capability", embedded_branch)
         self.assertIn("estimateCrmBridge.importEstimate", embedded_branch)
         self.assertNotIn("PMBI_CRM_PASSWORD", embedded_branch)
         self.assertNotIn("/api/crm/projects", embedded_branch)
+        self.assertNotIn('/export-to-crm', embedded_branch)
 
     def test_payload_api_is_read_only_capability_scoped_and_not_cached(self) -> None:
         route = self.web_ui.split('@app.route("/api/estimates/<estimate_id>/crm-import-payload")', 1)[1].split(
@@ -65,8 +68,8 @@ class SecureCrmEmbedBridgeTests(unittest.TestCase):
 
     def test_standalone_service_account_ui_requires_explicit_opt_in(self) -> None:
         self.assertIn("PMBI_ALLOW_LEGACY_BROWSER_CRM_EXPORT", self.web_ui)
-        self.assertIn("if (!estimateCrmLegacyAllowed)", self.web_ui)
-        self.assertIn("Откройте AutoBot внутри PM.bi", self.web_ui)
+        self.assertIn("if (!estimateCrmLegacyAllowed)", self.estimate_script)
+        self.assertIn("Откройте AutoBot внутри PM.bi", self.estimate_script)
 
 
 if __name__ == "__main__":
