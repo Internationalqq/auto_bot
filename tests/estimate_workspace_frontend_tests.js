@@ -15,7 +15,7 @@ function harness(initial = {}, config = {}, bridge = null, storage = new Map()) 
     'data-download-href':'/download/'+key+'?q=бетон&types=material','data-download-label':key}));
   const panels = ['estimate','compare','sources'].map(key => node({'data-estimate-view-panel':key}));
   const ids = Object.fromEntries(['marketStatusMain','marketStatusDetail','marketLogs','marketLogDetails',
-    'marketStartBtn','marketCityInput','estimateTableViewInput','activeTableDownloadBtn'].map(id=>[id,node()]));
+    'marketStartBtn','marketCityInput','estimateTableViewInput','activeTableDownloadBtn','estimateMarketSettings'].map(id=>[id,node()]));
   ids.marketCityInput.value='Ярославль';
   ids.estimatePageConfig={textContent:JSON.stringify({estimateId:'aabbcc',title:'Смета',marketRevision:'old',activeTableView:'estimate',crmPrefill:{},...config})};
   const context = {
@@ -42,6 +42,11 @@ function harness(initial = {}, config = {}, bridge = null, storage = new Map()) 
   await first.context.poll();
   assert.equal(first.redirects.length,0);
   assert.equal(first.ids.marketStartBtn.textContent,'Остановить поиск');
+  assert.equal(first.ids.estimateMarketSettings.open,true,'A running search reveals its controls');
+  first.ids.estimateMarketSettings.open=false;
+  first.responses.push(reply({running:true,has_raw:true,market_revision:'new',done:2,total:3}));
+  await first.context.poll();
+  assert.equal(first.ids.estimateMarketSettings.open,false,'Polling respects a manually collapsed search');
   first.responses.push(reply({running:false,has_raw:true,has_merged:true,market_revision:'new'}));
   await first.context.poll();
   assert.equal(first.redirects.length,1);
@@ -63,6 +68,7 @@ function harness(initial = {}, config = {}, bridge = null, storage = new Map()) 
   assert.match(stored.ids.marketStatusDetail.textContent,/Источник недоступен/);
   assert.equal(stored.ids.marketLogs.textContent,'Одна\nДве');
   assert.equal(stored.ids.marketLogDetails.hidden,false);
+  assert.equal(stored.ids.estimateMarketSettings.open,true,'An error reveals the search details');
   stored.responses.push(new Error('offline'));
   await stored.context.poll();
   assert.equal(stored.ids.marketStartBtn.disabled,true);

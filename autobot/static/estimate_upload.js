@@ -52,6 +52,8 @@
   }
   function render(data) {
     panel.hidden = false;
+    const disclosure = panel.closest?.("details.upload-card");
+    if (disclosure) disclosure.open = true;
     const value = Math.max(0, Math.min(data.result_ok ? 100 : 99, Number(data.progress) || 0));
     byId('estimateUploadFill').style.width = value + '%';
     byId('estimateUploadPct').textContent = (data.progress_estimated ? '≈ ' : '') + value + '%';

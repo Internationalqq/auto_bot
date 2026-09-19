@@ -1,3 +1,4 @@
+{% from "ui_icons.html" import icon %}
 
 <!doctype html>
 <html lang="ru">
@@ -8,8 +9,8 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>{{ meta.title }} · Смета</title>
   <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
-  <link rel="stylesheet" href="/estimates/workspace.css?v=20260915-queue-1" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260919-workspace-1" />
+  <link rel="stylesheet" href="/estimates/workspace.css?v=20260919-workspace-1" />
 </head>
 <body class="autobot-page estimate-workspace-page">
   <header class="topbar autobot-section-bar">
@@ -48,7 +49,7 @@
       </div>
       <details class="estimate-inspection" {% if reconciliation.needs_attention %}open{% endif %}>
         <summary>Объёмы и сверка сметы</summary>
-        <div class="estimate-measures"><span>Количество / объём: <b>{{ summary.qty_text }}</b></span><span>Средняя цена: <b>{{ summary.avg_price_fmt }}</b></span></div>
+        <div class="estimate-measures"><span>Количество / объём: <b>{{ summary.qty_text }}</b></span></div>
       {% if reconciliation.available %}
       <div class="reconciliation-note{% if reconciliation.needs_attention %} needs-attention{% endif %}" role="note">
         <strong>Сверка исходной сметы</strong>
@@ -74,27 +75,27 @@
       </details>
     </section>
 
-    <section class="estimate-panel estimate-market" aria-labelledby="estimateMarketTitle">
+    <details class="estimate-panel estimate-market" id="estimateMarketSettings" {% if not has_market_raw and not has_market_merged %}open{% endif %}>
+      <summary class="estimate-market-summary"><span id="estimateMarketTitle">{{ icon("search") }} Поиск цен у поставщиков</span><span id="marketStatusMain" role="status" aria-live="polite">{% if has_market_raw or has_market_merged %}Сохранённые цены доступны во вкладках.{% else %}Поиск ещё не запускался.{% endif %}</span></summary>
       <div class="estimate-market-heading">
-        <div><p class="estimate-eyebrow">Следующий шаг</p><h2 id="estimateMarketTitle">{% if has_market_raw or has_market_merged %}Уточните рыночные цены{% else %}Найдём цены для сравнения{% endif %}</h2><p class="estimate-muted">Цифры любят порядок: проверьте позиции, затем сравните их с предложениями рынка.</p></div>
+        <div><p class="estimate-muted">Подтверждённые предложения попадут в сравнение. Остальные — в источники для проверки.</p></div>
         <div class="estimate-market-form">
           <label for="marketCityInput">Город для поиска</label>
           <div><input type="text" id="marketCityInput" value="{{ market_city }}" placeholder="Например, Челябинск" maxlength="120" /><button class="btn" type="button" id="marketStartBtn" onclick="toggleEstimateMarket()" disabled>Найти цены</button></div>
         </div>
       </div>
-      <p class="estimate-scope">Поиск работает по выбранным ниже типам позиций. Текстовый фильтр применяется только к таблице.</p>
-      <p class="estimate-scope">Сейчас ищем по сайтам поставщиков и подрядчиков. Поиск по Авито ещё не подключён. Задание сохраняется при закрытии страницы.</p>
+      <details class="estimate-search-scope"><summary>Какие позиции ищем</summary><p>Поиск работает по выбранным ниже типам позиций. Текстовый фильтр применяется только к таблице. Проверяем сайты поставщиков и подрядчиков; Авито пока не подключено. Страницу можно закрыть — задание сохранится.</p></details>
       {% if scope_info.has_notice %}<div class="reconciliation-note needs-attention"><strong>{{ scope_info.title }}</strong><div>{{ scope_info.text }}</div></div>{% endif %}
-      <div class="estimate-market-status" role="status" aria-live="polite"><div id="marketStatusMain">{% if has_market_raw or has_market_merged %}Сохранённые цены доступны во вкладках.{% else %}Поиск ещё не запускался.{% endif %}</div><div id="marketStatusDetail"></div></div>
+      <div class="estimate-market-status"><div id="marketStatusDetail"></div></div>
       <details class="estimate-log" id="marketLogDetails" hidden><summary>Журнал поиска</summary><pre id="marketLogs"></pre></details>
-    </section>
+    </details>
 
     <section class="estimate-panel estimate-data" aria-label="Позиции и рыночные цены">
       <div class="estimate-data-toolbar">
         <div class="estimate-tabs" role="tablist" aria-label="Таблицы сметы">
-          <button class="estimate-tab{% if active_table_view == 'estimate' %} is-active{% endif %}" role="tab" id="estimateTabPositions" aria-controls="estimatePanelPositions" type="button" data-estimate-view-btn="estimate" data-download-href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" data-download-label="Позиции">Позиции</button>
-          <button class="estimate-tab{% if active_table_view == 'compare' %} is-active{% endif %}" role="tab" id="estimateTabCompare" aria-controls="estimatePanelCompare" type="button" data-estimate-view-btn="compare" data-download-href="/estimates/{{ meta.id }}/market-compare.xlsx?{{ filter_query }}" data-download-label="Сравнение" {% if not compare_table.available %}disabled title="{% if not summary.row_count %}Измените фильтр — в таблице нет строк{% else %}Сначала найдите рыночные цены{% endif %}"{% endif %}>Сравнение цен</button>
-          <button class="estimate-tab{% if active_table_view == 'sources' %} is-active{% endif %}" role="tab" id="estimateTabSources" aria-controls="estimatePanelSources" type="button" data-estimate-view-btn="sources" data-download-href="/estimates/{{ meta.id }}/market-sources.xlsx?{{ filter_query }}" data-download-label="Источники" {% if not sources_table.available %}disabled title="{% if not summary.row_count %}Измените фильтр — в таблице нет строк{% else %}Сначала найдите источники цен{% endif %}"{% endif %}>Источники</button>
+          <button class="estimate-tab{% if active_table_view == 'estimate' %} is-active{% endif %}" role="tab" id="estimateTabPositions" aria-controls="estimatePanelPositions" type="button" data-estimate-view-btn="estimate" data-download-href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" data-download-label="Позиции">{{ icon("table") }} Позиции</button>
+          <button class="estimate-tab{% if active_table_view == 'compare' %} is-active{% endif %}" role="tab" id="estimateTabCompare" aria-controls="estimatePanelCompare" type="button" data-estimate-view-btn="compare" data-download-href="/estimates/{{ meta.id }}/market-compare.xlsx?{{ filter_query }}" data-download-label="Сравнение" {% if not compare_table.available %}disabled title="{% if not summary.row_count %}Измените фильтр — в таблице нет строк{% else %}Сначала найдите рыночные цены{% endif %}"{% endif %}>{{ icon("chart") }} Сравнение цен</button>
+          <button class="estimate-tab{% if active_table_view == 'sources' %} is-active{% endif %}" role="tab" id="estimateTabSources" aria-controls="estimatePanelSources" type="button" data-estimate-view-btn="sources" data-download-href="/estimates/{{ meta.id }}/market-sources.xlsx?{{ filter_query }}" data-download-label="Источники" {% if not sources_table.available %}disabled title="{% if not summary.row_count %}Измените фильтр — в таблице нет строк{% else %}Сначала найдите источники цен{% endif %}"{% endif %}>{{ icon("search") }} Предложения</button>
         </div>
         <a class="btn secondary" id="activeTableDownloadBtn" href="/estimates/{{ meta.id }}/download.xlsx?{{ filter_query }}" {% if not summary.row_count %}hidden{% endif %}>Скачать Excel</a>
       </div>
@@ -120,8 +121,8 @@
               <th class="name">Наименование</th>
               <th>Ед.</th>
               <th class="num">Кол-во</th>
-              <th class="num">Цена за ед.</th>
-              <th class="num">Сумма</th>
+              <th class="num col-estimate">{{ icon("file") }} Цена сметы<small>за единицу</small></th>
+              <th class="num col-estimate">Сумма сметы</th>
               <th>Где найдено</th>
             </tr>
           </thead>
@@ -144,12 +145,12 @@
             {% else %}
             <tr>
               <td>{{ r.display_no }}</td>
-              <td><span class="tag">{{ r.type_label }}</span></td>
+              <td><span class="tag type-{{ r.type }}">{{ r.type_label }}</span></td>
               <td class="name">{{ r.name }}</td>
               <td>{{ r.unit or "—" }}</td>
               <td class="num">{{ r.qty_fmt }}</td>
-              <td class="num">{{ r.unit_price_fmt }}</td>
-              <td class="num">{{ r.total_fmt }}</td>
+              <td class="num col-estimate">{{ r.unit_price_fmt }}</td>
+              <td class="num col-estimate">{{ r.total_fmt }}</td>
               <td class="where">
                 {% if r.sheet %}лист: {{ r.sheet }}<br>{% endif %}
                 {% if r.excel_row %}строка Excel: {{ r.excel_row }}<br>{% endif %}
@@ -169,12 +170,12 @@
       </div>
       <div class="table-panel" role="tabpanel" id="estimatePanelCompare" aria-labelledby="estimateTabCompare" data-estimate-view-panel="compare" {% if active_table_view != 'compare' %}hidden{% endif %}>
         <div class="table-panel-head">
-          <h2 class="table-panel-title">Сравнение цен</h2>
+          <h2 class="table-panel-title">Смета и рынок</h2><p class="price-legend"><span>{{ icon("file") }} Цена сметы</span><span>{{ icon("chart") }} Медиана подтверждённых цен</span><span>Разница за единицу, без расходов и налогов</span></p>
         </div>
         {% if compare_table.available %}
       {% if viability.title %}
-      <div class="viability-box {{ viability.tone }}">
-        <h2 class="viability-title">{{ viability.title }}</h2>
+      <details class="viability-box {{ viability.tone }}">
+        <summary class="viability-title">{{ viability.title }}</summary>
         <div class="viability-sub">{{ viability.subtitle }}</div>
         {% if viability.facts %}
         <div class="viability-facts">
@@ -200,7 +201,7 @@
         </div>
         </details>
         {% endif %}
-      </div>
+      </details>
       {% endif %}        {% if market_links %}
         <details class="estimate-breakdown"><summary>Открыть отдельное сравнение по типу</summary><div class="market-links">
           {% for link in market_links %}
@@ -217,8 +218,10 @@
                 <th>Раздел</th>
                 <th>Тип</th>
                 <th class="name">Наименование</th>
-                <th class="num">Цена сметы</th>
-                <th class="num">Цена рынка</th>
+                <th>Ед.</th>
+                <th class="num col-estimate">{{ icon('file') }} Цена сметы</th>
+                <th class="num col-market">{{ icon('chart') }} Медиана рынка<small>подтверждённые цены</small></th>
+                <th class="num col-difference">{{ icon('difference') }} Разница<small>смета − рынок</small></th>
                 <th>Сайт</th>
                 <th>Вывод</th>
               </tr>
@@ -229,8 +232,10 @@
                 <td class="where">{{ row.section }}</td>
                 <td><span class="tag">{{ row.type_label }}</span></td>
                 <td class="name">{{ row.name }}</td>
-                <td class="num">{{ row.estimate_price }}</td>
-                <td class="num">{{ row.market_price }}</td>
+                <td>{{ row.unit }}</td>
+                <td class="num col-estimate">{{ row.estimate_price }}</td>
+                <td class="num col-market"><b>{{ row.market_price }}</b><small>{% if row.has_market %}Цен в расчёте: {{ row.calculation_source_count }}{% else %}Нет подтверждённой цены{% endif %}</small></td>
+                <td class="num col-difference difference-{{ row.difference_tone }}"><b>{{ row.difference_fmt }}</b><small>{{ row.difference_percent_fmt }}</small></td>
                 <td class="where">
                   {% if row.site_url %}
                   <a href="{{ row.site_url }}" target="_blank" rel="noopener noreferrer">{{ row.site }}</a>
@@ -238,18 +243,10 @@
                   {{ row.site }}
                   {% endif %}
                 </td>
-                <td class="where">
-                  {% if row.compare_class == 'good' %}
-                  <span class="tone-good">{{ row.status }}</span>
-                  {% elif row.compare_class == 'bad' %}
-                  <span class="tone-bad">{{ row.status }}</span>
-                  {% else %}
-                  <span class="tone-warn">{{ row.status }}</span>
-                  {% endif %}
-                </td>
+                <td class="where"><span class="tone-{{ row.compare_class }}">{{ row.compare_label }}</span>{% if row.status and row.status != row.compare_label %}<small>{{ row.status }}</small>{% endif %}</td>
               </tr>
               {% endfor %}
-              {% if not compare_rows %}<tr><td colspan="7" class="estimate-empty">По фильтру ничего не найдено.</td></tr>{% endif %}
+              {% if not compare_rows %}<tr><td colspan="9" class="estimate-empty">По фильтру ничего не найдено.</td></tr>{% endif %}
             </tbody>
           </table>
           </div>
@@ -271,7 +268,7 @@
               <tr>
                 <th>Раздел</th>
                 <th class="name">Наименование</th>
-                <th>Найденная цена</th>
+                <th class="col-candidate">Найденная цена<small>требует проверки</small></th>
                 <th>Сайт</th>
                 <th>Статус</th>
                 <th>Запрос</th>
@@ -282,7 +279,7 @@
               <tr>
                 <td class="where">{{ row.section }}</td>
                 <td class="name">{{ row.name }}</td>
-                <td class="where">{{ row.market_price }}</td>
+                <td class="where col-candidate">{{ row.market_price }}</td>
                 <td class="where">{% if row.site_url %}<a href="{{ row.site_url }}" target="_blank" rel="noopener noreferrer">{{ row.site }}</a>{% else %}{{ row.site }}{% endif %}</td>
                 <td class="where">{{ row.status }}</td>
                 <td class="where">{{ row.query }}</td>
@@ -357,6 +354,6 @@
     'activeTableView': active_table_view, 'crmPrefill': crm_prefill,
     'legacyCrmAllowed': legacy_crm_export_allowed, 'importCapability': estimate_import_capability
   }|tojson }}</script>
-  <script src="/estimates/workspace.js?v=20260915-queue-1"></script>
+  <script src="/estimates/workspace.js?v=20260919-workspace-1"></script>
 </body>
 </html>

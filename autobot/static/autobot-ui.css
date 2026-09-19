@@ -344,129 +344,7 @@ body.autobot-page {
 }
 
 /* Estimates catalogue */
-.estimates-index-page .hero-grid {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
-  margin-bottom: 12px;
-}
 
-.estimates-index-page .hero-card,
-.estimates-index-page .upload-card,
-.estimates-index-page .catalog-panel,
-.estimates-index-page .estimate-card,
-.estimates-index-page .upload-progress {
-  border: 1px solid var(--ab-line);
-  border-radius: 14px;
-  background: var(--ab-surface);
-  box-shadow: var(--ab-shadow);
-}
-
-.estimates-index-page .hero-card {
-  display: grid;
-  align-content: start;
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  background: transparent;
-}
-
-.estimates-index-page .hero-card::after {
-  display: none;
-}
-
-.estimates-index-page h1 {
-  max-width: 680px;
-  margin: 7px 0 0;
-  color: var(--ab-ink);
-  font-size: clamp(25px, 3vw, 30px);
-  line-height: 1.15;
-  letter-spacing: -.02em;
-}
-
-.estimates-index-page .hero-text {
-  max-width: 620px;
-  margin-top: 9px;
-  color: var(--ab-ink-soft);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.estimates-index-page .upload-card {
-  gap: 12px;
-  padding: 18px;
-}
-
-.estimates-index-page .upload-row {
-  grid-template-columns: minmax(180px, .8fr) minmax(250px, 1.4fr) auto;
-  align-items: end;
-}
-
-@media (max-width: 900px) {
-  .estimates-index-page .upload-row { grid-template-columns: minmax(0, 1fr); }
-}
-
-.estimates-index-page .panel-title {
-  color: var(--ab-ink);
-  font-size: 19px;
-  letter-spacing: -.018em;
-}
-
-.estimates-index-page .file-picker-btn {
-  min-height: 40px;
-  border-color: var(--ab-line-strong);
-  border-radius: 10px;
-  color: var(--ab-ink-soft);
-  background: var(--ab-soft);
-  font-size: 12px;
-}
-
-.estimates-index-page .file-picker-btn:hover {
-  border-color: #abc1df;
-  background: var(--ab-blue-soft);
-  transform: none;
-}
-
-.estimates-index-page input[type="text"] {
-  min-height: 40px;
-  padding: 0 12px;
-  border-radius: 10px;
-  font-size: 12px;
-}
-
-.estimates-index-page .overview-strip {
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.estimates-index-page .overview-pill {
-  gap: 8px;
-  min-height: 38px;
-  padding: 0 12px;
-  border: 1px solid var(--ab-line);
-  border-radius: 10px;
-  color: var(--ab-ink-soft);
-  background: var(--ab-surface);
-  box-shadow: none;
-  font-size: 11px;
-}
-
-.estimates-index-page .overview-pill b {
-  color: var(--ab-ink);
-  font-size: 16px;
-}
-
-.estimates-index-page .catalog-panel {
-  padding: 16px;
-}
-
-.estimates-index-page .panel-head {
-  justify-content: flex-start;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 16px;
-}
 
 .catalog-search {
   position: relative;
@@ -549,54 +427,6 @@ body.autobot-page {
 
 .catalog-search:focus-within > span::after {
   background: var(--ab-blue);
-}
-
-.estimates-index-page .grid {
-  gap: 10px;
-}
-
-.estimates-index-page .estimate-card {
-  overflow: hidden;
-  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
-}
-
-.estimates-index-page .estimate-card:hover {
-  border-color: #becde1;
-  box-shadow: 0 15px 36px rgba(28, 48, 77, .11);
-  transform: translateY(-2px);
-}
-
-.estimates-index-page .estimate-card[hidden] {
-  display: none !important;
-}
-
-.estimates-index-page .estimate-card-top {
-  padding: 12px 14px 0;
-}
-
-.estimates-index-page .estimate-card-body-link {
-  padding: 10px 14px 14px;
-}
-
-.estimates-index-page .status-pill,
-.estimates-index-page .date-pill,
-.estimates-index-page .chip {
-  border-radius: 7px;
-  font-size: 9px;
-}
-
-.estimates-index-page .metric-box {
-  border-radius: 9px;
-  background: var(--ab-soft);
-}
-
-.estimates-index-page .upload-progress {
-  padding: 12px;
-}
-
-.estimates-index-page .upload-progress-bar {
-  height: 7px;
-  border: 0;
 }
 
 /* One-off market research */
@@ -975,7 +805,7 @@ body.autobot-page {
   .autobot-page .topnav a {
     min-height: 28px;
     padding: 0 9px;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .autobot-page .page {
@@ -991,11 +821,7 @@ body.autobot-page {
     flex: 1 0 auto;
   }
 
-  .estimates-index-page .panel-head {
-    align-items: stretch;
-  }
-
-  .catalog-search {
+.catalog-search {
     width: 100%;
   }
 

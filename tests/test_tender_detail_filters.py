@@ -145,68 +145,44 @@ def test_tender_header_uses_a_back_arrow_to_return_to_the_board():
     assert ".brand-back i" in styles
 
 
-def test_position_table_fits_without_horizontal_scrolling():
-    package_dir = Path(tender_detail.__file__).parent
-    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
-
-    assert ".table-wrap { width: 100%; max-width: 100%; overflow-x: hidden; }" in styles
-    assert "table { width: 100%; min-width: 0;" in styles
-    assert "min-width: 1280px" not in styles
-    assert '@media (max-width: 760px)' in styles
-    assert 'data-label="Источники"' in template
-    assert 'data-label="Результат"' not in template
-
-
-def test_market_price_replaces_the_redundant_result_column():
-    package_dir = Path(tender_detail.__file__).parent
-    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
-
-    assert "<th>Результат</th>" not in template
-    assert 'class="verdict ' not in template
-    assert 'market-price-{{ p.verdict_class }}' in template
-    assert 'title="{{ p.verdict }}"' in template
-    assert 'colspan="7"' in template
-    assert 'colspan="8"' not in template
-    assert ".market-price-good > b" in styles
-    assert ".market-price-bad > b" in styles
-
-
-def test_selection_number_and_position_columns_are_compact():
-    package_dir = Path(tender_detail.__file__).parent
-    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
-
-    assert "th:nth-child(1) { width: 28px; }" in styles
-    assert "th:nth-child(2) { width: 34px; }" in styles
-    assert ".select-col { padding-left: 2px; padding-right: 0;" in styles
-    assert ".row-no { padding-left: 2px; padding-right: 3px;" in styles
-    assert 'title="Выбрать позицию для поиска цены агентом"' in template
+def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp_path, monkeypatch):
+    from bs4 import BeautifulSoup
+    from autobot import web_ui
+    tid = '0171200001926000664'
+    monkeypatch.setattr(tender_detail, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(tender_detail, 'latest_parser_health', lambda _: {})
+    pd.DataFrame([{COL_NAME: 'Поставка материала', COL_UNIT: 'м3', COL_QTY: 2,
+                   COL_UNIT_PRICE: 100, COL_SUM: 200}]).to_excel(tmp_path / f'ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx', index=False)
+    detail = tender_detail.build_tender_detail(tid, {'price_rub': 200}, {})
+    detail['active_tab'] = 'overview'
+    detail['documents'] = {'count': 0, 'files': []}
+    with web_ui.app.test_request_context():
+        html = web_ui.render_template('tender_detail.html', tender=detail)
+    page = BeautifulSoup(html, 'html.parser')
+    table = page.select_one('#positions table')
+    assert len(table.select('thead th')) == 8
+    row = table.select_one('[data-position-row]')
+    assert len(row.select(':scope > td')) == 8
+    assert row.select_one('input[data-agent-position]')['value'] == detail['positions'][0]['position_key']
+    assert '100 ₽' in row.select_one('.col-estimate').get_text()
+    assert 'Нет подтверждённой цены' in row.select_one('.col-market').get_text()
+    assert 'Ждём цену рынка' in row.select_one('.col-difference').get_text()
+    assert row.select_one('a')['href'].startswith('/tenders/' + tid + '/review?position_id=')
+    assert page.select_one('[data-open-workspace="search"]')
+    assert page.select_one('#agentMarketCard').find_parent(attrs={'data-workspace-panel':'search'})
+    assert page.select_one('[data-tender-economics]').find_parent(attrs={'data-workspace-panel':'economics'})
 
 
-def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
-    package_dir = Path(tender_detail.__file__).parent
-    template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
-
-    assert 'class="command-tool-icon is-avito"' in template
-    assert 'class="command-tool-icon is-hermes"' in template
-    assert 'data-feature-open="rulesModal"' not in template
-    assert 'id="rulesModal"' not in template
-    assert "Источники и журнал" in template
-    assert "Смета против НМЦК" in template
-    assert "Статус обработки" in template
-    assert "Повторно найти цены" in template
-    assert "Найти цены на Авито" in template
+def test_evidence_dialogs_and_search_modes_preserve_existing_contract():
+    template = (Path(tender_detail.__file__).parent / 'templates/tender_detail.html').read_text(encoding='utf-8')
+    assert 'data-feature-open="estimateModal"' in template
+    assert 'data-feature-open="readinessModal"' in template
+    assert 'data-feature-open="avitoModal"' in template
     assert 'type: "autobot:feature-modal", open: true' in template
     assert 'type: "autobot:feature-modal", open: false' in template
-    assert ".command-tool-icon.is-avito i:nth-child(4)" in styles
-    assert ".command-tool-icon.is-hermes" in styles
-    assert "max-height: calc(100dvh - 20px)" in styles
     assert 'JSON.stringify({ mode: "web"' in template
     assert 'JSON.stringify({ mode: "avito"' in template
-    assert "Найти цены по всей смете" in template
+    assert 'id="queueAgentMarketBtn"' in template and 'id="stopAgentMarketBtn"' in template
 
 
 def test_avito_modal_shows_one_minimal_latest_run_summary():

@@ -373,6 +373,12 @@ function rememberEstimateMarketStart(value) {
         const main = document.getElementById("marketStatusMain");
         const detail = document.getElementById("marketStatusDetail");
         const logs = document.getElementById("marketLogs");
+        const settings = document.getElementById("estimateMarketSettings");
+        const statusKey = String(data.run_id || "saved") + (data.running ? ":running" : data.error ? ":error" : ":idle");
+        if (settings) {
+          if (settings.dataset.statusKey !== statusKey && (data.running || data.error)) settings.open = true;
+          settings.dataset.statusKey = statusKey;
+        }
         const startBtn = document.getElementById("marketStartBtn");
         if (startBtn) {
           startBtn.dataset.running = data.running ? "1" : "0";

@@ -1,0 +1,528 @@
+{% from "ui_icons.html" import icon %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <title>Сметы</title>
+
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260919-workspace-1" />
+  <link rel="stylesheet" href="/estimates/catalog.css?v=20260919-workspace-1" />
+</head>
+<body class="autobot-page estimates-index-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/estimates">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
+    </a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
+      <a class="topnav-primary" href="/tenders">Тендеры</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
+  <div class="page">
+    <section class="hero-grid">
+      <div class="catalog-heading-main">
+
+        <h1>Мои сметы</h1>
+        <p class="hero-text">Загрузите смету, проверьте позиции и сравните цены с поставщиками.</p>
+      </div>
+
+      <details class="upload-card" {% if not estimates %}open{% endif %}><summary>{{ icon("file") }} Загрузить смету <span>Excel / PDF</span></summary><div class="upload-card-body">
+        <div>
+          <h2 class="panel-title">Новая смета</h2>
+        </div>
+        <form id="estimateUploadForm" class="upload-row">
+          <div class="file-picker">
+            <input class="file-input-native" id="estimateUploadFile" type="file" name="file" accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" />
+            <label class="file-picker-btn" for="estimateUploadFile">
+              <svg class="icon-clip" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21.44 11.05l-8.49 8.49a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"></path>
+              </svg>
+              <span>Прикрепить файл</span>
+            </label>
+            <span class="file-picker-name" id="estimateUploadFileName" hidden></span>
+          </div>
+          <label class="upload-title-field" for="estimateUploadTitle"><span>Название сметы <span class="muted">· необязательно</span></span><input id="estimateUploadTitle" type="text" name="title" maxlength="160" placeholder="По умолчанию — имя файла" /></label>
+          <button class="btn" id="estimateUploadSubmit" type="submit">Разобрать смету</button>
+        </form>
+        <div id="uploadStatus" class="muted" role="status" aria-live="polite"></div>
+        <div id="estimateUploadProgress" class="upload-progress" hidden>
+          <div class="upload-progress-head">
+            <div class="upload-progress-title" id="estimateUploadStage">Подготовка…</div>
+            <div class="upload-progress-pct" id="estimateUploadPct">0%</div>
+          </div>
+          <div class="upload-progress-bar"><div id="estimateUploadFill" class="upload-progress-fill"></div></div>
+          <div id="estimateUploadDetail" class="upload-progress-detail"></div>
+          <div id="estimateUploadError" class="upload-progress-error" hidden></div>
+          <div class="upload-actions"><a class="btn secondary" id="estimateUploadOriginal" hidden>Скачать исходник</a><button class="btn secondary" id="estimateUploadRetryStatus" type="button" hidden>Проверить статус</button><button class="btn secondary" id="estimateUploadNew" type="button" hidden>Загрузить другую смету</button></div>
+          <details id="estimateUploadLogDetails" class="upload-log-details" hidden><summary>Подробности разбора</summary><pre id="estimateUploadLogs" class="upload-progress-logs"></pre></details>
+        </div>
+      </div></details>
+    </section>
+
+    <section class="overview-strip" aria-label="Сводка по сметам">
+      <div class="overview-pill">Всего смет <b>{{ overview.total_count }}</b></div>
+      <div class="overview-pill">Есть сравнение <b>{{ overview.with_compare }}</b></div>
+    </section>
+
+    <section class="catalog-panel">
+      <div class="panel-head">
+        <div class="catalog-heading">
+          <h2>Сохранённые сметы</h2>
+          <p class="panel-note">Выберите сметы, чтобы добавить их в объект CRM.</p>
+        </div>
+        <div class="catalog-tools">
+          <label class="estimate-catalog-search"><span aria-hidden="true"></span><input type="search" id="estimateCatalogSearch" aria-label="Найти смету" placeholder="Найти смету" autocomplete="off" /></label>
+          <button class="btn secondary bundle-open-btn" id="estimateBundleOpenBtn" type="button" disabled>Добавить выбранные в объект</button>
+        </div>
+      </div>
+      {% if estimates %}
+      <div class="bundle-bar" id="estimateBundleBar" hidden aria-live="polite">
+        <span id="estimateBundleSummary"><strong>Ничего не выбрано</strong></span>
+        <button class="bundle-clear-btn" id="estimateBundleClearBtn" type="button">Сбросить</button>
+      </div>
+      <div class="estimate-list-head" aria-hidden="true"><span></span><span>Смета</span><span>Позиций</span><span>Сумма сметы</span><span>Проверка цен</span><span></span></div>
+      <div class="estimate-list">
+        {% for e in estimates %}
+        <article class="estimate-card" data-estimate-card="{{ e.id }}" data-estimate-search="{{ (e.title ~ ' ' ~ e.original_filename ~ ' ' ~ e.types_short)|lower }}">
+          <label class="estimate-select"><input type="checkbox" data-estimate-select value="{{ e.id }}" data-estimate-title="{{ e.title }}" data-estimate-rows="{{ e.row_count }}" data-estimate-total="{{ e.total_sum_value }}" data-estimate-capability="{{ e.crm_import_capability }}" aria-label="Выбрать смету {{ e.title }}" /></label>
+          <div class="estimate-card-name">{{ icon('file') }}<div><h3><a href="/estimates/{{ e.id }}">{{ e.title }}</a></h3><p>{{ e.original_filename }}</p><small>{{ e.created_at }} · {{ e.types_short }}</small></div></div>
+          <div class="estimate-card-count" data-label="Позиций"><b>{{ e.row_count }}</b></div>
+          <div class="estimate-card-total" data-label="Сумма сметы"><b>{{ e.total_sum_fmt }}</b></div>
+          <div class="estimate-card-state"><span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span><small>Подтверждено {{ e.market_progress_done }} из {{ e.market_progress_total }}</small></div>
+          <div class="estimate-card-actions"><a class="estimate-open" href="/estimates/{{ e.id }}" aria-label="Открыть смету {{ e.title }}">Открыть {{ icon('arrow') }}</a><button class="card-delete-btn" type="button" data-estimate-delete="{{ e.id }}" data-estimate-title="{{ e.title }}" onclick="deleteEstimateCard(event, this)" title="Удалить смету" aria-label="Удалить смету {{ e.title }}"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></div>
+        </article>
+        {% endfor %}
+      </div>
+      <div class="empty" id="estimateCatalogEmpty" hidden>По этому запросу смет нет. Очистите поиск и попробуйте снова.</div>
+      {% else %}
+      <div class="empty"><strong>Здесь появятся ваши сметы</strong><p>Загрузите Excel или PDF выше. Сохраним исходник и подготовим таблицу для проверки.</p></div>
+      {% endif %}
+    </section>
+  </div>
+  <div class="bundle-modal" id="estimateBundleModal" hidden role="dialog" aria-modal="true" aria-labelledby="estimateBundleTitle">
+    <button class="bundle-modal-backdrop" id="estimateBundleBackdrop" type="button" tabindex="-1" aria-label="Закрыть окно"></button>
+    <section class="bundle-modal-card">
+      <div class="bundle-modal-head">
+        <div>
+          <h2 id="estimateBundleTitle">Добавить пакет смет в объект</h2>
+          <p>Все выбранные сметы попадут в один объект, но сохранят собственные названия и позиции.</p>
+        </div>
+        <button class="bundle-close-btn" id="estimateBundleCloseBtn" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <div class="bundle-selected-list" id="estimateBundleList"></div>
+      <label class="bundle-field" for="estimateBundleProject">
+        Объект PM.bi
+        <select id="estimateBundleProject" required>
+          <option value="">Загружаю доступные объекты…</option>
+        </select>
+      </label>
+      <p class="bundle-hint" id="estimateBundleProjectHint">Вы увидите только те объекты, к которым у вас есть доступ.</p>
+      <div class="bundle-status" id="estimateBundleStatus" role="status" aria-live="polite">Выберите объект и подтвердите добавление.</div>
+      <div class="bundle-progress" id="estimateBundleProgress" hidden><div class="bundle-progress-fill" id="estimateBundleProgressFill"></div></div>
+      <div class="bundle-modal-actions">
+        <button class="btn secondary" id="estimateBundleCancelBtn" type="button">Отмена</button>
+        <button class="btn secondary" id="estimateBundleProjectBtn" type="button" hidden>Открыть объект</button>
+        <button class="btn" id="estimateBundleSubmitBtn" type="button">Добавить сметы</button>
+      </div>
+    </section>
+  </div>
+  <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
+  <script src="/estimates/upload-client.js?v=20260919-workspace-1"></script>
+  <script>document.getElementById("estimateUploadForm").addEventListener("submit", function() { document.querySelector(".upload-card").open = true; });</script>
+  <script>
+    (function() {
+      const bundleBridge = window.AutoBotCrmBridge || { embedded: false, available: false };
+      const bundleInputs = Array.from(document.querySelectorAll("[data-estimate-select]"));
+      const bundleOpenBtn = document.getElementById("estimateBundleOpenBtn");
+      const bundleBar = document.getElementById("estimateBundleBar");
+      const bundleSummary = document.getElementById("estimateBundleSummary");
+      const bundleClearBtn = document.getElementById("estimateBundleClearBtn");
+      const bundleModal = document.getElementById("estimateBundleModal");
+      const bundleList = document.getElementById("estimateBundleList");
+      const bundleProject = document.getElementById("estimateBundleProject");
+      const bundleProjectHint = document.getElementById("estimateBundleProjectHint");
+      const bundleStatus = document.getElementById("estimateBundleStatus");
+      const bundleProgress = document.getElementById("estimateBundleProgress");
+      const bundleProgressFill = document.getElementById("estimateBundleProgressFill");
+      const bundleSubmitBtn = document.getElementById("estimateBundleSubmitBtn");
+      const bundleProjectBtn = document.getElementById("estimateBundleProjectBtn");
+      const maxBundleEstimates = 10;
+      const maxBundleItems = 12000;
+      const maxBundleBytes = 11 * 1024 * 1024;
+      let bundleProjectsLoaded = false;
+      let bundleBusy = false;
+      let bundleLastProjectUrl = "";
+      let bundleLastFocused = null;
+
+      function selectedBundleEstimates() {
+        const seen = new Set();
+        return bundleInputs.filter(function(input) {
+          if (!input.checked) return false;
+          const id = String(input.value || "");
+          if (!/^[0-9a-fA-F-]{1,40}$/.test(id) || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        }).map(function(input) {
+          return {
+            id: String(input.value || ""),
+            title: String(input.getAttribute("data-estimate-title") || "Смета"),
+            rows: Math.max(0, Number(input.getAttribute("data-estimate-rows") || 0)),
+            total: Math.max(0, Number(input.getAttribute("data-estimate-total") || 0)),
+            capability: String(input.getAttribute("data-estimate-capability") || ""),
+          };
+        });
+      }
+
+      function formatBundleMoney(value) {
+        try {
+          return new Intl.NumberFormat("ru-RU", {
+            style: "currency",
+            currency: "RUB",
+            maximumFractionDigits: 0,
+          }).format(Number(value || 0));
+        } catch (error) {
+          return Math.round(Number(value || 0)).toLocaleString("ru-RU") + " ₽";
+        }
+      }
+
+      function syncBundleSelection() {
+        const selected = selectedBundleEstimates();
+        const count = selected.length;
+        const rows = selected.reduce(function(sum, item) { return sum + item.rows; }, 0);
+        const total = selected.reduce(function(sum, item) { return sum + item.total; }, 0);
+        bundleInputs.forEach(function(input) {
+          const card = input.closest("[data-estimate-card]");
+          if (card) card.classList.toggle("is-selected", input.checked);
+        });
+        if (bundleOpenBtn) {
+          bundleOpenBtn.disabled = count === 0 || bundleBusy;
+          bundleOpenBtn.textContent = count
+            ? "Добавить " + count + " " + (count === 1 ? "смету" : count < 5 ? "сметы" : "смет") + " в объект"
+            : "Добавить выбранные в объект";
+        }
+        if (bundleBar) bundleBar.hidden = count === 0;
+        if (bundleSummary && count) {
+          bundleSummary.textContent = "";
+          const countNode = document.createElement("strong");
+          countNode.textContent = "Выбрано: " + count;
+          bundleSummary.appendChild(countNode);
+          bundleSummary.appendChild(document.createTextNode(" · строк: " + rows + (total > 0 ? " · сумма: " + formatBundleMoney(total) : "")));
+        }
+      }
+
+      function setBundleStatus(message, tone) {
+        if (!bundleStatus) return;
+        bundleStatus.textContent = String(message || "");
+        bundleStatus.classList.toggle("is-success", tone === "success");
+        bundleStatus.classList.toggle("is-error", tone === "error");
+      }
+
+      function setBundleProgress(value, visible) {
+        if (bundleProgress) bundleProgress.hidden = !visible;
+        if (bundleProgressFill) bundleProgressFill.style.width = Math.max(0, Math.min(100, Number(value || 0))) + "%";
+      }
+
+      function renderBundleList(selected) {
+        if (!bundleList) return;
+        bundleList.textContent = "";
+        selected.forEach(function(item) {
+          const row = document.createElement("div");
+          row.className = "bundle-selected-item";
+          const title = document.createElement("span");
+          title.textContent = item.title;
+          const meta = document.createElement("small");
+          meta.textContent = item.rows + " строк";
+          row.appendChild(title);
+          row.appendChild(meta);
+          bundleList.appendChild(row);
+        });
+      }
+
+      async function loadBundleProjects() {
+        if (!bundleProject || bundleProjectsLoaded) return;
+        bundleProject.disabled = true;
+        bundleProject.innerHTML = '<option value="">Загружаю доступные объекты…</option>';
+        try {
+          if (!bundleBridge.embedded || !bundleBridge.available) {
+            throw new Error(bundleBridge.originMismatch
+              ? "Адрес PM.bi не совпадает с настройкой AutoBot."
+              : "Откройте AutoBot внутри PM.bi, чтобы выбрать объект.");
+          }
+          const data = await bundleBridge.requestProjects();
+          const projects = Array.isArray(data.projects) ? data.projects : [];
+          bundleProject.innerHTML = '<option value="">Выберите объект</option>';
+          projects.forEach(function(project) {
+            const projectId = Number(project && project.id);
+            if (!Number.isInteger(projectId) || projectId <= 0) return;
+            const option = document.createElement("option");
+            option.value = String(projectId);
+            const place = String(project.city || project.address || "").trim();
+            option.textContent = "#" + projectId + " · " + String(project.title || "Без названия") + (place ? " · " + place : "");
+            bundleProject.appendChild(option);
+          });
+          bundleProject.disabled = projects.length === 0;
+          bundleProjectsLoaded = true;
+          if (bundleProjectHint) {
+            bundleProjectHint.textContent = projects.length
+              ? "Выберите объект. Пакет будет записан с вашими правами PM.bi."
+              : "У вас пока нет доступных объектов для добавления смет.";
+          }
+          if (projects.length) bundleProject.focus();
+        } catch (error) {
+          bundleProject.innerHTML = '<option value="">Объекты недоступны</option>';
+          bundleProject.disabled = true;
+          setBundleStatus(error.message || error, "error");
+        }
+      }
+
+      function openBundleModal() {
+        const selected = selectedBundleEstimates();
+        if (!selected.length || !bundleModal) return;
+        bundleLastFocused = document.activeElement;
+        renderBundleList(selected);
+        bundleLastProjectUrl = "";
+        if (bundleProjectBtn) bundleProjectBtn.hidden = true;
+        if (bundleSubmitBtn) {
+          bundleSubmitBtn.hidden = false;
+          bundleSubmitBtn.disabled = false;
+          bundleSubmitBtn.textContent = "Добавить " + selected.length + " " + (selected.length === 1 ? "смету" : "сметы");
+        }
+        setBundleProgress(0, false);
+        setBundleStatus("Выберите объект и подтвердите добавление.", "");
+        bundleModal.hidden = false;
+        document.body.style.overflow = "hidden";
+        if (typeof bundleBridge.setModalOpen === "function") bundleBridge.setModalOpen(true);
+        requestAnimationFrame(function() { bundleModal.classList.add("is-open"); });
+        loadBundleProjects();
+      }
+
+      function closeBundleModal() {
+        if (!bundleModal || bundleBusy) return;
+        bundleModal.classList.remove("is-open");
+        document.body.style.overflow = "";
+        if (typeof bundleBridge.setModalOpen === "function") bundleBridge.setModalOpen(false);
+        window.setTimeout(function() {
+          bundleModal.hidden = true;
+          if (bundleLastFocused && typeof bundleLastFocused.focus === "function") bundleLastFocused.focus();
+        }, 180);
+      }
+
+      async function prepareBundle(selected) {
+        const estimates = [];
+        let itemCount = 0;
+        for (let index = 0; index < selected.length; index += 1) {
+          const item = selected[index];
+          setBundleStatus("Подготавливаю сметы: " + (index + 1) + " из " + selected.length + " — " + item.title, "");
+          setBundleProgress(Math.round((index / Math.max(1, selected.length)) * 45), true);
+          const response = await fetch("/api/estimates/" + encodeURIComponent(item.id) + "/crm-import-payload", {
+            method: "GET",
+            headers: {
+              "Accept": "application/json",
+              "X-AutoBot-Estimate-Capability": item.capability,
+            },
+            cache: "no-store",
+            credentials: "same-origin",
+          });
+          const prepared = await response.json().catch(function() { return {}; });
+          if (!response.ok || !prepared.ok) {
+            throw new Error(prepared.message || "Не удалось подготовить смету «" + item.title + "».");
+          }
+          const rows = Array.isArray(prepared.items) ? prepared.items : [];
+          if (!rows.length) throw new Error("В смете «" + item.title + "» нет подходящих позиций.");
+          itemCount += rows.length;
+          if (itemCount > maxBundleItems) {
+            throw new Error("В пакете больше " + maxBundleItems + " позиций. Разделите его на две загрузки.");
+          }
+          estimates.push({
+            source: prepared.source || {},
+            sourceLabel: prepared.sourceLabel || prepared.label || item.title,
+            sourceReference: prepared.sourceReference || prepared.reference || ("/estimates/" + item.id),
+            items: rows,
+          });
+        }
+        return { estimates: estimates, itemCount: itemCount };
+      }
+
+      async function submitBundle() {
+        if (bundleBusy) return;
+        const selected = selectedBundleEstimates();
+        const projectId = Number(bundleProject && bundleProject.value);
+        if (!selected.length) {
+          setBundleStatus("Сметы не выбраны.", "error");
+          return;
+        }
+        if (!Number.isInteger(projectId) || projectId <= 0) {
+          setBundleStatus("Выберите объект PM.bi.", "error");
+          if (bundleProject) bundleProject.focus();
+          return;
+        }
+        if (!bundleBridge.embedded || !bundleBridge.available) {
+          setBundleStatus("Откройте AutoBot внутри PM.bi — пакет записывается с правами текущего пользователя.", "error");
+          return;
+        }
+
+        bundleBusy = true;
+        if (bundleSubmitBtn) bundleSubmitBtn.disabled = true;
+        if (bundleProject) bundleProject.disabled = true;
+        syncBundleSelection();
+        try {
+          const prepared = await prepareBundle(selected);
+          const estimateIds = selected.map(function(item) { return item.id; });
+          const importPayload = {
+            estimates: prepared.estimates,
+            source: {
+              sourceType: "estimate",
+              sourceKey: "bundle:" + estimateIds.join(":"),
+              title: "Пакет из " + selected.length + " смет",
+              sourceReference: "/estimates",
+              metadata: {
+                bundleEstimateIds: estimateIds,
+                bundleCount: selected.length,
+                importedFrom: "autobot_estimate_bundle",
+              },
+            },
+            sourceLabel: "Пакет из " + selected.length + " смет",
+            sourceReference: "/estimates",
+            replace: false,
+            replace_source: true,
+          };
+          const payloadBytes = new Blob([JSON.stringify(importPayload)]).size;
+          if (payloadBytes > maxBundleBytes) {
+            throw new Error("Пакет получился слишком большим. Выберите меньше смет и повторите.");
+          }
+          setBundleStatus("Записываю " + selected.length + " смет и " + prepared.itemCount + " позиций в объект…", "");
+          setBundleProgress(60, true);
+          const bridgeResponse = typeof bundleBridge.importEstimates === "function"
+            ? await bundleBridge.importEstimates(projectId, importPayload)
+            : await bundleBridge.importEstimate(projectId, importPayload);
+          const result = bridgeResponse.result && typeof bridgeResponse.result === "object"
+            ? bridgeResponse.result
+            : bridgeResponse;
+          const imported = Number(result.imported || prepared.itemCount);
+          const sourceCount = Number(result.estimateSources || result.estimate_sources || selected.length);
+          bundleLastProjectUrl = result.projectUrl || result.project_url || ("/app/projects?openProject=" + projectId + "&tab=schedule");
+          setBundleProgress(100, true);
+          setBundleStatus("Готово: в объект добавлено смет — " + sourceCount + ", позиций обработано — " + imported + ".", "success");
+          selected.forEach(function(item) {
+            const input = bundleInputs.find(function(candidate) { return candidate.value === item.id; });
+            if (input) input.checked = false;
+          });
+          if (bundleSubmitBtn) bundleSubmitBtn.hidden = true;
+          if (bundleProjectBtn) bundleProjectBtn.hidden = false;
+        } catch (error) {
+          setBundleProgress(0, false);
+          setBundleStatus("Не удалось подтвердить пакет: " + (error.message || error), "error");
+        } finally {
+          bundleBusy = false;
+          if (bundleSubmitBtn) bundleSubmitBtn.disabled = false;
+          if (bundleProject) bundleProject.disabled = !bundleProjectsLoaded || bundleProject.options.length <= 1;
+          syncBundleSelection();
+        }
+      }
+
+      bundleInputs.forEach(function(input) {
+        input.addEventListener("change", function() {
+          if (selectedBundleEstimates().length > maxBundleEstimates) {
+            input.checked = false;
+            window.alert("За один раз можно выбрать до " + maxBundleEstimates + " смет. Остальные добавьте следующим пакетом.");
+          }
+          syncBundleSelection();
+        });
+      });
+      if (bundleOpenBtn) bundleOpenBtn.addEventListener("click", openBundleModal);
+      if (bundleClearBtn) bundleClearBtn.addEventListener("click", function() {
+        bundleInputs.forEach(function(input) { input.checked = false; });
+        syncBundleSelection();
+      });
+      ["estimateBundleBackdrop", "estimateBundleCloseBtn", "estimateBundleCancelBtn"].forEach(function(id) {
+        const node = document.getElementById(id);
+        if (node) node.addEventListener("click", closeBundleModal);
+      });
+      if (bundleSubmitBtn) bundleSubmitBtn.addEventListener("click", submitBundle);
+      if (bundleProjectBtn) bundleProjectBtn.addEventListener("click", function() {
+        if (bundleLastProjectUrl && !bundleBridge.navigate(bundleLastProjectUrl)) {
+          setBundleStatus("Сметы добавлены. Откройте объект в PM.bi.", "success");
+        }
+      });
+      document.addEventListener("keydown", function(event) {
+        if (event.key === "Escape" && bundleModal && !bundleModal.hidden) closeBundleModal();
+      });
+      syncBundleSelection();
+
+      window.deleteEstimateCard = async function(event, btn) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        if (!btn || btn.disabled) return;
+        const estimateId = btn.getAttribute("data-estimate-delete") || "";
+        const title = btn.getAttribute("data-estimate-title") || "эта смета";
+        const ok = confirm(`Удалить смету "${title}"?
+
+Будут удалены карточка сметы, ее строки и сохраненные файлы рынка.`);
+        if (!ok) return;
+        const initialHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = "...";
+        try {
+          const resp = await fetch("/api/estimates/" + encodeURIComponent(estimateId) + "/delete", {
+            method: "POST",
+            headers: { "Accept": "application/json" },
+          });
+          let data = {};
+          try { data = await resp.json(); } catch (err) {}
+          if (!resp.ok || !data.ok) {
+            alert(data.message || ("Не удалось удалить смету (HTTP " + resp.status + ")."));
+            btn.disabled = false;
+            btn.innerHTML = initialHtml;
+            return;
+          }
+          const card = btn.closest("[data-estimate-card]");
+          if (card) {
+            card.remove();
+          } else {
+            window.location.reload();
+            return;
+          }
+          setTimeout(function() { window.location.reload(); }, 120);
+        } catch (err) {
+          alert("Не удалось удалить смету: " + err);
+          btn.disabled = false;
+          btn.innerHTML = initialHtml;
+        }
+      };
+
+      document.addEventListener("click", function(e) {
+        if (e.target.closest("[data-estimate-delete]")) return;
+        const card = e.target.closest("[data-estimate-open]");
+        if (!card) return;
+        if (e.target.closest("a, button, input, textarea, select, label")) return;
+        const href = card.getAttribute("data-estimate-open") || "";
+        if (!href) return;
+        window.location.href = href;
+      });
+
+      const catalogSearch = document.getElementById("estimateCatalogSearch");
+      const catalogEmpty = document.getElementById("estimateCatalogEmpty");
+      if (catalogSearch) {
+        catalogSearch.addEventListener("input", function() {
+          const query = String(catalogSearch.value || "").trim().toLocaleLowerCase("ru");
+          const cards = Array.from(document.querySelectorAll("[data-estimate-search]"));
+          let visible = 0;
+          cards.forEach(function(card) {
+            const matches = !query || String(card.getAttribute("data-estimate-search") || "").includes(query);
+            card.hidden = !matches;
+            if (matches) visible += 1;
+          });
+          if (catalogEmpty) catalogEmpty.hidden = visible > 0 || !cards.length;
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

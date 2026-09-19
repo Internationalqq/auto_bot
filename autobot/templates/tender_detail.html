@@ -1,10 +1,11 @@
+{% from "ui_icons.html" import icon %}
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260919-full-estimate" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260919-workspace-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-cashflow-1" />
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
@@ -31,13 +32,13 @@
 
     <section class="eis-card" aria-labelledby="tenderTitle">
       <div class="eis-main">
-        <div class="law">{{ tender.law_method_label or tender.law or "Закупка ЕИС" }}</div>
+
         <div class="number-line">
           <a href="{{ tender.eis_url }}" target="_blank" rel="noopener noreferrer">№ {{ tender.tender_id }}</a>
-          <span>{{ tender.stage or "Статус ЕИС не указан" }}</span>
+          <span>{{ tender.stage or "Статус ЕИС не указан" }}</span><small>{{ tender.law_method_label or tender.law }}</small>
         </div>
         <div class="eis-field">
-          <small>Объект закупки</small>
+
           <h1 id="tenderTitle">{{ tender.title }}</h1>
         </div>
         <details class="eis-field customer">
@@ -63,8 +64,10 @@
     {% endif %}
 
     <nav class="tender-tabs" aria-label="Разделы тендера">
-      <a class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}">Обзор и анализ</a>
-      <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Исходные файлы <span>{{ tender.documents.count }}</span></a>
+      <a id="workspaceTabPositions" class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}#positions" data-workspace-link="positions">{{ icon('table') }} Позиции сметы <span>{{ tender.total_positions }}</span></a>
+      <a id="workspaceTabSearch" href="/tenders/{{ tender.tender_id }}#search" data-workspace-link="search">{{ icon('search') }} Поиск цен</a>
+      <a id="workspaceTabEconomics" href="/tenders/{{ tender.tender_id }}#economics" data-workspace-link="economics">{{ icon('calculator') }} Расчёт участия</a>
+      <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">{{ icon('file') }} Документы <span>{{ tender.documents.count }}</span></a>
     </nav>
 
     {% if tender.document_parse.blocked and not tender.document_download.blocked %}
@@ -97,11 +100,11 @@
 
     {% if tender.active_tab == "overview" %}
 
-    <section class="action-panel" id="nextAction" aria-label="Следующее действие">
+    <section class="action-panel" id="nextAction" data-position-context aria-label="Следующее действие">
       <div>
-        <small>Следующий шаг AutoBot</small>
+
         <strong>{{ tender.primary_action.title }}</strong>
-        <span>{{ tender.primary_action.detail }}</span>
+        <details class="action-explanation"><summary>Что дальше</summary><p>{{ tender.primary_action.detail }}</p></details>
       </div>
       <div class="action-buttons">
         {% if tender.primary_action.key == 'download' %}
@@ -111,11 +114,14 @@
         {% elif tender.primary_action.key == 'market' %}
         <button class="btn primary" type="button" id="runMarketBtn" data-reset-market="0">{{ tender.primary_action.label }}</button>
         {% else %}
-        <a class="btn primary" href="#positions">{{ tender.primary_action.label }}</a>
+        <a class="btn primary" href="#positions" data-workspace-link="positions">{{ tender.primary_action.label }}</a>
         {% endif %}
         <details class="action-more">
-          <summary class="btn ghost">Ещё <span aria-hidden="true">⌄</span></summary>
+          <summary class="btn ghost">Действия {{ icon("more") }}</summary>
           <div class="action-more-menu">
+            <button type="button" data-feature-open="estimateModal">Сверить итог сметы</button>
+            <button type="button" data-feature-open="readinessModal">Статус обработки и журнал</button>
+            <button type="button" data-feature-open="avitoModal">Поиск на Авито</button>
             <button type="button" data-refresh-documents>Обновить документы из ЕИС</button>
             {% if tender.has_estimate %}
             <button type="button" data-rebuild-report>Перечитать смету</button>
@@ -130,48 +136,183 @@
       </div>
     </section>
 
+    <button class="search-snapshot" data-position-context type="button" data-open-workspace="search" aria-label="Открыть результаты поиска цен">
+      {{ icon('search') }}<span><strong id="searchSnapshotTitle">Результаты поиска цен</strong><span id="searchSnapshotStatus">Загружаю последний поиск…</span></span><span class="snapshot-action">Открыть результаты {{ icon('arrow') }}</span>
+    </button>
+    <div data-workspace-panel="positions" id="workspacePositions" aria-labelledby="workspaceTabPositions">
     <section class="market-coverage" aria-label="Полнота проверки цен">
-      <div class="coverage-heading"><h2>Что уже известно по ценам</h2><span>Разница со сметой ещё не прибыль</span></div>
-      <dl>
-        <div><dt>Проверено по сумме позиций</dt><dd>{{ tender.coverage_cost_fmt }}</dd></div>
-        <div><dt>Без подтверждённой цены</dt><dd>{{ tender.uncovered_estimate_fmt }}</dd></div>
-        <div><dt>Позиций с ценой</dt><dd>{{ tender.counts.verified }} <small>из {{ tender.total_positions }}</small></dd></div>
-      </dl>
-      <p>Расчёт по распознанным позициям на {{ tender.estimate_total_fmt }}. {% if tender.rows_without_amount %}У {{ tender.rows_without_amount }} поз. не определена сумма — полнота пока неизвестна.{% else %}Для прибыли ещё нужны доставка, накладные, резерв и цена предложения.{% endif %}</p>
+      <dl><div><dt>Распознано в смете</dt><dd>{{ tender.estimate_total_fmt }}</dd></div><div><dt>Позиций с подтверждённой ценой</dt><dd>{{ tender.counts.verified }} <small>из {{ tender.total_positions }}</small></dd></div><div><dt>Проверено по сумме</dt><dd>{{ tender.coverage_cost_fmt }}</dd></div></dl>
+      <button class="text-button" type="button" data-feature-open="estimateModal">{{ icon('info') }} Сверить полноту сметы</button>
     </section>
-    <div data-tender-economics data-tender-id="{{ tender.tender_id }}" hidden></div>
+    <section class="metrics" aria-label="Сводка по позициям">
+      <button class="metric is-active" type="button" data-bucket-filter="all" aria-pressed="true"><small>Все</small><strong>{{ tender.total_positions }}</strong></button>
+      <button class="metric" type="button" data-bucket-filter="works" aria-pressed="false"><small>Работы</small><strong>{{ tender.counts.works }}</strong></button>
+      <button class="metric" type="button" data-bucket-filter="materials" aria-pressed="false"><small>Материалы</small><strong>{{ tender.counts.materials }}</strong></button>
+      <button class="metric attention" type="button" data-bucket-filter="other" aria-pressed="false"><small>Уточнить тип</small><strong>{{ tender.counts.other }}</strong></button>
+      <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Поиск выполнен</small><strong>{{ tender.counts.processed }}</strong></button>
+      <button class="metric verified" type="button" data-bucket-filter="verified" aria-pressed="false"><small>Цена подтверждена</small><strong>{{ tender.counts.verified }}</strong></button>
+    </section>
 
+    <section class="positions-card" id="positions" tabindex="-1">
+      <header class="positions-head">
+        <div><h2>Смета и рынок</h2><p><b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
+        <label class="position-search"><span aria-hidden="true"></span><input id="positionSearch" type="search" placeholder="Найти работу, материал или шифр" autocomplete="off" aria-label="Найти позицию сметы" /></label>
+        <label class="price-state-filter">Результат поиска
+          <select id="priceStateFilter">
+            <option value="all">Все строки</option>
+            <option value="verified">С подтверждённой ценой</option>
+            <option value="candidate">Проверить предложения</option>
+            <option value="needs_details">Уточнить исходные данные</option>
+            <option value="missing">Все строки без цены</option>
+            <option value="pending">Поиск ещё не выполнялся</option>
+            <option value="blocked">Источник ограничил доступ</option>
+            <option value="no_quote">Поиск прошёл — цены нет</option>
+            <option value="excluded">Сводные строки</option>
+          </select>
+        </label>
+      </header>
 
-    <details class="tender-command-center" aria-label="Инструменты анализа тендера">
-      <summary>Источники и журнал <span class="command-center-state" id="commandCenterState">Обновляю состояние…</span></summary>
-      <div class="command-tool-grid">
-        {% if tender.has_estimate %}
-        <button class="command-tool" type="button" data-feature-open="estimateModal">
-          <span class="command-tool-icon is-green" aria-hidden="true">₽</span>
-          <span class="command-tool-copy"><small>Только посмотреть</small><strong>Смета против НМЦК</strong><span>{{ tender.estimate_check_title }} · {{ tender.estimate_gap_direction }} {{ tender.estimate_gap_fmt }}</span></span>
-          <b aria-hidden="true">→</b>
-        </button>
-        {% endif %}
-        <button class="command-tool" type="button" data-feature-open="readinessModal">
-          <span class="command-tool-icon" aria-hidden="true">{{ tender.coverage }}%</span>
-          <span class="command-tool-copy"><small>Только посмотреть</small><strong>Статус обработки</strong><span id="readinessLauncherStatus">{{ tender.coverage }}% позиций с ценой · этапы и журнал</span></span>
-          <b aria-hidden="true">→</b>
-        </button>
-        <button class="command-tool is-live" type="button" data-feature-open="agentMarketModal">
-          <span class="command-tool-icon is-hermes" aria-hidden="true">⚕</span>
-          <span class="command-tool-copy"><small>Запустить · Сайты поставщиков</small><strong id="agentLauncherTitle">Повторно найти цены</strong><span id="agentLauncherStatus">До 20 сложных строк, где цены ещё нет</span><span class="command-mini-track"><i id="agentLauncherFill"></i></span></span>
-          <b aria-hidden="true">→</b>
-        </button>
-        <button class="command-tool" type="button" data-feature-open="avitoModal">
-          <span class="command-tool-icon is-avito" aria-hidden="true">
-            <i></i><i></i><i></i><i></i>
-          </span>
-          <span class="command-tool-copy"><small>Запустить · Авито</small><strong>Найти цены на Авито</strong><span id="avitoLauncherStatus">Объявления для выбранных позиций</span></span>
-          <b aria-hidden="true">→</b>
-        </button>
+      <details class="price-guide"><summary>Как читать цены</summary><div class="price-legend"><span class="legend-estimate">{{ icon('file') }} Смета — исходная цена</span><span class="legend-market">{{ icon('chart') }} Рынок — медиана подтверждённых предложений</span><span>Разница за единицу, без расходов и налогов</span></div></details>
+      {% if tender.positions %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="select-col" scope="col"><span class="sr-only">Выбор</span></th><th scope="col">№</th><th scope="col">Позиция</th><th scope="col">Объём</th>
+            <th class="col-estimate" scope="col">{{ icon('file') }} Цена сметы<small>за единицу</small></th>
+            <th class="col-market" scope="col">{{ icon('chart') }} Медиана рынка<small>подтверждённые цены</small></th>
+            <th class="col-difference" scope="col">{{ icon('difference') }} Разница<small>смета − рынок</small></th><th scope="col">Проверка цены</th>
+          </tr></thead>
+          <tbody id="positionRows">
+          {% for p in tender.positions %}
+            {% if p.file_start %}
+            <tr class="estimate-file-row" data-file-row data-file-key="{{ p.file_group }}">
+              <td colspan="8"><div><strong>{{ p.file_title }}</strong><span>Позиций: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
+            </tr>
+            {% endif %}
+            {% if p.section_start %}
+            <tr class="estimate-section-row" data-section-row data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}">
+              <td colspan="8"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
+            </tr>
+            {% endif %}
+            <tr data-position-row data-position-key="{{ p.position_key }}" data-price-state="{{ p.price_state }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
+              <td class="select-col" data-label="Выбрать"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} для поиска цены" title="Выбрать позицию для поиска цены" /></td>
+              <td class="row-no" data-label="№">{{ p.item_no }}</td>
+              <td class="position-name" data-label="Позиция">
+                <div><span class="type type-{{ p.type_slug }}">{{ p.type_label }}</span>{% if p.basis_code %}<code>{{ p.basis_code }}</code>{% endif %}</div>
+                  <strong>{{ p.name }}</strong>
+                  {% if p.section_note %}<small>{{ p.section_note }}</small>{% endif %}
+                  <a href="/tenders/{{ tender.tender_id }}/review?position_id={{ p.review_id|urlencode }}">Сверить с исходником</a>
+              </td>
+              <td class="quantity-cell" data-label="Объём"><b>{{ p.quantity_fmt if p.quantity is not none else "—" }}</b><small>{{ p.unit }}</small></td>
+              <td class="money col-estimate" data-label="Цена сметы"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
+              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% else %}Нет подтверждённой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}</td>
+              <td class="money col-difference difference-{{ p.difference_tone }}" data-label="Смета − рынок"><b>{{ p.difference_fmt }}</b><small>{{ p.difference_percent_fmt if p.market_unit is not none else "Ждём цену рынка" }}</small></td>
+              <td class="sources" data-label="Проверка цены">
+                {% if p.verified_count %}<span class="source-count verified">{{ icon("check") }} {{ p.verified_count }} подтверждено</span>{% endif %}
+                {% if p.candidate_count %}<span class="source-count candidate">{{ icon("clock") }} {{ p.candidate_count }} на проверке</span>{% endif %}
+                {% if not p.sources %}<span class="source-empty">{{ p.price_reason }}</span>{% endif %}
+                {% if p.sources %}
+                <details class="source-details"><summary><span>Предложения</span><b>{{ p.sources|length }}</b><i aria-hidden="true"></i></summary><div class="source-list">
+                  {% for source in p.sources %}
+                  <button type="button" class="source {{ 'is-verified' if source.verified else 'is-candidate' }}" data-source-preview data-source-url="{{ source.url }}" data-source-audit="{{ source.audit_record_path }}" data-source-title="{{ source.title }}" data-source-price="{{ source.price_fmt }}" data-source-comparison-price="{{ source.comparison_price_fmt }}" data-source-price-basis="{{ source.price_basis }}" data-source-ratio="{{ source.estimate_ratio_fmt }}" data-source-reason="{{ source.reason }}" data-source-evidence="{{ source.evidence }}" data-source-location="{{ source.location }}" data-source-published="{{ source.published_at }}" data-source-observed="{{ source.observed_at }}" data-source-regionproof="{{ source.region_evidence }}">
+                    <span>{{ "Проверен" if source.verified else "Кандидат" }} · {{ source.source }}{% if source.index_hit %} · из индекса{% endif %}</span>
+                    <strong>{{ source.title }}</strong><b>{{ source.price_fmt }}</b><small>{{ source.reason }}</small>
+                  </button>
+                  {% endfor %}
+                </div></details>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
       </div>
-    </details>
+      <div class="no-results" id="noPositionResults" hidden>По этому фильтру позиций нет.</div>
+      {% else %}
+      <div class="empty-state"><strong>Позиций пока нет</strong><p>Начните с документов в блоке «Следующий шаг».</p><a class="btn ghost" href="#nextAction">К следующему шагу</a></div>
+      {% endif %}
+    </section>
 
+    <section class="downloads">
+      <div><h2>Файлы результата</h2><p>Excel остаётся доступен для проверки и ручной работы.</p></div>
+      <div>
+        {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Смета <small>{{ tender.estimate_updated }}</small></a>{% endif %}
+        {% if tender.has_market %}<a href="/tenders/{{ tender.tender_id }}/market-sources.xlsx">Источники рынка <small>{{ tender.market_updated }}</small></a>{% endif %}
+        {% if tender.has_comparison %}<a href="/tenders/{{ tender.tender_id }}/svodka.xlsx">Сравнение <small>{{ tender.comparison_updated }}</small></a>{% endif %}
+      </div>
+    </section>
+    </div>
+    <div data-workspace-panel="search" id="workspaceSearch" aria-labelledby="workspaceTabSearch" hidden>
+    <section class="agent-market-card" id="agentMarketCard">
+      <div class="agent-market-head">
+        <div>
+          <h2>Поиск цен у поставщиков</h2>
+          <span>Выберите строки в смете или ищите по всем позициям без цены. Результаты сохраняются, даже если закрыть страницу.</span>
+        </div>
+        <div class="agent-market-actions">
+          <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
+          <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
+          <button class="btn ghost" type="button" id="stopAgentMarketBtn" hidden>Остановить поиск</button>
+          <button class="btn primary" type="button" id="queueAgentMarketBtn">Найти цены по всей смете</button>
+        </div>
+      </div>
+      <div class="agent-live" id="agentLive" aria-live="polite">
+        <div class="agent-live-progress">
+          <div class="agent-live-title">
+            <div>
+
+              <strong id="agentProgressHeadline">Проверяю очередь…</strong>
+            </div>
+            <b id="agentProgressPercent">0%</b>
+          </div>
+          <div class="agent-progress-track" role="progressbar" aria-label="Прогресс анализа цен" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <i id="agentProgressFill"></i>
+          </div>
+          <div class="agent-progress-meta" id="agentProgressMeta">Загружаю состояние заданий</div>
+        </div>
+        <div class="agent-current" id="agentCurrent">
+          <span class="agent-current-pulse" aria-hidden="true"></span>
+          <div>
+            <small id="agentCurrentOrdinal">Текущая позиция</small>
+            <strong id="agentCurrentPosition">Ожидаю исполнителя поиска</strong>
+            <span id="agentCurrentStatus">Задание ещё не принято в работу</span>
+          </div>
+          <time id="agentUpdatedAt"></time>
+        </div>
+      </div>
+      <p class="agent-market-note" id="agentMarketNote">Проверяю подключение очереди…</p>
+      <div class="agent-results" id="agentResults" hidden>
+        <div class="agent-results-head">
+          <div><strong>Предложения последнего поиска</strong></div>
+          <button class="btn ghost" type="button" id="agentReloadTable">Обновить таблицу сметы</button>
+        </div>
+        <div class="agent-result-totals">
+          <span><small>Найдено</small><b id="agentResultFound">0</b></span>
+          <span class="is-verified"><small>Принято</small><b id="agentResultVerified">0</b></span>
+          <span class="is-candidate"><small>На проверке</small><b id="agentResultCandidate">0</b></span>
+          <span class="is-rejected"><small>Отклонено</small><b id="agentResultRejected">0</b></span>
+        </div>
+        <div class="agent-result-list" id="agentResultList"></div>
+      </div>
+      <details class="agent-journal" id="agentJournal" hidden><summary>Журнал поиска и состояние очереди</summary>
+      <div class="agent-market-summary" id="agentMarketSummary" aria-live="polite">
+        <span><small>Выбрано</small><b id="agentSelectedCount">0</b></span>
+        <span><small>В очереди</small><b id="agentQueuedCount">0</b></span>
+        <span><small>В работе</small><b id="agentLeasedCount">0</b></span>
+        <span><small>Получено</small><b id="agentCompletedCount">0</b></span>
+        <span><small>Ошибки</small><b id="agentFailedCount">0</b></span>
+      </div>
+
+        <div class="agent-journal-head"><strong>Последние события</strong><span>Обновляется каждые 15 секунд</span></div>
+        <div class="agent-market-jobs" id="agentMarketJobs"></div>
+      </details>
+    </section>
+
+    </div>
+    <section class="economics-workspace" data-workspace-panel="economics" id="workspaceEconomics" aria-labelledby="workspaceTabEconomics" hidden>
+      <h2>Расчёт участия</h2><p>Подтверждённые цены — основа закупки. Доставку, налоги, накладные и резерв задайте для этого тендера.</p>
+      <div data-tender-economics data-tender-id="{{ tender.tender_id }}" hidden></div>
+    </section>
     {% if tender.has_estimate %}
     <section class="estimate-check estimate-check-{{ tender.estimate_check_class }}" data-feature-content="estimateModal" aria-label="Сверка сметы с начальной ценой">
       <header>
@@ -204,79 +345,6 @@
       </div>
       <div class="run-progress" id="runProgress" hidden><i id="runProgressFill"></i></div>
       <details class="run-log" id="runLog"><summary>Журнал выполнения</summary><pre id="runLogText">Событий пока нет.</pre></details>
-    </section>
-
-    <section class="metrics" aria-label="Сводка по позициям">
-      <button class="metric is-active" type="button" data-bucket-filter="all" aria-pressed="true"><small>Все позиции</small><strong>{{ tender.total_positions }}</strong></button>
-      <button class="metric" type="button" data-bucket-filter="works" aria-pressed="false"><small>Работы и услуги</small><strong>{{ tender.counts.works }}</strong></button>
-      <button class="metric" type="button" data-bucket-filter="materials" aria-pressed="false"><small>Материалы и товары</small><strong>{{ tender.counts.materials }}</strong></button>
-      <button class="metric attention" type="button" data-bucket-filter="other" aria-pressed="false"><small>Требуют разбора</small><strong>{{ tender.counts.other }}</strong></button>
-      <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Обработано рынком</small><strong>{{ tender.counts.processed }}</strong></button>
-      <button class="metric verified" type="button" data-bucket-filter="verified" aria-pressed="false"><small>С проверенной ценой</small><strong>{{ tender.counts.verified }}</strong></button>
-    </section>
-
-    <section class="agent-market-card" id="agentMarketCard" data-feature-content="agentMarketModal">
-      <div class="agent-market-head">
-        <div>
-          <strong>Цены по всей смете</strong>
-          <span>Проверим сайты поставщиков по всем подготовленным позициям без цены. Строки с неполными данными останутся на уточнении.</span>
-        </div>
-        <div class="agent-market-actions">
-          <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
-          <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
-          <button class="btn ghost" type="button" id="stopAgentMarketBtn" hidden>Остановить поиск</button>
-          <button class="btn primary" type="button" id="queueAgentMarketBtn">Найти цены по всей смете</button>
-        </div>
-      </div>
-      <div class="agent-live" id="agentLive" aria-live="polite">
-        <div class="agent-live-progress">
-          <div class="agent-live-title">
-            <div>
-              <small>Прогресс фонового анализа</small>
-              <strong id="agentProgressHeadline">Проверяю очередь…</strong>
-            </div>
-            <b id="agentProgressPercent">0%</b>
-          </div>
-          <div class="agent-progress-track" role="progressbar" aria-label="Прогресс анализа цен" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <i id="agentProgressFill"></i>
-          </div>
-          <div class="agent-progress-meta" id="agentProgressMeta">Загружаю состояние заданий</div>
-        </div>
-        <div class="agent-current" id="agentCurrent">
-          <span class="agent-current-pulse" aria-hidden="true"></span>
-          <div>
-            <small id="agentCurrentOrdinal">Текущая позиция</small>
-            <strong id="agentCurrentPosition">Ожидаю исполнителя поиска</strong>
-            <span id="agentCurrentStatus">Задание ещё не принято в работу</span>
-          </div>
-          <time id="agentUpdatedAt"></time>
-        </div>
-      </div>
-      <div class="agent-market-summary" id="agentMarketSummary" aria-live="polite">
-        <span><small>Выбрано</small><b id="agentSelectedCount">0</b></span>
-        <span><small>В очереди</small><b id="agentQueuedCount">0</b></span>
-        <span><small>В работе</small><b id="agentLeasedCount">0</b></span>
-        <span><small>Получено</small><b id="agentCompletedCount">0</b></span>
-        <span><small>Ошибки</small><b id="agentFailedCount">0</b></span>
-      </div>
-      <p class="agent-market-note" id="agentMarketNote">Проверяю подключение очереди…</p>
-      <div class="agent-results" id="agentResults" hidden>
-        <div class="agent-results-head">
-          <div><small>Найденные предложения</small><strong>Что агент нашёл и что AutoBot принял</strong></div>
-          <button class="btn ghost" type="button" id="agentReloadTable">Обновить таблицу сметы</button>
-        </div>
-        <div class="agent-result-totals">
-          <span><small>Найдено</small><b id="agentResultFound">0</b></span>
-          <span class="is-verified"><small>Принято</small><b id="agentResultVerified">0</b></span>
-          <span class="is-candidate"><small>На проверке</small><b id="agentResultCandidate">0</b></span>
-          <span class="is-rejected"><small>Отклонено</small><b id="agentResultRejected">0</b></span>
-        </div>
-        <div class="agent-result-list" id="agentResultList"></div>
-      </div>
-      <div class="agent-journal" id="agentJournal" hidden>
-        <div class="agent-journal-head"><strong>Последние события</strong><span>Обновляется каждые 15 секунд</span></div>
-        <div class="agent-market-jobs" id="agentMarketJobs"></div>
-      </div>
     </section>
 
     <section class="avito-safe-card" id="avitoSafeCard" data-feature-content="avitoModal">
@@ -323,94 +391,11 @@
       </details>
     </section>
 
-    <section class="positions-card" id="positions" tabindex="-1">
-      <header class="positions-head">
-        <div><h2>Позиции сметы</h2><p><b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
-        <label class="position-search"><span aria-hidden="true"></span><input id="positionSearch" type="search" placeholder="Найти работу, материал или шифр" autocomplete="off" /></label>
-        <label class="price-state-filter">Результат поиска
-          <select id="priceStateFilter">
-            <option value="all">Все строки</option>
-            <option value="verified">С подтверждённой ценой</option>
-            <option value="candidate">Проверить предложения</option>
-            <option value="needs_details">Уточнить исходные данные</option>
-            <option value="missing">Все строки без цены</option>
-            <option value="pending">Поиск ещё не выполнялся</option>
-            <option value="blocked">Источник ограничил доступ</option>
-            <option value="no_quote">Поиск прошёл — цены нет</option>
-            <option value="excluded">Сводные строки</option>
-          </select>
-        </label>
-      </header>
-
-      {% if tender.positions %}
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th class="select-col"><span class="sr-only">Выбор</span></th><th>№</th><th>Позиция</th><th>Ед. / объём</th><th>Смета</th><th>Рынок</th><th>Источники</th>
-          </tr></thead>
-          <tbody id="positionRows">
-          {% for p in tender.positions %}
-            {% if p.file_start %}
-            <tr class="estimate-file-row" data-file-row data-file-key="{{ p.file_group }}">
-              <td colspan="7"><div><strong>{{ p.file_title }}</strong><span>Позиций: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
-            </tr>
-            {% endif %}
-            {% if p.section_start %}
-            <tr class="estimate-section-row" data-section-row data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}">
-              <td colspan="7"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
-            </tr>
-            {% endif %}
-            <tr data-position-row data-position-key="{{ p.position_key }}" data-price-state="{{ p.price_state }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
-              <td class="select-col" data-label="Выбрать"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} в поиск агентом" title="Выбрать позицию для поиска цены агентом" /></td>
-              <td class="row-no" data-label="№">{{ p.item_no }}</td>
-              <td class="position-name" data-label="Позиция">
-                <div><span class="type type-{{ p.type_slug }}">{{ p.type_label }}</span>{% if p.basis_code %}<code>{{ p.basis_code }}</code>{% endif %}</div>
-                  <strong>{{ p.name }}</strong>
-                  {% if p.section_note %}<small>{{ p.section_note }}</small>{% endif %}
-                  <a href="/tenders/{{ tender.tender_id }}/review?position_id={{ p.review_id|urlencode }}">Сверить с исходником</a>
-              </td>
-              <td data-label="Ед. / объём"><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
-              <td class="money" data-label="Смета"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money market-price market-price-{{ p.verdict_class }}" data-label="Рынок" title="{{ p.verdict }}" aria-label="Рыночная цена {{ p.market_unit_fmt }}. {{ p.verdict }}"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}медиана проверенных цен · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}<small class="row-status">{{ p.price_reason }}</small></td>
-              <td class="sources" data-label="Источники">
-                {% if p.verified_count %}<span class="source-count verified">✓ {{ p.verified_count }} проверено</span>{% endif %}
-                {% if p.candidate_count %}<span class="source-count candidate">? {{ p.candidate_count }} кандид.</span>{% endif %}
-                {% if not p.sources %}<span class="source-empty">Нет источников</span>{% endif %}
-                {% if p.sources %}
-                <details class="source-details"><summary><span>Источники</span><b>{{ p.sources|length }}</b><i aria-hidden="true"></i></summary><div class="source-list">
-                  {% for source in p.sources %}
-                  <button type="button" class="source {{ 'is-verified' if source.verified else 'is-candidate' }}" data-source-preview data-source-url="{{ source.url }}" data-source-audit="{{ source.audit_record_path }}" data-source-title="{{ source.title }}" data-source-price="{{ source.price_fmt }}" data-source-comparison-price="{{ source.comparison_price_fmt }}" data-source-price-basis="{{ source.price_basis }}" data-source-ratio="{{ source.estimate_ratio_fmt }}" data-source-reason="{{ source.reason }}" data-source-evidence="{{ source.evidence }}" data-source-location="{{ source.location }}" data-source-published="{{ source.published_at }}" data-source-observed="{{ source.observed_at }}" data-source-regionproof="{{ source.region_evidence }}">
-                    <span>{{ "Проверен" if source.verified else "Кандидат" }} · {{ source.source }}{% if source.index_hit %} · из индекса{% endif %}</span>
-                    <strong>{{ source.title }}</strong><b>{{ source.price_fmt }}</b><small>{{ source.reason }}</small>
-                  </button>
-                  {% endfor %}
-                </div></details>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div class="no-results" id="noPositionResults" hidden>По этому фильтру позиций нет.</div>
-      {% else %}
-      <div class="empty-state"><strong>Позиций пока нет</strong><p>Начните с документов в блоке «Следующий шаг».</p><a class="btn ghost" href="#nextAction">К следующему шагу</a></div>
-      {% endif %}
-    </section>
-
-    <section class="downloads">
-      <div><h2>Файлы результата</h2><p>Excel остаётся доступен для проверки и ручной работы.</p></div>
-      <div>
-        {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Смета <small>{{ tender.estimate_updated }}</small></a>{% endif %}
-        {% if tender.has_market %}<a href="/tenders/{{ tender.tender_id }}/market-sources.xlsx">Источники рынка <small>{{ tender.market_updated }}</small></a>{% endif %}
-        {% if tender.has_comparison %}<a href="/tenders/{{ tender.tender_id }}/svodka.xlsx">Сравнение <small>{{ tender.comparison_updated }}</small></a>{% endif %}
-      </div>
-    </section>
     {% else %}
     <section class="source-files-panel">
       <header class="source-files-heading">
         <div>
-          <span class="section-kicker">Документы из ЕИС</span>
+
           <h2>Исходные файлы закупки</h2>
           <p>Это документы, которые AutoBot уже скачал для тендера. Их можно открыть или сохранить без перехода на ЕИС.</p>
         </div>
@@ -473,13 +458,7 @@
     </section>
   </aside>
 
-  <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
-    <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
-    <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><h2 id="agentMarketModalTitle">Найти недостающие цены</h2><p>Запустите поиск по всей смете или выберите отдельные строки. Очередь сохранится, даже если закрыть вкладку. В расчёт попадут только цены с подтверждением.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
-      <div class="feature-modal-body" data-feature-body></div>
-    </section>
-  </aside>
+
 
   <aside class="feature-modal" id="avitoModal" hidden aria-labelledby="avitoModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
@@ -547,6 +526,32 @@
     let activeFeatureModal = null;
     let activeFeatureTrigger = null;
 
+    function openWorkspace(name, focus) {
+      const panels = Array.from(document.querySelectorAll("[data-workspace-panel]"));
+      if (!panels.length) return;
+      const chosen = panels.some(panel => panel.dataset.workspacePanel === name) ? name : "positions";
+      panels.forEach(panel => { panel.hidden = panel.dataset.workspacePanel !== chosen; });
+      document.querySelectorAll("[data-position-context]").forEach(node => { node.hidden = chosen !== "positions"; });
+      document.querySelectorAll(".tender-tabs [data-workspace-link]").forEach(link => {
+        const active = link.dataset.workspaceLink === chosen;
+        link.classList.toggle("is-active", active);
+        if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+      });
+      if ((focus || window.location.hash) && window.location.hash !== "#" + chosen) window.history.replaceState(null, "", "#" + chosen);
+      if (focus) {
+        const panel = panels.find(panel => panel.dataset.workspacePanel === chosen);
+        panel.setAttribute("tabindex", "-1"); panel.focus({ preventScroll: true });
+        panel.scrollIntoView({ block: "start", behavior: "instant" });
+      }
+    }
+    if (document.querySelector("[data-workspace-panel]")) {
+      document.querySelectorAll("[data-workspace-link], [data-open-workspace]").forEach(control => {
+        control.addEventListener("click", event => { event.preventDefault(); openWorkspace(control.dataset.workspaceLink || control.dataset.openWorkspace, true); });
+      });
+      window.addEventListener("hashchange", () => openWorkspace(window.location.hash.slice(1), false));
+      openWorkspace(window.location.hash.slice(1), Boolean(window.location.hash));
+    }
+
     function setFeatureModalOpen(modal, open) {
       if (!modal) return;
       if (open) {
@@ -572,7 +577,7 @@
           document.body.classList.remove("feature-modal-open");
           if (window.parent !== window) window.parent.postMessage({ type: "autobot:feature-modal", open: false }, "*");
         }
-        activeFeatureTrigger?.focus({ preventScroll: true });
+        (activeFeatureTrigger?.closest(".action-more")?.querySelector("summary") || activeFeatureTrigger)?.focus({ preventScroll: true });
         activeFeatureTrigger = null;
       }, 180);
     }
@@ -586,6 +591,7 @@
     if (positionMetrics && positionsHead) positionsHead.insertAdjacentElement("afterend", positionMetrics);
     document.querySelectorAll("[data-feature-open]").forEach(function(button) {
       button.addEventListener("click", function() {
+        button.closest(".action-more")?.removeAttribute("open");
         activeFeatureTrigger = button;
         setFeatureModalOpen(document.getElementById(button.dataset.featureOpen || ""), true);
       });
@@ -665,6 +671,12 @@
       return Number.isFinite(number) && number > 0
         ? number.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽"
         : "Цена не указана";
+    }
+
+    function readableSourceReason(reason) {
+      const text = String(reason || "");
+      if (/Страница не открылась|ConnectTimeout|TimeoutError|HTTPSConnectionPool/.test(text)) return "Не удалось открыть страницу поставщика. Повторите проверку позже.";
+      return text;
     }
 
     function formatAgentDuration(value) {
@@ -814,7 +826,7 @@
         } else {
           if (ordinal) ordinal.textContent = stopped ? "Поиск остановлен" : total && processed >= total ? "Очередь завершена" : "Текущая позиция";
           if (position) position.textContent = stopped ? "Сохранённые результаты доступны в таблице" : total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
-          if (currentStatus) currentStatus.textContent = total && processed >= total ? "Найденные предложения и ошибки доступны в журнале" : "Активных заданий нет";
+          if (currentStatus) currentStatus.textContent = total && processed >= total ? "Предложения и причины проверки — ниже" : "Активных заданий нет";
           if (updated) updated.textContent = "";
           if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + (processed - canceled) + " из " + total) : "Повторно найти цены";
           if (launcherStatus) launcherStatus.textContent = stopped ? "Поиск остановлен" : total && processed >= total ? "Все задания завершены" : "Все подготовленные позиции без цены";
@@ -847,6 +859,12 @@
             return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
           }).join("");
         }
+        const snapshotTitle = document.getElementById("searchSnapshotTitle");
+        const snapshotStatus = document.getElementById("searchSnapshotStatus");
+        if (snapshotTitle) snapshotTitle.textContent = total ? (progress.running ? "Поиск цен идёт" : "Последний поиск цен") : "Поиск цен ещё не запускался";
+        if (snapshotStatus) snapshotStatus.textContent = total
+          ? ("Обработано " + processed + " из " + total + " · предложений: " + Number(runView.totals.found || 0) + " · принято: " + Number(runView.totals.verified || 0))
+          : "Откройте поиск, чтобы сравнить смету с предложениями поставщиков";
         const resultRows = runView.results;
         const resultTotals = runView.totals;
         const resultsPanel = document.getElementById("agentResults");
@@ -867,13 +885,14 @@
               : "";
             return '<article class="agent-result is-' + verification + '">' +
               '<div class="agent-result-state"><span>' + escapeHtml(resultLabels[verification]) + '</span><b>' + price + '</b></div>' +
-              '<div class="agent-result-copy"><small>' + escapeHtml(item.position_name || "Позиция сметы") + '</small><strong>' + escapeHtml(item.title || "Источник цены") + '</strong><p>' + escapeHtml(reason) + '</p></div>' +
+              '<div class="agent-result-copy"><small>' + escapeHtml(item.position_name || "Позиция сметы") + '</small><strong>' + escapeHtml(item.title || "Источник цены") + '</strong><p>' + escapeHtml(readableSourceReason(reason)) + '</p>' + (readableSourceReason(reason) !== reason ? '<details class="source-diagnostics"><summary>Технические подробности</summary><p>' + escapeHtml(reason) + '</p></details>' : '') + '</div>' +
               '<div class="agent-result-link">' + sourceLink + '</div></article>';
           }).join("");
         }
       } catch (error) {
         agentQueueEnabled = false;
         refreshAgentSelection();
+        if (document.getElementById("searchSnapshotStatus")) document.getElementById("searchSnapshotStatus").textContent = "Не удалось загрузить состояние. Откройте поиск и повторите проверку.";
         if (agentMarketNote) {
           agentMarketNote.textContent = "Не удалось прочитать очередь: " + (error.message || error);
           agentMarketNote.classList.add("is-warning");
@@ -1093,7 +1112,8 @@
     }
 
     marketButton?.addEventListener("click", function() {
-      setFeatureModalOpen(document.getElementById("agentMarketModal"), true);
+      marketButton.closest(".action-more")?.removeAttribute("open");
+      openWorkspace("search", true);
     });
     marketSampleButton?.addEventListener("click", function() { postRun(false, 10); });
     avitoSafeButton?.addEventListener("click", async function() {

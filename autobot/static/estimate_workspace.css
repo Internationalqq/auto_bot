@@ -1,13 +1,13 @@
-.estimate-workspace-page { margin: 0; }
+.estimate-workspace-page { margin: 0; --ab-muted: #596b80; background: #f6f8fb; }
 .estimate-workspace-page input:not([type="checkbox"]), .estimate-workspace-page select, .estimate-workspace-page textarea { border: 1px solid var(--ab-line-strong); padding: 9px 10px; font: inherit; font-size: 13px; }
 .estimate-workspace-page a { color: var(--ab-blue); }
-.estimate-workspace { max-width: 1320px; margin: auto; padding: 20px 24px 40px; display: grid; gap: 16px; }
+.estimate-workspace { max-width: 1440px; margin: auto; padding: 20px 24px 40px; display: grid; gap: 16px; }
 .estimate-workspace-page [hidden] { display: none; }
 .estimate-back, .estimate-reset { color: var(--ab-ink-soft); font-size: 13px; text-decoration: none; }
 .estimate-back { justify-self: start; }
 .estimate-heading { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
 .estimate-title-copy { min-width: 0; }
-.estimate-title-copy h1 { margin: 0; color: var(--ab-ink); font-size: clamp(23px, 2.4vw, 30px); line-height: 1.2; overflow-wrap: anywhere; }
+.estimate-title-copy h1 { margin: 0; color: var(--ab-ink); font-size: 24px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
 .estimate-title-copy p { margin: 7px 0 0; color: var(--ab-muted); font-size: 12px; overflow-wrap: anywhere; }
 .estimate-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 7px; flex-shrink: 0; max-width: 450px; }
 .estimate-workspace .btn { min-height: 36px; padding: 8px 12px; font-size: 12px; line-height: 1.2; text-decoration: none; white-space: normal; }
@@ -17,7 +17,7 @@
 .estimate-panel { padding: 18px; border: 1px solid var(--ab-line); border-radius: 12px; background: var(--ab-surface); min-width: 0; }
 .estimate-metrics { display: grid; grid-template-columns: 1fr 1.2fr 1.4fr; gap: 20px; }
 .estimate-metrics span { display: block; font-size: 12px; color: var(--ab-muted); }
-.estimate-metrics strong { display: block; margin-top: 5px; font-size: 24px; font-variant-numeric: tabular-nums; font-weight: 650; }
+.estimate-metrics strong { display: block; margin-top: 5px; font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .estimate-metrics strong small { font-size: 13px; color: var(--ab-muted); font-weight: 400; }
 .estimate-check-note b { display: block; margin-top: 8px; font-size: 13px; font-weight: 500; line-height: 1.4; }
 .estimate-inspection { border-top: 1px solid var(--ab-line); margin-top: 14px; padding-top: 11px; }
@@ -27,9 +27,10 @@
 .reconciliation-note.needs-attention { background: #fffbf0; border-color: #eedeb8; }
 .reconciliation-values { display: flex; flex-wrap: wrap; gap: 6px 18px; }
 .reconciliation-explain { margin-top: 8px; }
-.estimate-market-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.estimate-eyebrow { margin: 0 0 7px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ab-blue); }
-.estimate-market h2 { margin: 0; font-size: 19px; }
+.estimate-market-summary { cursor: pointer; color: var(--ab-ink); font-size: 15px; font-weight: 600; line-height: 1.5; }
+.estimate-market-summary #marketStatusMain { display: block; margin: 5px 0 0 18px; color: var(--ab-muted); font-size: 12px; font-weight: 400; }
+.estimate-market-heading { margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+
 .estimate-muted { font-size: 12px; color: var(--ab-muted); line-height: 1.5; }
 .estimate-market-heading p.estimate-muted { margin: 7px 0 0; max-width: 570px; }
 .estimate-market-form { min-width: 320px; max-width: 430px; }
@@ -39,13 +40,13 @@
 .estimate-market-form button { flex: 0 0 auto; }
 .estimate-workspace .estimate-market .btn.is-stop { background: #fff4f4; border-color: #ebcece; color: var(--ab-red); box-shadow: none; }
 .estimate-scope { margin: 12px 0; color: var(--ab-muted); font-size: 11px; line-height: 1.5; }
-.estimate-market-status { padding-top: 10px; border-top: 1px solid var(--ab-line); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.estimate-market-status { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ab-line); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 #marketStatusDetail { margin-top: 3px; color: var(--ab-muted); }
 .estimate-log { margin-top: 10px; }
 .estimate-log pre { margin: 8px 0 0; padding: 10px; max-height: 200px; overflow: auto; background: var(--ab-soft); border-radius: 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ab-ink-soft); }
 .estimate-data-toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 14px; }
 .estimate-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
-.estimate-tab { padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ab-ink-soft); font: inherit; font-size: 13px; cursor: pointer; }
+.estimate-tab { display: inline-flex; align-items: center; gap: 7px; padding: 10px 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ab-ink-soft); font: inherit; font-size: 14px; cursor: pointer; }
 .estimate-tab.is-active { color: var(--ab-blue); background: var(--ab-blue-soft); border-color: #d6e3ff; font-weight: 600; }
 .estimate-tab:disabled { color: var(--ab-muted); opacity: .65; cursor: default; }
 .estimate-tab:focus-visible, .estimate-inspection summary:focus-visible, .estimate-log summary:focus-visible { outline: 2px solid var(--ab-blue); outline-offset: 2px; }
@@ -60,20 +61,20 @@
 .estimate-workspace .table-panel-title { margin: 0; font-size: 14px; }
 .estimate-workspace .table-wrap { overflow: hidden; border: 1px solid var(--ab-line); border-radius: 9px; }
 .estimate-workspace .table-scroll { overflow: auto; max-height: 68vh; }
-.estimate-workspace table { border-collapse: collapse; width: 100%; min-width: 920px; font-size: 12px; }
-.estimate-workspace th, .estimate-workspace td { padding: 10px; border-bottom: 1px solid var(--ab-line); vertical-align: top; }
-.estimate-workspace th { position: sticky; top: 0; z-index: 2; color: var(--ab-ink-soft); background: var(--ab-soft); text-align: left; font-size: 11px; font-weight: 600; }
+.estimate-workspace table { border-collapse: collapse; width: 100%; min-width: 980px; font-size: 13px; }
+.estimate-workspace th, .estimate-workspace td { padding: 12px; border-bottom: 1px solid var(--ab-line); vertical-align: top; line-height: 1.5; }
+.estimate-workspace th { position: sticky; top: 0; z-index: 2; color: #455a70; background: var(--ab-soft); text-align: left; font-size: 12px; font-weight: 600; }
 .estimate-workspace tbody tr:hover { background: var(--ab-soft); }
 .estimate-workspace .name { min-width: 260px; max-width: 480px; }
 .estimate-workspace .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.estimate-workspace .where { min-width: 120px; color: var(--ab-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.estimate-workspace .tag { font-size: 10px; white-space: nowrap; color: var(--ab-ink-soft); }
+.estimate-workspace .where { min-width: 120px; color: var(--ab-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.estimate-workspace .tag { display: inline-block; padding: 3px 6px; border-radius: 5px; font-size: 11px; white-space: nowrap; color: #315d8b; background: #edf3fb; }
 .estimate-workspace .section-row, .estimate-workspace .sheet-total-row { background: var(--ab-soft); font-weight: 600; }
 .estimate-workspace .sheet-break-row td { height: 7px; padding: 0; background: var(--ab-canvas); }
 .estimate-workspace .status-box { padding: 20px; border-radius: 8px; background: var(--ab-soft); font-size: 13px; color: var(--ab-muted); }
 .estimate-workspace .estimate-empty { padding: 24px; text-align: center; color: var(--ab-muted); }
-.estimate-workspace .viability-box { margin-bottom: 14px; padding: 14px; border: 1px solid var(--ab-line); border-radius: 9px; }
-.estimate-workspace .viability-title { margin: 0; font-size: 17px; }
+.estimate-workspace .viability-box { margin-bottom: 14px; padding: 12px 0; border-bottom: 1px solid var(--ab-line); }
+.estimate-workspace .viability-title { margin: 0; font-size: 13px; font-weight: 600; cursor: pointer; }
 .estimate-workspace .viability-sub { margin-top: 7px; font-size: 12px; line-height: 1.5; color: var(--ab-ink-soft); }
 .estimate-workspace .viability-facts { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
 .estimate-workspace .viability-fact span { display: block; color: var(--ab-muted); font-size: 11px; }
@@ -132,3 +133,24 @@
   .estimate-market-form input { min-width: 135px; }
   .estimate-workspace .viability-facts { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
+
+.estimate-workspace-page .ui-icon { width: 17px; height: 17px; flex: 0 0 auto; vertical-align: middle; }
+.estimate-workspace-page ::selection { background: #dceafb; color: #16345c; }
+.estimate-workspace-page :is(button,a,input,select,summary):focus-visible { outline: 2px solid var(--ab-blue); outline-offset: 3px; }
+.estimate-workspace-page input { caret-color: var(--ab-blue); }
+.estimate-workspace-page input::placeholder { color: #66788c; opacity: 1; }
+.estimate-workspace .estimate-overview { padding: 4px 0 14px; background: transparent; border: 0; border-bottom: 1px solid var(--ab-line); border-radius: 0; }
+.estimate-workspace .btn { background: #2563eb; box-shadow: none; font-weight: 600; }
+.estimate-workspace .btn.secondary { background: #fff; }
+.estimate-search-scope { margin-top: 10px; color: var(--ab-muted); font-size: 12px; line-height: 1.5; }
+.estimate-search-scope summary { cursor: pointer; }.estimate-search-scope p { max-width: 75ch; }
+.estimate-workspace .col-estimate { background: #f1f6fd; }.estimate-workspace th.col-estimate { color: #245c9a; }
+.estimate-workspace .col-market { background: #eff8f5; }.estimate-workspace th.col-market { color: #17685c; }
+.estimate-workspace .col-candidate { background: #fffbf1; }
+.estimate-workspace th small, .estimate-workspace td small { display: block; margin-top: 4px; font-size: 11px; line-height: 1.5; font-weight: 400; }
+.estimate-workspace .num small { white-space: normal; color: #536b80; max-width: 180px; margin-left: auto; }
+.estimate-workspace .difference-good b { color: #13714c; }.estimate-workspace .difference-bad b { color: #b0393c; }
+.estimate-workspace .type-material, .estimate-workspace .type-product { background: #eaf6ef; color: #176949; }
+.price-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin: 12px 0; color: #536b80; font-size: 12px; }
+.price-legend span { display: inline-flex; align-items: center; gap: 5px; }.price-legend span:first-child { color: #245c9a; }.price-legend span:nth-child(2) { color: #17685c; }
+@media (max-width: 600px) { .estimate-title-copy h1 { font-size: 21px; }.estimate-tab .ui-icon { width: 15px; height: 15px; }.estimate-metrics strong { font-size: 18px; } }

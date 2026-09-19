@@ -410,6 +410,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         elif candidate_count:
             counts["candidates"] += 1
         verdict, verdict_class = _verdict(estimate_unit, market_median)
+        from autobot.price_comparison import price_difference
         status_text = _clean(market_row.get("Ошибка / статус", "")) if market_row is not None else "Нет подходящего результата для этой позиции"
 
         positions.append(
@@ -448,6 +449,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
                 "estimate_total_fmt": _fmt_money(row_total),
                 "market_unit": market_median,
                 "market_unit_fmt": _fmt_money(market_median),
+                **price_difference(estimate_unit, market_median),
                 "market_base_unit": market_median_base,
                 "market_base_unit_fmt": _fmt_money(market_median_base),
                 "market_ratio": market_ratio,
