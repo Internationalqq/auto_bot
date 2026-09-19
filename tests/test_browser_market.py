@@ -22,6 +22,7 @@ GOOGLE = '''<html><body><main>
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv('MARKET_BROWSER_DISCOVERY', '1')
+    monkeypatch.setenv('MARKET_BROWSER_CATALOGS', '0')
     monkeypatch.setattr(market, '_MARKET_CACHE_DIR', tmp_path / 'search')
     monkeypatch.setattr(market, '_SOURCE_PAGE_CACHE_DIR', tmp_path / 'pages')
     monkeypatch.setattr(market, '_MARKET_SEARCH_LOG_PATH', tmp_path / 'events.jsonl')
@@ -98,8 +99,9 @@ def test_disabled_browser_keeps_the_previous_search_path(monkeypatch):
 
 def test_production_default_renders_sources_without_polling_blocked_google(monkeypatch):
     monkeypatch.delenv('MARKET_BROWSER_DISCOVERY', raising=False)
+    monkeypatch.delenv('MARKET_BROWSER_CATALOGS', raising=False)
     with market.WebBrowserFetcher() as browser:
-        assert browser.enabled and not browser.search_enabled
+        assert browser.enabled and browser.catalogs_enabled and not browser.google_enabled
         monkeypatch.setattr(browser, 'fetch_source_page', lambda *a: pytest.fail('Google should not be opened by default'))
         assert browser.search_web('Бетон М300', max_results=3) == []
 

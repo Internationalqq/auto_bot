@@ -585,6 +585,11 @@ def _generic_block_reason(page_html: str, final_url: str = "") -> str:
         "unusual traffic",
         "showcaptcha",
         "smartcaptcha",
+        "select all squares containing a duck",
+        "please complete the following challenge",
+        "captcha - brave search",
+        "access denied - startpage",
+        "проверка браузера перед переходом",
     )
     return "страница защиты или капчи" if any(marker in folded for marker in markers) else ""
 
@@ -994,25 +999,71 @@ class AvitoBrowserFetcher:
 class WebBrowserFetcher(AvitoBrowserFetcher):
     """Reuse the bounded renderer without the Avito profile or request budget."""
 
-    def __init__(self):
-        enabled = os.environ.get('MARKET_WEB_BROWSER', '1').strip().casefold() not in {'0', 'false', 'no', 'off'}
+    def __init__(self, *, enabled: bool = True):
+        enabled = enabled and os.environ.get('MARKET_WEB_BROWSER', '1').strip().casefold() not in {'0', 'false', 'no', 'off'}
         super().__init__(enabled=enabled, headless=True, timeout_ms=15_000)
         # A fresh, isolated context per position. Never attach to a personal
         # browser, copy cookies, or contend for the existing Avito profile.
         self.user_data_dir = ''
         self.user_agent = (os.environ.get('MARKET_USER_AGENT') or '').strip()
         # The production IP received a Google challenge during the live probe.
-        # Rendering suppliers is useful by default; enable discovery only on
-        # a host where an ordinary search page has been checked successfully.
-        self.search_enabled = enabled and os.environ.get('MARKET_BROWSER_DISCOVERY', '0').strip().casefold() in {'1', 'true', 'yes', 'on'}
+        # Supplier catalogues work independently. Enable Google discovery only
+        # on a host where its ordinary search page was checked successfully.
+        self.google_enabled = enabled and os.environ.get('MARKET_BROWSER_DISCOVERY', '0').strip().casefold() in {'1', 'true', 'yes', 'on'}
+        self.catalogs_enabled = enabled and os.environ.get('MARKET_BROWSER_CATALOGS', '1').strip().casefold() not in {'0', 'false', 'no', 'off'}
+        self.search_enabled = self.google_enabled or self.catalogs_enabled
         self.search_unavailable = False
+        self._catalog_pages: dict[str, str] = {}
+        self.catalog_errors: list[str] = []
+        if self.catalogs_enabled:
+            from autobot.supplier_catalogs import REGISTRY_PATH
+            try:
+                catalog_version = hashlib.sha256(REGISTRY_PATH.read_bytes()).hexdigest()[:12]
+            except OSError:
+                catalog_version = 'missing'
+            self.cache_source = f'web_catalogs_{catalog_version}_google{int(self.google_enabled)}'
+        else:
+            self.cache_source = 'web_browser'
 
     def __enter__(self):
         return self
 
+    def _load_catalog_page(self, url: str) -> str:
+        _remaining_timeout(15)
+        if url in self._catalog_pages:
+            return self._catalog_pages[url]
+        cached = _load_source_page_cache(url)
+        if cached is not None and cached[2] == 'playwright':
+            self._catalog_pages[url] = cached[0]
+            if not cached[0] and cached[1]:
+                self.catalog_errors.append(f'Каталог {urlparse(url).hostname}: {cached[1]}')
+            return cached[0]
+        page_html = self.fetch_source_page(url)
+        # Share this exact observation with price verification. A reread of a
+        # cached page never moves its capture date forward.
+        if page_html:
+            _save_source_page_cache(url, page_html=page_html, method='playwright')
+        elif 'капч' in self.last_error.casefold() or 'защит' in self.last_error.casefold():
+            _save_source_page_cache(url, error=self.last_error, method='playwright')
+            self.catalog_errors.append(f'Каталог {urlparse(url).hostname}: {self.last_error}')
+            _append_market_search_log('browser_catalog_unavailable', url=url, reason=self.last_error)
+        self._catalog_pages[url] = page_html
+        return page_html
+
     def search_web(self, query: str, *, max_results: int) -> list[MarketOffer]:
         global _WEB_BROWSER_BLOCKED_UNTIL
-        if not self.search_enabled or self.search_unavailable or time.monotonic() < _WEB_BROWSER_BLOCKED_UNTIL:
+        if not self.search_enabled:
+            return []
+        if self.catalogs_enabled:
+            from autobot.supplier_catalogs import discover_catalog_pages
+            pages = discover_catalog_pages(query, self._load_catalog_page, limit=min(6, max_results))
+            if pages:
+                _append_market_search_log('browser_catalog_discovery', query=query,
+                                          pages=len(pages), urls=[page.url for page in pages])
+                return [MarketOffer(source='Интернет', title=page.title, price=0,
+                                    url=page.url, snippet=page.snippet,
+                                    discovery_engine='Каталог поставщика · Chromium') for page in pages]
+        if not self.google_enabled or self.search_unavailable or time.monotonic() < _WEB_BROWSER_BLOCKED_UNTIL:
             return []
         from autobot.browser_search_results import google_result_links
         page_html = self.fetch_source_page('https://www.google.com/search?' + urlencode({'q': query, 'hl': 'ru'}))
@@ -2149,13 +2200,15 @@ def search_market(
         try:
             browser_search = getattr(browser_fetcher, 'search_web', None)
             use_browser = callable(browser_search) and browser_fetcher.search_enabled
-            cache_source = 'web_browser' if use_browser else 'web'
+            cache_source = getattr(browser_fetcher, 'cache_source', 'web_browser') if use_browser else 'web'
             web_offers = _load_search_cache(cache_source, query, region, required_results=max_results)
             if web_offers is None:
                 web_offers = browser_search(_web_query(query, region), max_results=max_results) if use_browser else []
                 if not web_offers:
                     web_offers = search_web(query, region=region, max_results=max_results)
                 _save_search_cache(cache_source, query, region, web_offers, requested_results=max_results)
+            if use_browser:
+                errors.extend(dict.fromkeys(getattr(browser_fetcher, 'catalog_errors', [])))
             offers.extend(web_offers)
         except Exception as e:
             errors.append(f"Интернет: {type(e).__name__}: {e}")
@@ -2735,7 +2788,7 @@ def research_position_market(
         }
     )
     checked, error = _research_row_market(
-        row, plan, sources=sources or ['web', 'avito'], max_results=max_results,
+        row, plan, sources=sources or ['web'], max_results=max_results,
         browser_fetcher=browser_fetcher,
     )
     return checked, plan, error
@@ -3800,7 +3853,7 @@ def run_tender(
 
     md = load_tender_metadata().get(tid, {})
     region = str(md.get("region") or "").strip()
-    sources = sources or ["web", "avito"]
+    sources = sources or ["web"]
     from autobot.atomic_output import output_lock
     with output_lock(out_path):
         prev = pd.DataFrame() if no_resume else _read_previous(out_path)
@@ -3854,7 +3907,9 @@ def run_tender(
     print(f"Рынок: tender={tid}, строк={total}, источники={','.join(sources)}, регион={region or '-'}", flush=True)
     use_browser = (os.environ.get("MARKET_AVITO_BROWSER", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
     browser_headless = (os.environ.get("MARKET_AVITO_HEADLESS", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
-    with AvitoBrowserFetcher(enabled=use_browser and not dry_run, headless=browser_headless) as browser:
+    fetcher = (WebBrowserFetcher(enabled=not dry_run) if sources == ['web'] else
+               AvitoBrowserFetcher(enabled=use_browser and not dry_run, headless=browser_headless))
+    with fetcher as browser:
         for seq, (_, row) in enumerate(eligible, start=1):
             row = row.copy()
             row['Регион поиска'] = region
@@ -4024,7 +4079,9 @@ def probe_market(
         f"profile={os.environ.get('MARKET_AVITO_USER_DATA_DIR') or str(REPO_ROOT / 'data' / 'avito_profile')}",
         flush=True,
     )
-    with AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless) as browser:
+    fetcher = (WebBrowserFetcher() if sources == ['web'] else
+               AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless))
+    with fetcher as browser:
         offers, err = search_market(
             query,
             region=region,
@@ -4062,8 +4119,8 @@ def main() -> None:
     ap.add_argument("--pause", type=float, default=float(os.environ.get("MARKET_PAUSE_SEC", "4") or "4"))
     ap.add_argument(
         "--sources",
-        default=os.environ.get("MARKET_SOURCES", "web,avito"),
-        help="Источники через запятую: web,avito. По умолчанию web,avito.",
+        default=os.environ.get("MARKET_SOURCES", "web"),
+        help="Источники через запятую: web,avito. По умолчанию web; Авито выбирается отдельно.",
     )
     ap.add_argument("--no-resume", action="store_true", help="Игнорировать сохранённый РЫНОК_ИСТОЧНИКИ_*.xlsx")
     ap.add_argument(
@@ -4119,7 +4176,7 @@ def main() -> None:
 
     sources = [x.strip().lower() for x in str(args.sources or "").split(",") if x.strip()]
     if not sources:
-        sources = ["web", "avito"]
+        sources = ["web"]
     bad = [x for x in sources if x not in ("avito", "web")]
     if bad:
         raise SystemExit(f"Неизвестные источники: {', '.join(bad)}")

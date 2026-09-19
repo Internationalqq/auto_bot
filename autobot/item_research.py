@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from autobot.paths import REPO_ROOT
-from autobot.real_market_scraper import AvitoBrowserFetcher, MarketOffer, research_position_market
+from autobot.real_market_scraper import AvitoBrowserFetcher, WebBrowserFetcher, MarketOffer, research_position_market
 
 try:
     from dotenv import load_dotenv
@@ -29,7 +29,7 @@ except ImportError:
     pass
 
 
-DEFAULT_SOURCES = ["web", "avito"]
+DEFAULT_SOURCES = ["web"]
 VALID_SOURCES = {"avito", "web"}
 REMOTE_CITY_TOKENS = (
     "москва",
@@ -295,9 +295,11 @@ def research_item(
             seen_keys.add(key)
             all_offers.append(offer)
 
-    # The same limited browser session is also the JS fallback for ordinary
-    # supplier sites.  It must therefore stay available in a web-only run.
-    with AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless) as browser:
+    # A web-only run uses the same catalogue discovery as queued estimates,
+    # independent of the Avito profile and its enable/disable switch.
+    fetcher = (WebBrowserFetcher() if active_sources == ['web'] else
+               AvitoBrowserFetcher(enabled=use_browser, headless=browser_headless))
+    with fetcher as browser:
         for idx, search_region in enumerate(search_regions or [""]):
             offers, plan, errors = research_position_market(
                 q,

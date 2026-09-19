@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from autobot.market_strategy import normalize_unit, units_compatible
+from autobot.market_strategy import normalize_unit, units_compatible, normalize_grade_notation
 
 
 _ANTIBOT_HARD_MARKERS = ("servicepipe.tech", "checking your browser", "cf-chl-", "id_spinner")
@@ -74,8 +74,9 @@ def _fold(value: object) -> str:
 
 
 def _tokens(value: object) -> set[str]:
+    folded = normalize_grade_notation(value)
     return {
-        word for word in re.findall(r"[0-9a-zа-я]{2,}", _fold(value))
+        word for word in re.findall(r"[0-9a-zа-я]{2,}", folded)
         if word not in _STOP_WORDS
     }
 
@@ -105,6 +106,12 @@ def _specification_compatible(name: str, evidence: str) -> bool:
     the local price evidence must contain that exact range.
     """
 
+    if 'бетон' in _fold(name):
+        for pattern in (r'\b[мm]\s*(\d{2,3})\b', r'\b[вb]\s*(\d{1,2}(?:[.,]\d+)?)\b'):
+            wanted_grade = {part.replace(',', '.') for part in re.findall(pattern, _fold(name))}
+            found_grade = {part.replace(',', '.') for part in re.findall(pattern, _fold(evidence))}
+            if wanted_grade and found_grade and wanted_grade.isdisjoint(found_grade):
+                return False
     wanted = _range_specs(name)
     if not wanted:
         return True

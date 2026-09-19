@@ -8256,7 +8256,7 @@ def api_research_items():
     sources = parse_sources(
         os.environ.get("MARKET_SUMMARY_SOURCES")
         or os.environ.get("MARKET_SOURCES")
-        or "web,avito"
+        or "web"
     )
 
     results: list[dict] = []
@@ -9232,7 +9232,7 @@ def _run_market_for_tender(
             use = cap_rows if est_n <= 0 else min(est_n, cap_rows)
             max_rows_arg = str(max(1, use))
     pause = "0" if avito_collect_only else ((os.environ.get("MARKET_PAUSE_SEC") or os.environ.get("MARKET_PAUSE_SEC") or "4").strip() or "4")
-    sources = (sources_override or os.environ.get("MARKET_SOURCES") or "web,avito").strip() or "web,avito"
+    sources = (sources_override or os.environ.get("MARKET_SOURCES") or "web").strip() or "web"
     max_results = "3" if avito_collect_only else ((os.environ.get("MARKET_MAX_RESULTS") or "5").strip() or "5")
     cmd = [
         sys.executable,

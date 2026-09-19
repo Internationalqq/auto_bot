@@ -408,6 +408,11 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
         return "щебень гранитный"
     if "щебень" in folded:
         fraction = re.search(r"\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b", folded)
+        rock = next((label for stem, label in [('гранит', 'гранитный'), ('гравийн', 'гравийный'),
+                     ('известня', 'известняковый'), ('вторичн', 'вторичный')]
+                     if stem in folded), '')
+        if rock:
+            return f"щебень {rock}" + (f" фракции {fraction.group(1)}-{fraction.group(2)}" if fraction else '')
         if fraction:
             return f"щебень фракции {fraction.group(1)}-{fraction.group(2)}"
         return "щебень строительный"
@@ -544,8 +549,14 @@ def build_search_plan(
     )
 
 
+def normalize_grade_notation(value: object) -> str:
+    """М300, М 300 and M300 describe the same printed concrete grade."""
+    return re.sub(r'\b([мmвb])\s*(\d{1,3}(?:[.,]\d+)?)',
+                  lambda m: m[1].translate(str.maketrans('mb', 'мв')) + m[2].replace(',', '.'), _fold(value))
+
+
 def _tokens(value: object) -> set[str]:
-    words = re.findall(r"[0-9a-zа-я]{3,}", _fold(value))
+    words = re.findall(r"[0-9a-zа-я]{3,}", normalize_grade_notation(value))
     return {word for word in words if word not in _STOP_WORDS and not word.isdigit()}
 
 
@@ -564,7 +575,8 @@ def is_direct_source_url(url: object) -> bool:
     if host in _SEARCH_HOSTS or any(_host_is(host, root) for root in _SEARCH_HOSTS):
         return False
     if not parsed.path or parsed.path == "/":
-        return False
+        from autobot.supplier_catalogs import is_catalog_price_url
+        return is_catalog_price_url(_text(url))
     if "avito.ru" in host and not re.search(r"_\d{6,}(?:/)?$", parsed.path):
         return False
     return True
