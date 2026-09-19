@@ -143,7 +143,7 @@ def test_canonical_routes_keep_handlers_and_csrf(monkeypatch):
     assert client.get('/tenders/market-audit?record=../../private').status_code == 404
     script = client.get('/research/client.js')
     assert script.status_code == 200
-    assert script.get_data(as_text=True) == (web_ui.REPO_ROOT / 'autobot/static/research.js').read_text(encoding='utf-8')
+    assert script.get_data() == (web_ui.REPO_ROOT / 'autobot/static/research.js').read_bytes()
     monkeypatch.setattr(web_ui, 'crm_projects_for_picker', lambda: [{'id': 1, 'name': 'Allowed project'}])
     assert client.get('/api/tenders/crm/projects').json['projects'] == [{'id': 1, 'name': 'Allowed project'}]
 

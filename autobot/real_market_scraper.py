@@ -120,7 +120,8 @@ _SOURCE_PAGE_CACHE_VERSION = "2"
 _AVITO_GUARD_PATH = _MARKET_CACHE_DIR / "avito_guard.json"
 _AVITO_LOG_PATH = REPO_ROOT / "data" / "logs" / "avito_playwright.jsonl"
 _MARKET_SEARCH_LOG_PATH = REPO_ROOT / "data" / "logs" / "market_search_candidates.jsonl"
-_SEARCH_CACHE_VERSIONS = {"web": "10", "avito": "2", "avito_index": "1"}
+_SEARCH_CACHE_VERSIONS = {"web": "10", "web_browser": "1", "avito": "2", "avito_index": "1"}
+_WEB_BROWSER_BLOCKED_UNTIL = 0.0
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _DOMAIN_RATE_LOCK = threading.Lock()
 _SEARCH_DEADLINE: ContextVar[float | None] = ContextVar('market_search_deadline', default=None)
@@ -601,6 +602,7 @@ class AvitoBrowserFetcher:
         self._page = None
         self.last_error = ""
         self.proxy = (os.environ.get("MARKET_PROXY") or "").strip()
+        self.user_agent = (os.environ.get("MARKET_USER_AGENT") or DEFAULT_USER_AGENT).strip()
         self.user_data_dir = (
             os.environ.get("MARKET_AVITO_USER_DATA_DIR")
             or str(REPO_ROOT / "data" / "avito_profile")
@@ -689,7 +691,8 @@ class AvitoBrowserFetcher:
         }
         # Один обычный desktop User-Agent на весь профиль. Не меняем его между
         # запросами: резкие изменения внутри одной cookie-сессии выглядят подозрительнее.
-        context_kwargs["user_agent"] = (os.environ.get("MARKET_USER_AGENT") or DEFAULT_USER_AGENT).strip()
+        if self.user_agent:
+            context_kwargs["user_agent"] = self.user_agent
         if self.user_data_dir:
             Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
             self._context = self._playwright.chromium.launch_persistent_context(
@@ -744,6 +747,7 @@ class AvitoBrowserFetcher:
                 self.last_error = "браузер вернул слишком короткую страницу"
                 self.source_domain_failures[host] = self.source_domain_failures.get(host, 0) + 1
                 return ""
+            self.last_error = ""
             print(f"Источник · Playwright: {host or url} ({len(content):,} байт)", flush=True)
             return content
         except Exception as exc:
@@ -985,6 +989,43 @@ class AvitoBrowserFetcher:
             if len(result) >= max_results:
                 break
         return result
+
+
+class WebBrowserFetcher(AvitoBrowserFetcher):
+    """Reuse the bounded renderer without the Avito profile or request budget."""
+
+    def __init__(self):
+        enabled = os.environ.get('MARKET_WEB_BROWSER', '1').strip().casefold() not in {'0', 'false', 'no', 'off'}
+        super().__init__(enabled=enabled, headless=True, timeout_ms=15_000)
+        # A fresh, isolated context per position. Never attach to a personal
+        # browser, copy cookies, or contend for the existing Avito profile.
+        self.user_data_dir = ''
+        self.user_agent = (os.environ.get('MARKET_USER_AGENT') or '').strip()
+        # The production IP received a Google challenge during the live probe.
+        # Rendering suppliers is useful by default; enable discovery only on
+        # a host where an ordinary search page has been checked successfully.
+        self.search_enabled = enabled and os.environ.get('MARKET_BROWSER_DISCOVERY', '0').strip().casefold() in {'1', 'true', 'yes', 'on'}
+        self.search_unavailable = False
+
+    def __enter__(self):
+        return self
+
+    def search_web(self, query: str, *, max_results: int) -> list[MarketOffer]:
+        global _WEB_BROWSER_BLOCKED_UNTIL
+        if not self.search_enabled or self.search_unavailable or time.monotonic() < _WEB_BROWSER_BLOCKED_UNTIL:
+            return []
+        from autobot.browser_search_results import google_result_links
+        page_html = self.fetch_source_page('https://www.google.com/search?' + urlencode({'q': query, 'hl': 'ru'}))
+        if not page_html:
+            self.search_unavailable = True
+            if 'капч' in self.last_error.casefold() or 'защит' in self.last_error.casefold():
+                _WEB_BROWSER_BLOCKED_UNTIL = time.monotonic() + 15 * 60
+            _append_market_search_log('browser_search_unavailable', query=query, reason=self.last_error)
+            return []
+        candidates = [MarketOffer(source='Интернет', title=row['title'], price=_parse_price(row['snippet']) or 0,
+                         url=row['url'], snippet=row['snippet'], discovery_engine='Google browser')
+                      for row in google_result_links(page_html, limit=max_results * 3)]
+        return _relevant_search_offers(candidates, query, max_results=max_results, write_log=True)
 
 
 def _safe_name(name: str) -> str:
@@ -2106,10 +2147,15 @@ def search_market(
     max_results = max(1, min(40, int(max_results)))
     if "web" in sources:
         try:
-            web_offers = _load_search_cache("web", query, region, required_results=max_results)
+            browser_search = getattr(browser_fetcher, 'search_web', None)
+            use_browser = callable(browser_search) and browser_fetcher.search_enabled
+            cache_source = 'web_browser' if use_browser else 'web'
+            web_offers = _load_search_cache(cache_source, query, region, required_results=max_results)
             if web_offers is None:
-                web_offers = search_web(query, region=region, max_results=max_results)
-                _save_search_cache("web", query, region, web_offers, requested_results=max_results)
+                web_offers = browser_search(_web_query(query, region), max_results=max_results) if use_browser else []
+                if not web_offers:
+                    web_offers = search_web(query, region=region, max_results=max_results)
+                _save_search_cache(cache_source, query, region, web_offers, requested_results=max_results)
             offers.extend(web_offers)
         except Exception as e:
             errors.append(f"Интернет: {type(e).__name__}: {e}")
@@ -2332,7 +2378,7 @@ def _agent_offer_unit_conversion(
 
 
 def _page_confirms_agent_evidence(page_html: str, offer: MarketOffer) -> bool:
-    """Confirm the price Hermes saw without replacing it by another page price.
+    """Confirm the browser-observed price without substituting another page price.
 
     Supplier price lists often contain dozens of products.  The universal page
     extractor can legitimately select a different row, so the agent's exact
@@ -2570,9 +2616,8 @@ def _verify_offers(
             page_row = src_row.copy()
             page_row[COL_NAME] = offer.title
         if is_agent_avito and offer.page_checked and offer.evidence:
-            # Hermes has already opened the direct listing in the persistent Mac
-            # browser session. Reopening it from the server would use another IP
-            # and defeat the purpose of the dedicated Avito mode.
+            # The authenticated browser executor already opened this listing.
+            # Reopening from the server would use another IP and session.
             offer.snippet = offer.evidence
             offer.page_error = ""
         elif avito_collect_only and is_avito:
@@ -3392,7 +3437,7 @@ def probe_agent_market_start_urls(
         "schema_version": 2,
         "position_key": str(position_payload.get("position_key") or ""),
         "offers": offers,
-        "notes": "AutoBot проверил заранее выбранный прямой источник после неудачи Hermes"
+        "notes": "AutoBot проверил заранее выбранный прямой источник после неудачи браузерного поиска"
         + (f"; {'; '.join(failures[:3])}" if failures else ""),
         "_autobot_direct_probe": True,
     }
@@ -3453,15 +3498,16 @@ def prepare_builtin_market_result(tender_id, position_payload, *, cancelled=None
     """Capture the input before server search; publish only through durable delivery.
 
     This internal path accepts no externally supplied verification flags.
-    It never opens Avito or requires an LLM/browser worker.
+    It never opens Avito or requires an LLM/external browser worker.
     """
     tid, name, key, row, estimate, metadata, plan, digest = _agent_import_context(tender_id, position_payload)
     try:
         limit = max(1, min(10, int(position_payload.get('max_offers') or 3)))
     except (ValueError, TypeError):
         limit = 3
-    offers, notes = _research_row_market(row, plan, sources=['web'], max_results=limit,
-                                          cancelled=cancelled)
+    with WebBrowserFetcher() as browser:
+        offers, notes = _research_row_market(row, plan, sources=['web'], max_results=limit,
+                                             browser_fetcher=browser, cancelled=cancelled)
     prepared = {'schema_version': 1, 'estimate_digest': digest, 'position_key': key,
                 'region': row['Регион поиска'], 'offers': [vars(offer) for offer in offers]}
     result = {'schema_version': 2, 'position_key': key, 'executor': 'server',
@@ -3511,7 +3557,7 @@ def prepare_agent_market_result(tender_id, position_payload, result):
             if not is_avito_host or not is_direct_listing or len(evidence) < 12:
                 continue
         elif host == "avito.ru" or host.endswith(".avito.ru"):
-            # Ordinary Hermes jobs must not accidentally smuggle Avito results
+            # Ordinary web jobs must not accidentally smuggle Avito results
             # into the dedicated browser-session workflow.
             continue
         observed_at = str(item.get("observed_at") or result.get("observed_at") or "").strip()
@@ -3524,7 +3570,7 @@ def prepare_agent_market_result(tender_id, position_payload, result):
             total=source_row.get(COL_SUM, ""),
         )
         reason = (
-            "Прямое объявление открыто Hermes в браузерной сессии Mac mini; AutoBot проверяет соответствие позиции и единицы"
+            "Прямое объявление открыто браузерным исполнителем; AutoBot проверяет соответствие позиции и единицы"
             if avito_agent_mode
             else "AutoBot открыл заранее выбранный прямой источник и извлёк цену со страницы"
             if direct_probe_mode
@@ -3534,7 +3580,7 @@ def prepare_agent_market_result(tender_id, position_payload, result):
             reason += f"; {plausibility.reason}"
         imported.append(
             MarketOffer(
-                source=("Hermes · Авито" if avito_agent_mode else f"AutoBot · {host or 'прямой источник'}" if direct_probe_mode else f"Hermes Agent · {host or 'веб'}"),
+                source=("Браузер · Авито" if avito_agent_mode else f"AutoBot · {host or 'прямой источник'}" if direct_probe_mode else f"Браузер · {host or 'веб'}"),
                 title=title,
                 price=price,
                 url=url,
@@ -3555,10 +3601,10 @@ def prepare_agent_market_result(tender_id, position_payload, result):
                 plausibility=plausibility.status,
                 identity_verified=False,
                 source_weight=source_quality(url, host),
-                discovery_engine="Hermes Avito browser" if avito_agent_mode else "AutoBot direct source" if direct_probe_mode else "Hermes browser",
+                discovery_engine="Avito browser" if avito_agent_mode else "AutoBot direct source" if direct_probe_mode else "Browser",
                 discovery_score=max(0.0, min(1.0, float(item.get("confidence") or 0.45))),
                 discovery_reason=(
-                    "Прямое объявление открыто постоянной браузерной сессией Mac mini"
+                    "Прямое объявление открыто браузерным исполнителем"
                     if avito_agent_mode
                     else "Результат фонового браузерного агента"
                 ),

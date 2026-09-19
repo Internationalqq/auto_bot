@@ -75,6 +75,8 @@ def test_server_job_searches_web_and_publishes_exact_input_without_external_work
     assert result['result']['import']['verified'] == 1
     assert confirmed_prices(pd.read_excel(output).iloc[0]) == [2500]
     assert len(requests) == 1 and requests[0][2]['sources'] == ['web']
+    assert isinstance(requests[0][2]['browser_fetcher'], market.WebBrowserFetcher)
+    assert requests[0][2]['browser_fetcher']._playwright is None
     assert requests[0][0][market.COL_QTY] == 2
     assert requests[0][0]['Регион поиска'] == 'Ярославль'
     assert queue.pending_deliveries() == []

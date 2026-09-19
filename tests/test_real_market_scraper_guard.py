@@ -709,7 +709,7 @@ def test_avito_agent_import_accepts_only_opened_direct_listing(tmp_path: Path, m
     assert len(offers) == 1
     assert offers[0].adapter == "hermes-avito-agent"
     assert offers[0].page_checked is True
-    assert offers[0].source == "Hermes · Авито"
+    assert offers[0].source == "Браузер · Авито"
     assert imported["imported"] == 1
 
 

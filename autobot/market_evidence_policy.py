@@ -111,9 +111,18 @@ def specification_reason(name: object, evidence: object) -> str:
     # Compare labelled characteristics only. Arbitrary digits can be item
     # numbers, a price, volume or a delivery distance and must not be guessed.
     if 'бетон' in wanted and 'бетон' in found:
+        # A listing title can advertise М300 while its explicit characteristics
+        # say М200/В15. The requested word elsewhere must not hide that conflict.
+        labelled = re.findall(
+            r'(?:марка\s+бетона(?:\s*/\s*класс\s+прочности)?|класс\s+(?:бетона|прочности))'
+            r'\s*:\s*((?:[мmвb]\s*\d{1,3}(?:[.,]\d+)?\s*(?:[/;]\s*)?){1,2})', found)
         for pattern, label in [(r'\b[мm]\s*(\d{2,3})\b', 'марка бетона'),
                                (r'\b[вb]\s*(\d{1,2}(?:[.,]\d+)?)\b', 'класс бетона')]:
-            left, right = set(re.findall(pattern, wanted)), set(re.findall(pattern, found))
+            values = lambda value: {item.replace(',', '.') for item in re.findall(pattern, value)}
+            left, right = values(wanted), values(found)
+            if any(values(characteristic) and left.isdisjoint(values(characteristic))
+                   for characteristic in labelled) and left:
+                return 'В характеристиках источника не совпадает ' + label
             if left and right and left.isdisjoint(right):
                 return 'Не совпадает ' + label
     if 'щеб' in wanted and 'щеб' in found:
