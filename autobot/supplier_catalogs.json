@@ -7,6 +7,20 @@
     "topics": ["бетон", "раствор"]
   },
   {
+    "name": "Гамма-Бетон — Ярославль",
+    "url": "https://yaroslavl.gamma-beton.ru/price",
+    "price_page": true,
+    "regions": ["ярослав"],
+    "topics": ["бетон", "раствор"]
+  },
+  {
+    "name": "РБУ Рыбинск",
+    "url": "https://betonrybynsk.ru/",
+    "price_page": true,
+    "regions": ["ярослав", "рыбинск"],
+    "topics": ["бетон", "раствор"]
+  },
+  {
     "name": "БетонТоп — Ярославль",
     "url": "https://yaroslavl-beton.ru/",
     "regions": ["ярослав"],

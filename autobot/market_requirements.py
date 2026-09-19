@@ -40,6 +40,7 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         patterns.extend([
             ('concrete_grade', 'Марка бетона', r'\b[мm]\s*\d{2,3}\b'),
             ('concrete_class', 'Класс бетона', r'\b[вb]\s*\d{1,2}(?:[.,]\d+)?\b'),
+            ('concrete_aggregate', 'Заполнитель бетона', r'\b(?:грави[яйи]\w*|гранит\w*|известняк\w*)\b'),
         ])
     if any(marker in folded for marker in ('кабел', 'провод', 'ввг', 'nym', 'пвс', 'шввп')):
         patterns.append(('cable_model', 'Марка кабеля',
@@ -54,6 +55,8 @@ def technical_specs(name: object) -> list[dict[str, str]]:
                 value = value.replace('а', 'a')
             if kind == 'density':
                 value = value.replace('/', '')
+            if kind == 'concrete_aggregate':
+                value = 'гравий' if value.startswith('грави') else 'гранит' if value.startswith('гранит') else 'известняк'
             value = {'кнауф': 'knauf', 'церезит': 'ceresit', 'изовер': 'isover', 'роквул': 'rockwool',
                      'ротбанд': 'rotband', 'гольдбанд': 'goldband', 'фуген': 'fugen'}.get(value, value)
             identity = kind, value
@@ -97,7 +100,7 @@ Explicit packaging belongs to the requested product variant. Labelled linear
 sizes are retained for discovery; their comparison needs category-specific units.
 """
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'density', 'package', 'brand', 'product_line')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:

@@ -595,7 +595,7 @@ def _host_is(host: str, root: str) -> bool:
     return host == root or host.endswith("." + root)
 
 
-def is_direct_source_url(url: object) -> bool:
+def is_direct_source_url(url: object, *, supplier_evidence: str = "") -> bool:
     try:
         parsed = urlparse(_text(url))
     except Exception:
@@ -605,9 +605,12 @@ def is_direct_source_url(url: object) -> bool:
     host = parsed.netloc.casefold().split(":", 1)[0]
     if host in _SEARCH_HOSTS or any(_host_is(host, root) for root in _SEARCH_HOSTS):
         return False
+    from autobot.supplier_evidence import reference_source
+    if reference_source(_text(url)):
+        return False
     if not parsed.path or parsed.path == "/":
         from autobot.supplier_catalogs import is_catalog_price_url
-        return is_catalog_price_url(_text(url))
+        return is_catalog_price_url(_text(url)) or bool(supplier_evidence and not parsed.query)
     if "avito.ru" in host and not re.search(r"_\d{6,}(?:/)?$", parsed.path):
         return False
     return True
@@ -649,6 +652,7 @@ def check_offer(
     price: object,
     page_checked: bool = False,
     source_unit: object = "",
+    supplier_evidence: str = "",
 ) -> OfferCheck:
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     position = classify_position(name, unit, basis_code, section)
@@ -660,7 +664,7 @@ def check_offer(
         price_value = 0.0
     if price_value <= 0:
         return OfferCheck("rejected", 0.0, "На странице не распознана положительная цена", "", observed_at)
-    if not is_direct_source_url(url):
+    if not is_direct_source_url(url, supplier_evidence=supplier_evidence):
         return OfferCheck("rejected", 0.0, "Ссылка ведёт не на карточку источника", "", observed_at)
     if not page_checked:
         return OfferCheck("candidate", 0.22, "Цена не подтверждена на странице источника", "", observed_at)
@@ -695,7 +699,7 @@ def check_offer(
     sand_module_seen = False
     fine_sand_module = False
     for module_match in re.finditer(
-        r"модул\w*\s+крупност\w*[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)",
+        r"(?:модул\w*\s+крупност\w*|\bмкр?\b)[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)",
         evidence_folded,
     ):
         sand_module_seen = True
@@ -708,7 +712,7 @@ def check_offer(
         if module_min >= 1.5 and module_max <= 2.0:
             fine_sand_module = True
             break
-    if re.search(r"модул\w*\s+крупност\w*[^0-9]{0,20}до\s*\d+(?:[.,]\d+)?", evidence_folded):
+    if re.search(r"(?:модул\w*\s+крупност\w*|\bмкр?\b)[^0-9]{0,20}до\s*\d+(?:[.,]\d+)?", evidence_folded):
         # Одна верхняя граница не доказывает принадлежность всей партии
         # диапазону «мелкий», даже если так написано в названии товара.
         sand_module_seen = True

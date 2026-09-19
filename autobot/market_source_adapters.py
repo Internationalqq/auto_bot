@@ -9,7 +9,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -51,6 +51,7 @@ class PageInspection:
     reason: str = ""
     extractor: str = ""
     facts_found: int = 0
+    quantity_terms: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ class _PriceFact:
     evidence: str
     extractor: str
     overlap: float
+    quantity_terms: tuple = ()
 
 
 def _clean(value: object) -> str:
@@ -107,6 +109,11 @@ def _specification_compatible(name: str, evidence: str) -> bool:
     """
 
     if 'бетон' in _fold(name):
+        from autobot.market_requirements import technical_specs
+        aggregates = lambda value: {s['value'] for s in technical_specs('бетон ' + value) if s['kind'] == 'concrete_aggregate'}
+        wanted_aggregate, found_aggregate = aggregates(name), aggregates(evidence)
+        if wanted_aggregate and found_aggregate and wanted_aggregate.isdisjoint(found_aggregate):
+            return False
         for pattern in (r'\b[мm]\s*(\d{2,3})\b', r'\b[вb]\s*(\d{1,2}(?:[.,]\d+)?)\b'):
             wanted_grade = {part.replace(',', '.') for part in re.findall(pattern, _fold(name))}
             found_grade = {part.replace(',', '.') for part in re.findall(pattern, _fold(evidence))}
@@ -174,7 +181,7 @@ def detect_price_unit(text: object) -> str:
     value = _fold(text).replace("²", "2").replace("³", "3")
     checks = (
         ("м2", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:кв\.?\s*м|м\s*2|m\s*2|mtk)", r"за\s+(?:квадрат\w*\s+метр|м\s*2)")),
-        ("м3", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:куб(?:\.?\s*м)?|м\s*3|m\s*3|mtq)\b", r"за\s+(?:кубичес\w*\s+метр|м\s*3)")),
+        ("м3", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:куб(?:\.?\s*м|/м)?|м\s*3|m\s*3|mtq)\b", r"за\s+(?:кубичес\w*\s+метр|м\s*3)")),
         ("пог.м", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:пог\.?\s*м|погон\w*\s+метр)",)),
         ("кг", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:кг|килограмм\w*|kgm)",)),
         ("т", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:\bт\b|тонн\w*)",)),
@@ -195,7 +202,7 @@ def detect_price_unit(text: object) -> str:
     # Price lists often put the unit in a separate table cell before the price.
     if re.search(r"\b(?:кв\.?\s*м|м\s*2)\b", value):
         return "м2"
-    if re.search(r"\b(?:куб(?:\.?\s*м)?|м\s*3)\b", value):
+    if re.search(r"\b(?:куб(?:\.?\s*м|/м)?|м\s*3)\b", value):
         return "м3"
     if re.search(r"\b(?:пог\.?\s*м|м\.?п\.?)\b", value):
         return "пог.м"
@@ -232,9 +239,9 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
     if not _clean(region):
         return ''
     soup = BeautifulSoup(page_html, 'html.parser')
-    for node in soup.select('title, h1, address, [itemprop="addressLocality"], [itemprop="addressRegion"]'):
+    for node in soup.select('title, h1, address, [itemprop="addressLocality"], [itemprop="addressRegion"], tr'):
         value = _clean(node.get_text(' ', strip=True))
-        if len(value) <= 900 and region_matches_label(region, value):
+        if len(value) <= 900 and not re.search(r'\b(?:не достав|не работа|кроме|исключ)', _fold(value)) and region_matches_label(region, value):
             return value[:500]
     for node in soup.select('p, li, meta[name="description"]'):
         value = _clean(node.get('content') or node.get_text(' ', strip=True))
@@ -245,6 +252,18 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
             return value[:500]
         if bucket == 'materials' and re.search(r'достав\w*\s+по\s+(?:всей\s+)?россии', folded):
             return value[:500]
+    # Membership is explicit, not a substring guess (Ярославский район in
+    # Moscow is not Ярославль). This proves a local supplier, not delivery.
+    # Municipality list: https://smo.yarregion.ru/index.php/munitsipalnye-obrazovaniya
+    localities = {'ярославская область': ('Ярославль', 'Рыбинск')}
+    from autobot.supplier_evidence import supplier_identity
+    if supplier_identity(page_html):
+        for city in localities.get(_fold(region), ()):
+            for node in soup.select('address, tr, [itemprop="addressLocality"], p'):
+                value = _clean(node.get_text(' ', strip=True))
+                if (len(value) <= 600 and region_matches_label(city, value)
+                        and re.search(r'адрес|улиц|ул\.|просп|набережн|г\.', value, re.I)):
+                    return f'Поставщик в регионе ({city}): {value}'[:500]
     return ''
 
 
@@ -410,13 +429,10 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
     # На справочных порталах бывают десятки тысяч p/li. Для подтверждения цены
     # достаточно первых релевантных блоков; полный обход только замораживает UI.
     for tag in soup.select(selectors, limit=600):
+        if tag.name == "tr":
+            continue
         header = tag.find_previous(["h1", "h2", "h3", "h4"])
         context = _clean(header.get_text(" ", strip=True) if header else "")
-        if getattr(tag, "name", "") == "tr":
-            table = tag.find_parent("table")
-            if table is not None:
-                table_heading = _clean(" ".join(cell.get_text(" ", strip=True) for cell in table.select("caption, thead th, thead td")))
-                context = _clean(f"{context}. {table_heading}")
         for text in _price_segments(tag):
             if len(text) < 8 or len(text) > 900 or text in seen:
                 continue
@@ -449,49 +465,58 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
 
 
 def _table_row_facts(soup: BeautifulSoup, name: str, position_bucket: str) -> list[_PriceFact]:
-    """Bind each table price to its own column header and product row.
-
-    Supplier price lists often expose both RUB/m3 and RUB/tonne in the same row.
-    Treating the whole row as one text block can attach the tonne price to the
-    cubic-metre header, so preserve the visual column relationship here.
-    """
-
-    facts: list[_PriceFact] = []
-    seen: set[tuple[str, float, str]] = set()
-    for table in soup.select("table")[:120]:
-        header_row = table.select_one("thead tr")
-        if header_row is None:
-            header_row = next((row for row in table.select("tr")[:3] if row.find("th")), None)
-        headers = (
-            [_clean(cell.get_text(" ", strip=True)) for cell in header_row.find_all(["th", "td"], recursive=False)]
-            if header_row is not None
-            else []
-        )
-        for row in table.select("tbody tr") or table.select("tr"):
-            if header_row is not None and row is header_row:
+    """Bind numbers to their product, price header and quantity tier."""
+    facts = []
+    for table in soup.select('table')[:120]:
+        rows = table.select('tr')
+        header_row = next((row for row in rows[:3] if row.find('th') or
+            re.search(r'цена|стоимость|марка|наименование|количество', _fold(row.get_text(' ', strip=True)))), None)
+        headers = [_clean(c.get_text(' ', strip=True)) for c in header_row.find_all(['td','th'],recursive=False)] if header_row else []
+        heading = table.find_previous(['h1','h2','h3','h4'])
+        context = _clean(heading.get_text(' ',strip=True)) if heading else ''
+        h1 = soup.find('h1') or soup.title
+        family = _clean(h1.get_text(' ',strip=True)) if h1 else ''
+        for row in rows:
+            if row is header_row:
                 continue
-            cells = row.find_all(["td", "th"], recursive=False)
-            if len(cells) < 2:
+            cells = row.find_all(['td','th'], recursive=False)
+            if len(cells)<2:
                 continue
-            title = _clean(cells[0].get_text(" ", strip=True))
-            if not title:
-                continue
-            for index, cell in enumerate(cells[1:], start=1):
-                cell_text = _clean(cell.get_text(" ", strip=True))
-                values = parse_ruble_values(cell_text)
-                if not values:
-                    continue
-                header = headers[index] if index < len(headers) else ""
-                unit = detect_price_unit(f"{header} {cell_text}")
-                evidence = _clean(f"{title}. {header}: {cell_text}")[:1600]
-                scope = _scope(evidence) if position_bucket == "works" else "product"
-                overlap = _overlap(name, title)
+            texts=[]
+            for cell in cells:
+                # A crossed-out amount is never today's price.
+                clone=BeautifulSoup(str(cell),'html.parser')
+                for old in clone.select('s,del,strike'): old.decompose()
+                texts.append(_clean(clone.get_text(' ',strip=True)))
+            conditional=[]
+            for i, value in enumerate(texts):
+                header = headers[i] if i<len(headers) else ''
+                match=re.search(r'от\s*(\d+(?:[.,]\d+)?)\s*(м[3³]|куб(?:/м)?|тонн?|т)\b',_fold(header))
+                if match and re.search(r'звон|договор|запрос|уточн',_fold(value)):
+                    conditional.append({'quote_from':float(match[1].replace(',','.')), 'unit':'т' if match[2].startswith('т') else 'м3', 'evidence':f'{header}: {value}'})
+            for index, value in enumerate(texts[1:],1):
+                header = headers[index] if index<len(headers) else ''
+                values = parse_ruble_values(value)
+                if not values and re.search(r'руб|₽',header,re.I) and re.fullmatch(r'\d[\d\s.,]*',value):
+                    numeric=_parse_number(value)
+                    if numeric is not None: values=[numeric]
+                if not values: continue
+                title=''
+                for previous in reversed(texts[:index]):
+                    if re.search(r'[а-яa-z]',previous,re.I) and not parse_ruble_values(previous):
+                        title=previous; break
+                if not title: continue
+                evidence=_clean(f'{family}. {context}. {title}. {header}: {value}')[:1600]
+                unit=detect_price_unit(f'{header} {value}') or detect_price_unit(context)
+                terms=list(conditional)
+                lot=re.fullmatch(r'(\d+(?:[.,]\d+)?)\s*(м[3³]|тонн?|т)',_fold(header))
+                if lot:
+                    terms.append({'lot':float(lot[1].replace(',','.')),'unit':'т' if lot[2].startswith('т') else 'м3','evidence':header})
+                scope=_scope(evidence) if position_bucket=='works' else 'product'
+                # A heading supplies a material family, never another product's price.
+                overlap=_overlap(name, title if position_bucket=='works' else f'{family} {title}')
                 for price in values[:3]:
-                    key = (title.casefold(), price, unit)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    facts.append(_PriceFact(title[:240], price, unit, scope, evidence, "table-row", overlap))
+                    facts.append(_PriceFact(title[:240],price,unit,scope,evidence,'table-row',overlap,tuple(terms)))
     return facts
 
 
@@ -571,6 +596,7 @@ def inspect_source_page(
     name: str,
     target_unit: str,
     position_bucket: str,
+    quantity: object = None,
 ) -> PageInspection:
     host = urlparse(url).netloc.casefold().split(":", 1)[0]
     path = urlparse(url).path.casefold()
@@ -616,7 +642,36 @@ def inspect_source_page(
     facts.extend(_table_row_facts(soup, name, position_bucket))
     facts.extend(_block_facts(soup, name, page_text, position_bucket))
     facts.extend(_inline_price_facts(page_text, name, position_bucket))
-    best = _best_fact(facts, target_unit, position_bucket, name)
+    # Once a matching table row exists, flattened text cannot discard its
+    # volume restrictions or pick a different column.
+    table_facts=[f for f in facts if f.extractor=='table-row' and f.overlap>=0.28
+                 and _specification_compatible(name,f.title) and units_compatible(f.unit,target_unit)]
+    from autobot.supplier_evidence import quantity_terms_reason
+    eligible=[f for f in table_facts if not quantity_terms_reason(list(f.quantity_terms),quantity,target_unit)]
+    best = _best_fact(eligible or table_facts or facts, target_unit, position_bucket, name)
+    if best is not None and 'бетон' in _fold(name):
+        from autobot.market_requirements import technical_specs
+        wanted = technical_specs(name)
+        aggregate = {s['value'] for s in wanted if s['kind'] == 'concrete_aggregate'}
+        grades = {s['value'] for s in wanted if s['kind'] in {'concrete_grade', 'concrete_class'}}
+        present = {s['value'] for s in technical_specs(best.evidence) if s['kind'] == 'concrete_aggregate'}
+        if aggregate and not present:
+            # A product paragraph must itself name the requested grade/class
+            # and a single aggregate. A generic site-wide composition is not proof.
+            for paragraph in soup.select('p'):
+                value = _clean(paragraph.get_text(' ', strip=True))
+                if len(value) > 700 or not re.search(r'состав|компонент|изготов|производ', value, re.I):
+                    continue
+                traits = technical_specs('бетон ' + value)
+                found_grades = {s['value'] for s in traits if s['kind'] in {'concrete_grade', 'concrete_class'}}
+                found_aggregate = {s['value'] for s in traits if s['kind'] == 'concrete_aggregate'}
+                if grades.intersection(found_grades) and len(found_aggregate) == 1:
+                    best = replace(best, evidence=(best.evidence + ' · Состав: ' + value)[:1600])
+                    break
+    if best is not None:
+        volume_reason=quantity_terms_reason(list(best.quantity_terms),quantity,target_unit)
+        if volume_reason:
+            return PageInspection(False,'quantity-terms',adapter,best.price,best.unit,best.scope,best.title,best.evidence,volume_reason,best.extractor,len(facts),best.quantity_terms)
     if best is None:
         reason = "На странице не найдена рублёвая цена" if not facts else f"Найдено цен: {len(facts)}, но ни одна не относится к позиции и единице"
         return PageInspection(False, "no-match", adapter, reason=reason, facts_found=len(facts))
@@ -630,4 +685,4 @@ def inspect_source_page(
     if position_bucket == "works" and best.scope != "work_only":
         reason = "Цена включает материалы" if best.scope == "with_materials" else "Не удалось отделить работу от материалов"
         return PageInspection(False, "scope-unknown", adapter, best.price, best.unit, best.scope, best.title, best.evidence, reason, best.extractor, len(facts))
-    return PageInspection(True, "verified", adapter, best.price, best.unit, best.scope, best.title, best.evidence, "Цена подтверждена на странице источника", best.extractor, len(facts))
+    return PageInspection(True, "verified", adapter, best.price, best.unit, best.scope, best.title, best.evidence, "Цена подтверждена на странице источника", best.extractor, len(facts), best.quantity_terms)

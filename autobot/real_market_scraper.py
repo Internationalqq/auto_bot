@@ -120,7 +120,7 @@ _SOURCE_PAGE_CACHE_VERSION = "2"
 _AVITO_GUARD_PATH = _MARKET_CACHE_DIR / "avito_guard.json"
 _AVITO_LOG_PATH = REPO_ROOT / "data" / "logs" / "avito_playwright.jsonl"
 _MARKET_SEARCH_LOG_PATH = REPO_ROOT / "data" / "logs" / "market_search_candidates.jsonl"
-_SEARCH_CACHE_VERSIONS = {"web": "10", "web_browser": "1", "avito": "2", "avito_index": "1"}
+_SEARCH_CACHE_VERSIONS = {"web": "11", "web_browser": "2", "avito": "2", "avito_index": "1"}
 _WEB_BROWSER_BLOCKED_UNTIL = 0.0
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _DOMAIN_RATE_LOCK = threading.Lock()
@@ -233,6 +233,10 @@ class MarketOffer:
     search_region: str = ""
     seller_id: str = ""
     region_evidence: str = ""
+    supplier_evidence: str = ""
+    region_source_url: str = ""
+    delivery_terms: str = ""
+    quantity_terms: list | None = None
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -1021,7 +1025,7 @@ class WebBrowserFetcher(AvitoBrowserFetcher):
                 catalog_version = hashlib.sha256(REGISTRY_PATH.read_bytes()).hexdigest()[:12]
             except OSError:
                 catalog_version = 'missing'
-            self.cache_source = f'web_catalogs_{catalog_version}_google{int(self.google_enabled)}'
+            self.cache_source = f'web_catalogs_v2_{catalog_version}_google{int(self.google_enabled)}'
         else:
             self.cache_source = 'web_browser'
 
@@ -1671,7 +1675,8 @@ def _candidate_decision(offer: MarketOffer, query: str) -> tuple[bool, float, st
         return False, 0.0, "Нет прямой HTTP-ссылки на источник", "invalid_url"
     if _host_matches(host, list(_SEARCH_ENGINE_HOSTS)):
         return False, 0.0, "Ссылка ведёт на поисковую выдачу, а не на источник", "search_page"
-    if _host_matches(host, list(_configured_search_blocked_hosts())):
+    from autobot.supplier_evidence import reference_source
+    if reference_source(offer.url) or _host_matches(host, list(_configured_search_blocked_hosts())):
         return False, 0.0, f"Домен {host} исключён из универсального поиска", "blocked_domain"
 
     evidence = f"{offer.title} {offer.snippet}"
@@ -1690,7 +1695,8 @@ def _candidate_decision(offer: MarketOffer, query: str) -> tuple[bool, float, st
     if (noise_hits or path_noise) and not explicit_price:
         marker = noise_hits[0] if noise_hits else "информационный раздел"
         return False, 0.0, f"Информационная страница без цены: {marker}", "informational"
-    if (not parsed.path or parsed.path == "/") and not explicit_price:
+    commercial = bool(re.search(r"постав|производ|завод|прайс|продаж|магазин|купить|подряд", folded))
+    if (not parsed.path or parsed.path == "/") and not explicit_price and not commercial:
         return False, 0.0, "Главная страница без цены — низкая вероятность карточки или прайса", "not_direct"
     if any(marker in parsed.path.casefold() for marker in ("/category/", "/search/", "/tag-page/")):
         return False, 0.0, "Страница категории или поиска, а не карточка товара/строка прайса", "listing"
@@ -2096,7 +2102,7 @@ def search_avito_index(query: str, *, region: str = "", max_results: int = 3) ->
     return accepted
 
 
-def search_web(query: str, *, region: str = "", max_results: int = 3) -> list[MarketOffer]:
+def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_urls=None) -> list[MarketOffer]:
     global _DDG_BLOCKED_UNTIL
     q = _web_query(query, region)
     errors: list[str] = []
@@ -2121,6 +2127,15 @@ def search_web(query: str, *, region: str = "", max_results: int = 3) -> list[Ma
         raw_offers.extend(yahoo_offers)
     except Exception as e:
         errors.append(f"Yahoo: {type(e).__name__}: {e}")
+
+    excluded = set(exclude_urls or ())
+    def unseen(offers):
+        return [offer for offer in offers if _canonical_offer_url(offer.url) not in excluded]
+    early = _relevant_search_offers(unseen(raw_offers), q, max_results=max_results, write_log=False)
+    if len(early) >= min(max_results, 3):
+        for error in errors:
+            _append_market_search_log('engine_error', query=q, reason=error[:500])
+        return _relevant_search_offers(unseen(raw_offers), q, max_results=max_results)
 
     preferred_enabled = (os.environ.get("MARKET_SEARCH_PREFERRED_DOMAINS", "1") or "1").strip().casefold() not in {
         "0", "false", "no", "off",
@@ -2180,7 +2195,7 @@ def search_web(query: str, *, region: str = "", max_results: int = 3) -> list[Ma
         except Exception as e:
             errors.append(f"Bing HTML: {type(e).__name__}: {e}")
 
-    offers = _relevant_search_offers(raw_offers, q, max_results=max_results, write_log=True)
+    offers = _relevant_search_offers(unseen(raw_offers), q, max_results=max_results, write_log=True)
     for error in errors:
         _append_market_search_log("engine_error", query=q, reason=error[:500])
     if offers:
@@ -2198,6 +2213,7 @@ def search_market(
     sources: list[str],
     max_results: int,
     browser_fetcher: AvitoBrowserFetcher | None = None,
+    exclude_urls=None,
 ) -> tuple[list[MarketOffer], str]:
     offers: list[MarketOffer] = []
     errors: list[str] = []
@@ -2210,11 +2226,15 @@ def search_market(
             use_browser = callable(browser_search) and browser_fetcher.search_enabled
             cache_source = getattr(browser_fetcher, 'cache_source', 'web_browser') if use_browser else 'web'
             web_offers = _load_search_cache(cache_source, query, region, required_results=max_results)
+            if web_offers is not None and exclude_urls:
+                web_offers = [offer for offer in web_offers if _canonical_offer_url(offer.url) not in exclude_urls] or None
             if web_offers is None:
                 web_offers = browser_search(_web_query(query, region), max_results=max_results) if use_browser else []
                 if not web_offers:
-                    web_offers = search_web(query, region=region, max_results=max_results)
-                _save_search_cache(cache_source, query, region, web_offers, requested_results=max_results)
+                    extra = {'exclude_urls': exclude_urls} if exclude_urls else {}
+                    web_offers = search_web(query, region=region, max_results=max_results, **extra)
+                if not exclude_urls:
+                    _save_search_cache(cache_source, query, region, web_offers, requested_results=max_results)
             if use_browser:
                 errors.extend(dict.fromkeys(getattr(browser_fetcher, 'catalog_errors', [])))
             offers.extend(web_offers)
@@ -2280,6 +2300,10 @@ def _offer_bundle(offers: list[MarketOffer]) -> list[dict[str, object]]:
             "search_region": o.search_region,
             "seller_id": o.seller_id,
             "region_evidence": o.region_evidence,
+            "supplier_evidence": o.supplier_evidence,
+            "region_source_url": o.region_source_url,
+            "delivery_terms": o.delivery_terms,
+            "quantity_terms": o.quantity_terms or [],
         }
         for o in offers
     ]
@@ -2480,8 +2504,15 @@ def _enrich_offer_from_page(
     plan: MarketSearchPlan,
     *,
     browser_fetcher: AvitoBrowserFetcher | None = None,
+    follow_catalog: bool = True,
 ) -> MarketOffer:
     inspection_name = market_query_name(src_row.get(COL_NAME, ""))
+    from autobot.supplier_evidence import reference_source
+    if reference_source(offer.url):
+        offer.page_error = 'Сметный справочник не является предложением поставщика'
+        offer.rejection_code = 'reference_source'
+        offer.rejection_stage = 'discovery'
+        return offer
     if offer.adapter == "hermes-browser-agent" and offer.title:
         inspection_name = str(src_row.get(COL_NAME, "") or offer.title).strip()
     if not offer.url:
@@ -2542,10 +2573,30 @@ def _enrich_offer_from_page(
         name=inspection_name,
         target_unit=str(src_row.get("Ед. изм.", "") or ""),
         position_bucket=plan.position.bucket,
+        quantity=src_row.get(COL_QTY),
     )
+    from autobot.market_evidence_policy import specification_reason
+    missing_specification = inspection.accepted and specification_reason(inspection_name, inspection.evidence)
+    if not is_avito and follow_catalog and (inspection.status in {'listing', 'no-match'} or missing_specification):
+        from autobot.supplier_catalogs import catalog_links
+        partial = None
+        for product_url in catalog_links(page_html, offer.url, inspection_name, limit=2):
+            _remaining_timeout(12)
+            child = _enrich_offer_from_page(
+                MarketOffer(source=offer.source, title=offer.title, price=0, url=product_url,
+                            discovery_engine=offer.discovery_engine),
+                src_row, plan, browser_fetcher=browser_fetcher, follow_catalog=False,
+            )
+            if child.page_checked and not specification_reason(inspection_name, child.evidence):
+                return child
+            if child.evidence and partial is None:
+                partial = child
+        if partial is not None and not inspection.accepted:
+            return partial
     if (
         not is_avito
         and not inspection.accepted
+        and inspection.status != 'quantity-terms'
         and source_method != "playwright"
         and _source_browser_enabled()
         and browser_fetcher is not None
@@ -2562,6 +2613,7 @@ def _enrich_offer_from_page(
                 name=inspection_name,
                 target_unit=str(src_row.get("Ед. изм.", "") or ""),
                 position_bucket=plan.position.bucket,
+                quantity=src_row.get(COL_QTY),
             )
             _save_source_page_cache(offer.url, page_html=browser_html, method="playwright")
             if browser_inspection.accepted or browser_inspection.evidence:
@@ -2573,7 +2625,25 @@ def _enrich_offer_from_page(
     captured = observed_timestamp(cached_record.get('created_at')) or time.time()
     offer.observed_at = datetime.fromtimestamp(captured, tz=timezone.utc).isoformat(timespec='seconds')
     offer.search_region = str(src_row.get('Регион поиска') or '').strip()
+    from autobot.supplier_evidence import supplier_identity, supplier_context_links, delivery_terms
+    offer.supplier_evidence = supplier_identity(page_html)
     offer.region_evidence = source_region_evidence(page_html, offer.search_region, plan.position.bucket)
+    offer.region_source_url = offer.url if offer.region_evidence else ''
+    offer.delivery_terms = delivery_terms(page_html, inspection.evidence)
+    offer.quantity_terms = list(inspection.quantity_terms)
+    # Only a usable quote warrants up to two same-site contact lookups.
+    if not is_avito and inspection.accepted and not offer.region_evidence:
+        for context_url in supplier_context_links(page_html, offer.url):
+            try:
+                context_html, _, _ = _fetch_source_page(context_url, timeout=6, browser_fetcher=browser_fetcher)
+                proof=source_region_evidence(context_html, offer.search_region, plan.position.bucket)
+                if proof:
+                    offer.region_evidence=proof
+                    offer.region_source_url=context_url
+                    offer.supplier_evidence=offer.supplier_evidence or supplier_identity(context_html)
+                    break
+            except SearchBudgetExceeded:
+                break
     if offer.adapter == "hermes-browser-agent" and _page_confirms_agent_evidence(page_html, offer):
         offer.evidence = offer.agent_evidence
         offer.snippet = offer.agent_evidence[:500]
@@ -2593,6 +2663,8 @@ def _enrich_offer_from_page(
     offer.price_facts_found = inspection.facts_found
     if inspection.evidence:
         offer.snippet = inspection.evidence
+    if inspection.price is not None:
+        offer.price = float(inspection.price)
     if not inspection.accepted or inspection.price is None:
         offer.page_error = inspection.reason or "На странице не подтверждена цена"
         offer.rejection_code = inspection.status.replace("-", "_") or _failure_code(offer.page_error)
@@ -2704,6 +2776,7 @@ def _verify_offers(
             price=offer.price,
             page_checked=offer.page_checked,
             source_unit=offer.matched_unit,
+            supplier_evidence=offer.supplier_evidence,
         )
         offer.verification = check.status
         offer.identity_verified = check.status == "verified"
@@ -2869,6 +2942,7 @@ def _research_row_market(
                 query, region='' if plan.queries else str(row.get('Регион поиска', '') or ''),
                 sources=selected_sources,
                 max_results=min(page_limit, max(6, max_results * 3)),
+                exclude_urls=seen,
                 browser_fetcher=(None if query_count > 1
                                  and getattr(browser_fetcher, 'catalogs_enabled', False)
                                  else browser_fetcher),
@@ -2889,6 +2963,7 @@ def _research_row_market(
                 pages += 1
                 checked = _verify_offers(row, [offer], plan, browser_fetcher=browser_fetcher,
                                          avito_collect_only=avito_collect_only, reference_offers=pool)
+                seen.update(_canonical_offer_url(item.url) for item in checked if item.url)
                 pool = _apply_market_consensus_guard(
                     _dedupe_and_sort(pool + checked, max_results=max(1, len(pool) + len(checked)))
                 )
@@ -3320,6 +3395,10 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
             search_region=str(item.get('search_region') or ''),
             seller_id=str(item.get('seller_id') or ''),
             region_evidence=str(item.get('region_evidence') or ''),
+            supplier_evidence=str(item.get('supplier_evidence') or ''),
+            region_source_url=str(item.get('region_source_url') or ''),
+            delivery_terms=str(item.get('delivery_terms') or ''),
+            quantity_terms=item.get('quantity_terms') or [],
             source_weight=float(item.get("source_weight") or source_quality(item.get("url"), item.get("source"))),
             index_hit=True,
             index_match_score=float(item.get("match_score") or 0),
@@ -3340,6 +3419,11 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
         if plausibility.status in {"review", "extreme"}:
             offer.verification = "candidate"
             offer.verification_reason = plausibility.reason
+        from autobot.supplier_evidence import quantity_terms_reason
+        reason = quantity_terms_reason(offer.quantity_terms, src_row.get(COL_QTY), str(src_row.get('Ед. изм.') or ''))
+        if reason:
+            offer.verification = 'candidate'
+            offer.verification_reason = reason
         offers.append(offer)
     return _dedupe_and_sort(offers, max_results=max_results)
 

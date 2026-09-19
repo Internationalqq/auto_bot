@@ -250,6 +250,9 @@ def _parse_bundle(
                 "matched_unit": _clean(item.get("matched_unit")),
                 "observed_at": _clean(item.get("observed_at")),
                 "region_evidence": _clean(item.get('region_evidence')),
+                "delivery_terms": _clean(item.get('delivery_terms')),
+                "supplier_evidence": _clean(item.get('supplier_evidence')),
+                "region_source_url": _clean(item.get('region_source_url')),
                 "search_region": _clean(item.get('search_region')),
                 "evidence": _clean(item.get("evidence") or item.get("snippet")),
                 "published_at": _clean(item.get("published_at")),
@@ -305,7 +308,7 @@ def _primary_action(*, has_downloads, download_blocked, parse_blocked, archive_f
                 "detail": "Есть пропуски или замечания к разбору. Сверьте строки и исходные файлы перед расчётом."}
     if verified < total_positions:
         return {"key": "market", "title": "Нужны подтверждённые цены", "label": "Найти недостающие цены",
-                "detail": f"С подтверждённой ценой {verified} из {total_positions} позиций. Неподтверждённые предложения остаются на проверке."}
+                "detail": f"С подтверждённой ценой {verified} из {total_positions} позиций. Неподтверждённые предложения остаются с уточнениями."}
     return {"key": "positions", "title": "Сравните цены и условия", "label": "Открыть позиции",
             "detail": "По всем распознанным позициям есть цены. Для решения об участии проверьте состав и условия тендера."}
 

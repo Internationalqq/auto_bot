@@ -397,6 +397,10 @@ def record_verified_offers(
                     "price_scope": _clean(offer.get('price_scope')),
                     "seller_id": _clean(offer.get('seller_id')),
                     "region_evidence": geo_evidence,
+                    "supplier_evidence": _clean(offer.get('supplier_evidence')),
+                    "region_source_url": _clean(offer.get('region_source_url')),
+                    "delivery_terms": _clean(offer.get('delivery_terms')),
+                    "quantity_terms": offer.get('quantity_terms') or [],
                 },
             )
             host = urlparse(url).netloc.casefold().split(":", 1)[0]
@@ -505,8 +509,9 @@ def lookup_verified_offers(
         if not _clean(evidence.get('matched_unit')) or not units_compatible(normalize_unit(unit), normalize_unit(evidence.get('matched_unit'))) or price_terms_reason(evidence) or specification_reason(name, evidence.get('evidence') or evidence.get('title')):
             continue
         payload = dict(row)
-        for field in ('search_region', 'matched_unit', 'evidence', 'location', 'published_at', 'price_scope', 'seller_id', 'region_evidence'):
+        for field in ('search_region', 'matched_unit', 'evidence', 'location', 'published_at', 'price_scope', 'seller_id', 'region_evidence', 'supplier_evidence', 'region_source_url', 'delivery_terms'):
             payload[field] = _clean(evidence.get(field))
+        payload['quantity_terms'] = evidence.get('quantity_terms') or []
         payload["match_score"] = round(similarity, 4)
         payload["index_hit"] = True
         matches.append((similarity * float(row["source_weight"]) * float(row["confidence"]), payload))

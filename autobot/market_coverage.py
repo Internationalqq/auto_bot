@@ -11,7 +11,7 @@ def position_outcome(position: dict) -> tuple[str, str]:
     if position.get('verified_count'):
         return 'verified', 'Есть сопоставимая цена из проверенного источника'
     if position.get('candidate_count'):
-        return 'candidate', 'Предложения найдены, но ещё не подтверждены для расчёта'
+        return 'candidate', 'Предложения найдены, но требуют уточнения перед расчётом'
     if position.get('market_processed'):
         reason = str(position.get('market_status') or '')
         if any(marker in reason.casefold() for marker in ('капч', 'captcha', 'защит', '403', '429', 'доступ ограничен')):

@@ -209,12 +209,12 @@
               <td class="money col-difference difference-{{ p.difference_tone }}" data-label="Смета − рынок"><b>{{ p.difference_fmt }}</b><small>{{ p.difference_percent_fmt if p.market_unit is not none else "Ждём цену рынка" }}</small></td>
               <td class="sources" data-label="Проверка цены">
                 {% if p.verified_count %}<span class="source-count verified">{{ icon("check") }} {{ p.verified_count }} подтверждено</span>{% endif %}
-                {% if p.candidate_count %}<span class="source-count candidate">{{ icon("clock") }} {{ p.candidate_count }} на проверке</span>{% endif %}
+                {% if p.candidate_count %}<span class="source-count candidate">{{ icon("clock") }} {{ p.candidate_count }} с уточнениями</span>{% endif %}
                 {% if not p.sources %}<span class="source-empty">{{ p.price_reason }}</span>{% endif %}
                 {% if p.sources %}
                 <details class="source-details"><summary><span>Предложения</span><b>{{ p.sources|length }}</b><i aria-hidden="true"></i></summary><div class="source-list">
                   {% for source in p.sources %}
-                  <button type="button" class="source {{ 'is-verified' if source.verified else 'is-candidate' }}" data-source-preview data-source-url="{{ source.url }}" data-source-audit="{{ source.audit_record_path }}" data-source-title="{{ source.title }}" data-source-price="{{ source.price_fmt }}" data-source-comparison-price="{{ source.comparison_price_fmt }}" data-source-price-basis="{{ source.price_basis }}" data-source-ratio="{{ source.estimate_ratio_fmt }}" data-source-reason="{{ source.reason }}" data-source-evidence="{{ source.evidence }}" data-source-location="{{ source.location }}" data-source-published="{{ source.published_at }}" data-source-observed="{{ source.observed_at }}" data-source-regionproof="{{ source.region_evidence }}">
+                  <button type="button" class="source {{ 'is-verified' if source.verified else 'is-candidate' }}" data-source-preview data-source-url="{{ source.url }}" data-source-audit="{{ source.audit_record_path }}" data-source-title="{{ source.title }}" data-source-price="{{ source.price_fmt }}" data-source-comparison-price="{{ source.comparison_price_fmt }}" data-source-price-basis="{{ source.price_basis }}" data-source-ratio="{{ source.estimate_ratio_fmt }}" data-source-reason="{{ source.reason }}" data-source-evidence="{{ source.evidence }}" data-source-location="{{ source.location }}" data-source-published="{{ source.published_at }}" data-source-observed="{{ source.observed_at }}" data-source-regionproof="{{ source.region_evidence }}" data-source-delivery="{{ source.delivery_terms }}" data-source-supplier="{{ source.supplier_evidence }}" data-source-region-url="{{ source.region_source_url }}">
                     <span>{{ "Проверен" if source.verified else "Кандидат" }} · {{ source.source }}{% if source.index_hit %} · из индекса{% endif %}</span>
                     <strong>{{ source.title }}</strong><b>{{ source.price_fmt }}</b><small>{{ source.reason }}</small>
                   </button>
@@ -289,7 +289,7 @@
         <div class="agent-result-totals">
           <span><small>Найдено</small><b id="agentResultFound">0</b></span>
           <span class="is-verified"><small>Принято</small><b id="agentResultVerified">0</b></span>
-          <span class="is-candidate"><small>На проверке</small><b id="agentResultCandidate">0</b></span>
+          <span class="is-candidate"><small>Нужно уточнить</small><b id="agentResultCandidate">0</b></span>
           <span class="is-rejected"><small>Отклонено</small><b id="agentResultRejected">0</b></span>
         </div>
         <div class="agent-result-list" id="agentResultList"></div>
@@ -481,7 +481,7 @@
         <div class="source-preview-meta" id="sourcePreviewMeta"></div>
         <div class="source-preview-check"><small>Результат проверки</small><strong id="sourcePreviewRatio">—</strong><p id="sourcePreviewReason"></p></div>
         <div class="source-preview-evidence"><small>Фрагмент страницы с доказательством</small><blockquote id="sourcePreviewEvidence">Нет сохранённого фрагмента.</blockquote></div>
-        <div class="source-preview-evidence" id="sourcePreviewRegionSection" hidden><small>Работа или доставка в выбранный регион</small><blockquote id="sourcePreviewRegionEvidence"></blockquote></div>
+        <div class="source-preview-evidence" id="sourcePreviewRegionSection" hidden><small>Поставщик и условия региона</small><blockquote id="sourcePreviewRegionEvidence"></blockquote></div>
       </div>
       <footer><a class="btn secondary" id="sourcePreviewAudit" href="#" target="_blank" rel="noopener noreferrer" hidden>Аудиторский снимок</a><a class="btn primary" id="sourcePreviewOpen" href="#" target="_blank" rel="noopener noreferrer">Открыть оригинал ↗</a></footer>
     </section>
@@ -875,11 +875,11 @@
         });
         if (resultsPanel) resultsPanel.hidden = resultRows.length === 0;
         if (resultList) {
-          const resultLabels = { verified: "Принята", candidate: "На проверке", rejected: "Отклонена" };
+          const resultLabels = { verified: "Принята", candidate: "Нужно уточнить", rejected: "Отклонена" };
           resultList.innerHTML = resultRows.map(function(item) {
             const verification = ["verified", "candidate", "rejected"].includes(item.verification) ? item.verification : "candidate";
             const price = formatAgentPrice(item.price) + (item.unit ? " / " + escapeHtml(item.unit) : "");
-            const reason = item.reason || (verification === "verified" ? "Страница, цена и единица подтверждены" : "Проверяется соответствие смете");
+            const reason = item.reason || (verification === "verified" ? "Страница, цена и единица подтверждены" : "Не подходит для расчёта: откройте причину");
             const sourceLink = item.url
               ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener noreferrer">Открыть источник ↗</a>'
               : "";
@@ -982,12 +982,12 @@
             const offers = Array.isArray(item.offers) ? item.offers : [];
             const badges = [];
             if (Number(item.verified || 0)) badges.push('<span class="is-verified">' + Number(item.verified) + ' принято</span>');
-            if (Number(item.candidate || 0)) badges.push('<span class="is-candidate">' + Number(item.candidate) + ' на проверке</span>');
+            if (Number(item.candidate || 0)) badges.push('<span class="is-candidate">' + Number(item.candidate) + ' с уточнениями</span>');
             const offerDetails = offers.length ? '<details class="agent-run-offers"><summary>Показать объявления <b>' + offers.length + '</b></summary><div>' + offers.map(function(offer) {
               const verification = ["verified", "candidate", "rejected"].includes(offer.verification) ? offer.verification : "candidate";
               const price = formatAgentPrice(offer.price) + (offer.unit ? " / " + escapeHtml(offer.unit) : "");
               const link = offer.url ? '<a href="' + escapeHtml(offer.url) + '" target="_blank" rel="noopener noreferrer">Открыть ↗</a>' : '';
-              return '<article class="agent-run-offer is-' + verification + '"><div><small>' + (verification === "verified" ? "Принято" : verification === "candidate" ? "На проверке" : "Отклонено") + '</small><strong>' + price + '</strong></div><span>' + escapeHtml(offer.title || "Объявление Авито") + '</span>' + link + '</article>';
+              return '<article class="agent-run-offer is-' + verification + '"><div><small>' + (verification === "verified" ? "Принято" : verification === "candidate" ? "Нужно уточнить" : "Отклонено") + '</small><strong>' + price + '</strong></div><span>' + escapeHtml(offer.title || "Объявление Авито") + '</span>' + link + '</article>';
             }).join("") + '</div></details>' : '';
             return '<article class="agent-run-position is-' + state + '">' +
               '<span class="agent-run-number">' + (item.item_no ? escapeHtml(item.item_no) : (index + 1)) + '</span>' +
@@ -1164,8 +1164,8 @@
         const instant = observed ? new Date(/^\d+(?:\.\d+)?$/.test(observed) ? Number(observed) * 1000 : observed) : null;
         const checkedAt = instant && Number.isFinite(instant.getTime()) ? "Проверено: " + instant.toLocaleString("ru-RU") : "Дата проверки неизвестна";
         document.getElementById("sourcePreviewMeta").textContent = [button.dataset.sourceLocation, button.dataset.sourcePublished, checkedAt].filter(Boolean).join(" · ");
-        document.getElementById("sourcePreviewRegionSection").hidden = !button.dataset.sourceRegionproof;
-        document.getElementById("sourcePreviewRegionEvidence").textContent = button.dataset.sourceRegionproof || "";
+        document.getElementById("sourcePreviewRegionSection").hidden = !(button.dataset.sourceRegionproof || button.dataset.sourceDelivery || button.dataset.sourceSupplier);
+        document.getElementById("sourcePreviewRegionEvidence").textContent = [button.dataset.sourceSupplier, button.dataset.sourceRegionproof, button.dataset.sourceDelivery, button.dataset.sourceRegionUrl].filter(Boolean).join(" · ");
         document.getElementById("sourcePreviewOpen").href = button.dataset.sourceUrl || "#";
         const auditLink = document.getElementById("sourcePreviewAudit");
         if (auditLink) {

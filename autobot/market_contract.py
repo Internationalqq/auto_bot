@@ -85,7 +85,7 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
             reason = clean(item.get("verification_reason")) or "Цена ещё не проверена"
         elif price is None or not 0 < price < 1e10:
             reason = "Нет корректной цены"
-        elif not is_direct_source_url(clean(item.get("url"))):
+        elif not is_direct_source_url(clean(item.get("url")), supplier_evidence=clean(item.get("supplier_evidence"))):
             reason = "Нет прямой ссылки на предложение"
         elif COL_UNIT in row and clean(row.get(COL_UNIT)) in {"", "—", "-"}:
             reason = "Не определена единица позиции сметы"
@@ -99,6 +99,8 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
             reason = freshness_reason(item, position.bucket) or price_terms_reason(item) or specification_reason(
                 row.get(COL_NAME), clean(item.get('evidence')) or clean(item.get('snippet')) or clean(item.get('title')),
             )
+            from autobot.supplier_evidence import quantity_terms_reason
+            reason = reason or quantity_terms_reason(item.get('quantity_terms'), row.get(COL_QTY), clean(row.get(COL_UNIT)))
             expected_region = region_key(row.get('Регион поиска')) or region_key(item.get('search_region'))
             if not reason and expected_region:
                 if region_key(item.get('search_region')) != expected_region:
