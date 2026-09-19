@@ -1028,6 +1028,14 @@ class WebBrowserFetcher(AvitoBrowserFetcher):
     def __enter__(self):
         return self
 
+    def begin_position(self) -> None:
+        # A full tender reuses the context. Give every row its own page budget;
+        # durable negative page caches still keep blocked sites on cooldown.
+        self.source_browser_count = 0
+        self.source_domain_failures.clear()
+        self._catalog_pages.clear()
+        self.catalog_errors.clear()
+
     def _load_catalog_page(self, url: str) -> str:
         _remaining_timeout(15)
         if url in self._catalog_pages:
@@ -2829,6 +2837,9 @@ def _research_row_market(
     pool = list(initial_offers or [])
     if not plan.can_auto_price:
         return pool, plan.warning
+    begin_position = getattr(browser_fetcher, 'begin_position', None)
+    if callable(begin_position):
+        begin_position()
     queries = list(plan.queries) or [_compact_query(str(row.get(COL_NAME, '')))]
     if avito_collect_only and sources == ['avito']:
         query_limit = 1
@@ -2858,7 +2869,9 @@ def _research_row_market(
                 query, region='' if plan.queries else str(row.get('Регион поиска', '') or ''),
                 sources=selected_sources,
                 max_results=min(page_limit, max(6, max_results * 3)),
-                browser_fetcher=browser_fetcher,
+                browser_fetcher=(None if query_count > 1
+                                 and getattr(browser_fetcher, 'catalogs_enabled', False)
+                                 else browser_fetcher),
             )
             if error:
                 errors.append(error)

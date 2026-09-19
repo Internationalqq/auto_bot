@@ -428,6 +428,20 @@ def cancel_job(job_id: str, tender_id: str, *, path: Path | str | None = None) -
     return cursor.rowcount == 1
 
 
+def cancel_pending_jobs(tender_id: str, *, mode: str = 'web', path=None) -> int:
+    """Stop discovery; an already accepted package finishes its durable save."""
+    if mode not in {'web', 'avito'}:
+        raise ValueError('Unknown market mode')
+    init_db(path)
+    with closing(_connect(path)) as connection:
+        cursor = connection.execute(
+            """UPDATE agent_market_jobs SET status='canceled', lease_until=NULL, updated_at=?
+               WHERE tender_id=? AND job_mode=? AND status IN ('queued', 'leased')""",
+            (_now(), tender_id, mode),
+        )
+        return cursor.rowcount
+
+
 def list_jobs(
     tender_id: str,
     *,
@@ -462,11 +476,34 @@ def job_summary(
 ) -> dict[str, int]:
     counts = {status: 0 for status in (*ACTIVE_STATUSES, *FINAL_STATUSES)}
     counts["total"] = 0
-    for job in list_jobs(tender_id, path=path, mode=mode):
-        status = str(job.get("status") or "")
-        counts[status] = counts.get(status, 0) + 1
-        counts["total"] += 1
+    init_db(path)
+    where, params = 'tender_id=?', [tender_id]
+    if mode in {'web', 'avito'}:
+        where += ' AND job_mode=?'
+        params.append(mode)
+    with closing(_connect(path)) as connection:
+        for status, count in connection.execute(
+                f'SELECT status, COUNT(*) FROM agent_market_jobs WHERE {where} GROUP BY status', params):
+            status = 'leased' if status == 'applying' else status
+            counts[status] = counts.get(status, 0) + count
+            counts['total'] += count
     return counts
+
+
+def latest_position_jobs(tender_id: str, *, path=None, mode=None) -> list[dict[str, Any]]:
+    """Read every current position, without the history display's 250/1000 cap."""
+    init_db(path)
+    where, params = 'tender_id=?', [tender_id]
+    if mode in {'web', 'avito'}:
+        where += ' AND job_mode=?'
+        params.append(mode)
+    with closing(_connect(path)) as connection:
+        rows = connection.execute(f'''SELECT * FROM agent_market_jobs WHERE id IN (
+            SELECT id FROM (SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY position_key, job_mode ORDER BY created_at DESC, rowid DESC
+            ) AS latest FROM agent_market_jobs WHERE {where}) WHERE latest=1
+        ) ORDER BY created_at DESC, rowid DESC''', params).fetchall()
+    return [_row_payload(row) or {} for row in rows]
 
 
 def job_progress(
@@ -482,8 +519,8 @@ def job_progress(
     view intentionally keeps only the newest job for each position key.
     """
     latest_by_position: dict[str, dict[str, Any]] = {}
-    for job in list_jobs(tender_id, path=path, limit=1000, mode=mode):
-        key = str(job.get("position_key") or "").strip()
+    for job in latest_position_jobs(tender_id, path=path, mode=mode):
+        key = str(job.get("position_key") or "").strip() + '|' + str(job.get('job_mode') or '')
         if key and key not in latest_by_position:
             latest_by_position[key] = job
 

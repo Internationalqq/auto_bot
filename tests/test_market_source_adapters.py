@@ -6,6 +6,48 @@ from autobot.market_source_adapters import inspect_source_page, detect_price_uni
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_minimum_order_value_is_not_the_product_unit_price(self):
+        page = '<h1>Кабель ВВГнг(А)-LS 3х2,5</h1><p>Сумма всего заказа не менее 5000 руб за м</p>'
+        result = inspect_source_page(page, 'https://supplier.example/cable',
+            name='Кабель ВВГнг(А)-LS 3х2,5', target_unit='м', position_bucket='materials')
+        self.assertFalse(result.accepted)
+    def test_catalog_price_never_borrows_next_product_name(self):
+        for markup in (False, True):
+            item_class = ' class="catalog_item"' if markup else ''
+            page = '<h1>Сухие штукатурки</h1>' + f'<div{item_class}>' + \
+                'Штукатурка гипсовая Кнауф МП-75 (30кг) Артикул 950033 400 ₽ /шт</div>' + \
+                f'<div{item_class}>' + 'Штукатурка гипсовая Knauf Ротбанд 30кг 490 ₽ /шт</div>'
+            result = inspect_source_page(page, 'https://supplier.example/plaster/',
+                name='Штукатурка гипсовая Кнауф Ротбанд 30 кг', target_unit='шт', position_bucket='materials')
+            self.assertTrue(not result.accepted or result.price == 490)
+            if markup:
+                self.assertEqual(result.status, 'listing')
+    def test_recommended_product_price_does_not_replace_missing_current_price(self):
+        page = '''<h1>Штукатурка гипсовая Ротбанд 30 кг</h1><p>Цену уточняйте у менеджера</p>
+        <section class="related"><div class="product"><h2>Штукатурка гипсовая Ротбанд 30 кг</h2>
+        <p>432 руб./шт</p></div></section>'''
+        result = inspect_source_page(page, 'https://supplier.example/product/1',
+            name='Штукатурка гипсовая Ротбанд 30 кг', target_unit='шт', position_bucket='materials')
+        self.assertFalse(result.accepted)
+        self.assertIsNone(result.price)
+
+    def test_structured_minimum_is_a_conditional_quote(self):
+        page = '''<script type="application/ld+json">{"@type":"Product", "name":"Бетон М300",
+            "offers":{"@type":"AggregateOffer","lowPrice":5000,"highPrice":8000,
+                      "priceCurrency":"RUB","unitText":"м3"}}</script>'''
+        result = inspect_source_page(page, 'https://supplier.example/m300',
+            name='Бетон М300', target_unit='м3', position_bucket='materials')
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, 'conditional-price')
+
+    def test_microdata_never_invents_product_name_from_request(self):
+        page = '''<h1>Кирпич облицовочный</h1><div itemscope itemtype="https://schema.org/Offer">
+            <meta itemprop="price" content="400"><meta itemprop="priceCurrency" content="RUB">
+            <meta itemprop="unitText" content="шт"></div>'''
+        result = inspect_source_page(page, 'https://supplier.example/brick',
+            name='Штукатурка гипсовая Ротбанд 30 кг', target_unit='шт', position_bucket='materials')
+        self.assertFalse(result.accepted)
+
     def test_hourly_price_does_not_borrow_cubic_unit_from_following_sentence(self):
         evidence = 'Стоимость разработки грунта: от 1500 ₽/час. Цена за м3 зависит от категории грунта.'
         self.assertEqual(detect_price_unit(evidence), 'час')

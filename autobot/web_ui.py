@@ -10562,7 +10562,7 @@ def _agent_market_latest_run(jobs: list[dict]) -> dict:
     # A canceled duplicate is a queue correction, not a researched position.
     # Hide it from the user when the launch also contains real processed jobs.
     non_canceled_jobs = [job for job in run_jobs if str(job.get("status") or "") != "canceled"]
-    if non_canceled_jobs:
+    if non_canceled_jobs and not newest_payload.get('estimate_plan'):
         run_jobs = non_canceled_jobs
 
     latest_by_position: dict[str, dict] = {}
@@ -10663,7 +10663,9 @@ def _agent_market_latest_run(jobs: list[dict]) -> dict:
         "elapsed_seconds": max(0, int(round(end_at - started_at))) if started_at else 0,
         "current_index": min(total, processed + 1) if active else processed,
         "current": active[0] if active else None,
-        "positions": positions,
+        "positions": positions[:250],
+        "positions_truncated": len(positions) > 250,
+        "estimate_plan": newest_payload.get('estimate_plan') or {},
     }
 
 
@@ -10673,7 +10675,7 @@ def api_tender_agent_market_jobs(tender_id: str):
     tid = str(tender_id or "").strip()
     if not re.fullmatch(r"\d{8,25}", tid):
         return jsonify({"ok": False, "message": "Некорректный номер тендера"}), 400
-    from autobot.agent_market_queue import enqueue_jobs, job_progress, job_summary, list_jobs
+    from autobot.agent_market_queue import enqueue_jobs, job_progress, job_summary, latest_position_jobs
 
     requested_mode = str(request.args.get("mode") or "web").strip().casefold()
     job_mode = "avito" if requested_mode == "avito" else "web"
@@ -10681,7 +10683,7 @@ def api_tender_agent_market_jobs(tender_id: str):
     if request.method == "GET":
         from autobot.market_web_worker import web_worker_enabled
         server_executor = job_mode == "web" and web_worker_enabled()
-        jobs = list_jobs(tid, mode=job_mode)
+        jobs = latest_position_jobs(tid, mode=job_mode)
         latest_jobs: dict[str, dict] = {}
         for job in jobs:
             key = str(job.get("position_key") or "").strip()
@@ -10713,7 +10715,7 @@ def api_tender_agent_market_jobs(tender_id: str):
                 "notes": str((job.get("result") or {}).get("notes") or "")[:500],
                 "import": (job.get("result") or {}).get("import") or {},
             }
-            for job in jobs
+            for job in jobs[:250]
         ]
         return jsonify(
             {
@@ -10730,18 +10732,31 @@ def api_tender_agent_market_jobs(tender_id: str):
             }
         )
 
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'ok': False, 'message': 'Ожидается объект параметров'}), 400
+    requested_mode = str(data.get("mode") or requested_mode).strip().casefold()
+    job_mode = "avito" if requested_mode == "avito" else "web"
+    if data.get('action') == 'cancel_pending':
+        from autobot.agent_market_queue import cancel_pending_jobs
+        stopped = cancel_pending_jobs(tid, mode=job_mode)
+        return jsonify({'ok': True, 'canceled': stopped, 'progress': job_progress(tid, mode=job_mode)})
     estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx"
     if not estimate_path.is_file():
         return jsonify({"ok": False, "message": "Для тендера ещё нет распознанной сметы"}), 404
-    data = request.get_json(silent=True) or {}
-    requested_mode = str(data.get("mode") or requested_mode).strip().casefold()
-    job_mode = "avito" if requested_mode == "avito" else "web"
     batch_id = uuid.uuid4().hex
+    scope = str(data.get('scope') or '').strip()
+    all_positions = job_mode == 'web' and scope == 'all_without_verified'
+    requested_values = data.get('position_keys') or []
+    if not isinstance(requested_values, list) or len(requested_values) > 5000:
+        return jsonify({'ok': False, 'message': 'Выберите не больше 5 000 строк или запустите поиск по всей смете'}), 400
     requested_keys = {
         str(value or "").strip()
-        for value in list(data.get("position_keys") or [])[:100]
+        for value in requested_values
         if str(value or "").strip()
     }
+    if all_positions:
+        requested_keys = set()
     try:
         default_limit = 5 if job_mode == "avito" else 20
         limit = max(1, min(int(data.get("limit") or default_limit), 50))
@@ -10752,6 +10767,10 @@ def api_tender_agent_market_jobs(tender_id: str):
     workflow_items, _ = _tenders_items()
     workflow = next((dict(item) for item in workflow_items if str(item.get("tender_id") or "") == tid), {})
     tender = build_tender_detail(tid, meta, workflow)
+    if all_positions:
+        limit = max(1, len(tender.get('positions') or []))
+    elif job_mode == 'web' and scope == 'selected' and requested_keys:
+        limit = len(requested_keys)
     eligible_positions: list[tuple[int, int, dict, list[str]]] = []
     skipped_ineligible: list[dict[str, str]] = []
     type_priority = {"material": 0, "product": 0, "service": 1, "work": 1}
@@ -10783,7 +10802,23 @@ def api_tender_agent_market_jobs(tender_id: str):
 
     selected: list[dict] = []
     selected_research_keys: dict[str, dict] = {}
-    for search_rank, (_, row_index, position, queries) in enumerate(sorted(eligible_positions, key=lambda item: (item[0], item[1]))):
+    estimate_plan = {
+        'scope': scope or 'limited',
+        'total_positions': len(tender.get('positions') or []),
+        'already_verified': sum(bool(row.get('verified_count')) for row in tender.get('positions') or []),
+        'needs_details': len(skipped_ineligible),
+        'searchable_positions': len(eligible_positions),
+    }
+    def search_order(item):
+        try:
+            amount = max(0.0, float(item[2].get('estimate_total') or 0)) if all_positions else 0.0
+            if not math.isfinite(amount):
+                amount = 0.0
+        except (TypeError, ValueError):
+            amount = 0.0
+        return item[0], -amount, item[1]
+
+    for search_rank, (_, row_index, position, queries) in enumerate(sorted(eligible_positions, key=search_order)):
         key = str(position.get("position_key") or "")
         primary_query = queries[0]
         region = str(tender.get("region") or "").strip()
@@ -10794,7 +10829,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             position.get("basis_code"),
             position_type,
         )
-        duplicate_of = selected_research_keys.get(research_key)
+        duplicate_of = None if all_positions or scope == 'selected' else selected_research_keys.get(research_key)
         if duplicate_of is not None:
             duplicate_of.setdefault("equivalent_positions", []).append(
                 {
@@ -10816,6 +10851,7 @@ def api_tender_agent_market_jobs(tender_id: str):
         payload = {
             "schema_version": 2,
             "batch_id": batch_id,
+            "estimate_plan": estimate_plan,
             "batch_created_at": time.time(),
             "tender_id": tid,
             "position_key": key,
@@ -10828,6 +10864,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "basis_code": position.get("basis_code"),
             "position_type": position_type,
             "region": region,
+            "requirements": position.get("requirements") or {},
             "estimate_unit_price": position.get("estimate_unit"),
             "queries": queries,
             "job_mode": job_mode,
@@ -10918,6 +10955,10 @@ def api_tender_agent_market_jobs(tender_id: str):
         if len(selected) >= limit:
             break
     if not selected:
+        if all_positions:
+            return jsonify({'ok': True, 'mode': job_mode, 'created': 0, 'skipped_active': 0,
+                            'skipped_ineligible': skipped_ineligible, 'estimate_plan': estimate_plan,
+                            'jobs': [], 'summary': job_summary(tid, mode=job_mode), 'batch_id': ''})
         return jsonify({"ok": False, "message": "Нет позиций, которые можно безопасно сравнить с рынком", "skipped_ineligible": skipped_ineligible}), 400
     outcome = enqueue_jobs(tid, selected, priority=80 if job_mode == "avito" else 100)
     return jsonify(
@@ -10927,6 +10968,7 @@ def api_tender_agent_market_jobs(tender_id: str):
             "created": len(outcome["created"]),
             "skipped_active": len(outcome["skipped_active"]),
             "skipped_ineligible": skipped_ineligible,
+            "estimate_plan": estimate_plan,
             "jobs": outcome["created"],
             "summary": job_summary(tid, mode=job_mode),
             "batch_id": batch_id,

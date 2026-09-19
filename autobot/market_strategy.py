@@ -108,6 +108,7 @@ class MarketSearchPlan:
     normalized_unit: str
     can_auto_price: bool
     warning: str = ""
+    requirements: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,8 @@ def _fold(value: object) -> str:
 
 def normalize_unit(unit: object) -> str:
     raw = _fold(unit).replace("²", "2").replace("³", "3")
+    if raw in {'', '-', '—', '–', '?', 'н/д', 'нет'}:
+        return ''
     raw = (
         raw.replace("кв. м", "м2")
         .replace("кв.м", "м2")
@@ -359,9 +362,25 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
         return PositionClass("work", "Работа", "works", "Работы и услуги", 0.98, "Норматив работы в шифре расценки", no_unit)
     if re.match(r"^(?:фссц|тсц|ссц|фсбц)", basis_compact):
         return PositionClass("material", "Материал", "materials", "Материалы и товары", 0.98, "Сборник сметных цен в шифре", no_unit)
-    if any(key in text for key in _SERVICE_KEYS):
+    # A product's application or section ("монтаж", "доставка") is not its
+    # type. Respect explicit price-code classifications above, then the noun
+    # being purchased before descriptive words later in the title.
+    material_head = re.match(r'^(?:георешет\w*|геополот\w*|геотекст\w*|пен[аы]\s+монтаж\w*|'
+                             r'штукатурк[аи]\s+(?:гипсов\w*|цемент\w*|декоратив\w*)|'
+                             r'шпаклев\w*|смес[ьи]\s+сух\w*)\b', title)
+    product_head = re.match(r'^(?:кабел\w*|труб[аы]\w*|щит\w*|шкаф\w*|светильник\w*|'
+                            r'насос\w*|крепеж\w*|болт\w*|саморез\w*|краск\w*|цемент\w*|'
+                            r'кирпич\w*|бетон\w*|щебен\w*|песок)\b', title)
+    if material_head:
+        return PositionClass('material', 'Материал', 'materials', 'Материалы и товары', 0.92,
+                             'Название самостоятельного материала', no_unit)
+    if product_head:
+        slug = 'material' if any(key in title for key in _MATERIAL_KEYS) else 'product'
+        return PositionClass(slug, 'Материал' if slug == 'material' else 'Товар', 'materials',
+                             'Материалы и товары', 0.92, 'Название самостоятельного товара', no_unit)
+    if any(key in title for key in _SERVICE_KEYS):
         return PositionClass("service", "Услуга", "works", "Работы и услуги", 0.91, "Признак услуги в названии", no_unit)
-    if any(key in text for key in _WORK_KEYS):
+    if any(key in title for key in _WORK_KEYS):
         return PositionClass("work", "Работа", "works", "Работы и услуги", 0.89, "Признак работы в названии", no_unit)
     if any(key in text for key in _MATERIAL_KEYS):
         return PositionClass("material", "Материал", "materials", "Материалы и товары", 0.88, "Признак материала в названии", no_unit)
@@ -374,7 +393,7 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
 
 
 def _query_name(name: object, max_words: int = 16, position_type: str = "") -> str:
-    value = re.sub(r"\([^)]{0,180}\)", " ", _text(name))
+    value = re.sub(r"[()]", " ", _text(name))
     value = re.sub(r"[|¦]", " ", value)
     value = re.sub(r"\s+(?:10|100|1000)\s*$", "", value)
     value = re.sub(r"\s+", " ", value).strip(" ,.;:-")
@@ -387,7 +406,7 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
     if "бортов" in folded and "кам" in folded and ("установ" in folded or "устройств" in folded):
         return "установка бетонного бордюра"
     if "бортов" in folded and "кам" in folded:
-        return "камень бортовой бетонный БР"
+        return ' '.join(value.split()[:max_words])
     if (
         position_slug in {"work", "service"}
         and "размет" in folded
@@ -403,9 +422,7 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
     if "подстилающ" in folded and "пес" in folded:
         return "устройство песчаного основания"
     if "щебень" in folded and "плотн" in folded:
-        # Granite is a valid, common dense-rock subtype and gives Avito a much
-        # cleaner product result than the catalogue wording "из плотных пород".
-        return "щебень гранитный"
+        return "щебень из плотных горных пород"
     if "щебень" in folded:
         fraction = re.search(r"\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b", folded)
         rock = next((label for stem, label in [('гранит', 'гранитный'), ('гравийн', 'гравийный'),
@@ -438,9 +455,15 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
         return "песок строительный мелкий" if "мелк" in folded else "песок строительный"
     if "геополотно" in folded or "геотекст" in folded:
         density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", folded)
-        return "геотекстиль нетканый иглопробивной" + (f" {density.group(1)} г/м²" if density else "")
+        traits = ' нетканый' if 'неткан' in folded else ''
+        traits += ' иглопробивной' if 'иглопробив' in folded else ''
+        traits += ' полиэфирный' if 'полиэфир' in folded else ''
+        return "геотекстиль" + traits + (f" {density.group(1)} г/м²" if density else "")
     if "георешет" in folded:
-        return "георешетка композитная"
+        material = next((label for stem, label in [('полиэтилен', 'полиэтиленовая'),
+                         ('полипропилен', 'полипропиленовая'), ('композит', 'композитная')]
+                         if stem in folded), '')
+        return "георешетка" + (' ' + material if material else '')
     if "земл" in folded and "растител" in folded:
         return "земля растительная"
     if "лент" in folded and "сигнал" in folded:
@@ -476,7 +499,8 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
 
 def market_query_name(name: object, position_type: str = "") -> str:
     """Обычное рыночное название для поиска и проверки найденной страницы."""
-    return _query_name(name, position_type=position_type)
+    from autobot.market_requirements import preserve_query_specs
+    return preserve_query_specs(name, _query_name(name, position_type=position_type))
 
 
 def search_unit_marker(unit: object) -> str:
@@ -507,6 +531,10 @@ def build_search_plan(
     title = market_query_name(name, position.slug)
     region_text = _text(region)
     unit_norm = normalize_unit(unit)
+    from autobot.market_requirements import requirement_passport
+    can_search = bool(unit_norm and not position.needs_decomposition and position.bucket in {'materials', 'works'})
+    passport = requirement_passport(name, unit, position_type=position.slug,
+                                   normalized_unit=unit_norm, can_search=can_search)
     place = f" {region_text}" if region_text else ""
     price_marker = search_unit_marker(unit_norm)
     safe_title = title.replace('"', " ").strip()
@@ -529,6 +557,7 @@ def build_search_plan(
             "Каталоги поставщиков; объявления — только как резерв", unit_norm,
             bool(unit_norm and not position.needs_decomposition),
             "Нужны характеристики и единица измерения" if position.needs_decomposition else "",
+            requirements=passport,
         )
     if position.bucket == "works":
         queries = (
@@ -541,11 +570,13 @@ def build_search_plan(
             "Прайсы подрядчиков и объявления услуг", unit_norm,
             bool(unit_norm and not position.needs_decomposition),
             "Без единицы измерения цену нельзя сравнить автоматически" if not unit_norm else "",
+            requirements=passport,
         )
     return MarketSearchPlan(
         position, (), "Сначала разложить строку на работы и материалы",
         "Автоматический поиск отключён", unit_norm, False,
         "Укрупнённая или неоднозначная позиция: требуется детализация сметы",
+        requirements=passport,
     )
 
 

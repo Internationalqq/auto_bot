@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260915-detail-jobs-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260919-full-estimate" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-cashflow-1" />
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
@@ -218,14 +218,14 @@
     <section class="agent-market-card" id="agentMarketCard" data-feature-content="agentMarketModal">
       <div class="agent-market-head">
         <div>
-          <small>Поиск по сайтам поставщиков</small>
-          <strong>Найти недостающие цены</strong>
-          <span>Дополнительная проверка прямых страниц поставщиков для строк, где цены ещё не подтверждены.</span>
+          <strong>Цены по всей смете</strong>
+          <span>Проверим сайты поставщиков по всем подготовленным позициям без цены. Строки с неполными данными останутся на уточнении.</span>
         </div>
         <div class="agent-market-actions">
           <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
           <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
-          <button class="btn primary" type="button" id="queueAgentMarketBtn">Проверить 20 позиций</button>
+          <button class="btn ghost" type="button" id="stopAgentMarketBtn" hidden>Остановить поиск</button>
+          <button class="btn primary" type="button" id="queueAgentMarketBtn">Найти цены по всей смете</button>
         </div>
       </div>
       <div class="agent-live" id="agentLive" aria-live="polite">
@@ -327,6 +327,19 @@
       <header class="positions-head">
         <div><h2>Позиции сметы</h2><p><b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
         <label class="position-search"><span aria-hidden="true"></span><input id="positionSearch" type="search" placeholder="Найти работу, материал или шифр" autocomplete="off" /></label>
+        <label class="price-state-filter">Результат поиска
+          <select id="priceStateFilter">
+            <option value="all">Все строки</option>
+            <option value="verified">С подтверждённой ценой</option>
+            <option value="candidate">Проверить предложения</option>
+            <option value="needs_details">Уточнить исходные данные</option>
+            <option value="missing">Все строки без цены</option>
+            <option value="pending">Поиск ещё не выполнялся</option>
+            <option value="blocked">Источник ограничил доступ</option>
+            <option value="no_quote">Поиск прошёл — цены нет</option>
+            <option value="excluded">Сводные строки</option>
+          </select>
+        </label>
       </header>
 
       {% if tender.positions %}
@@ -347,7 +360,7 @@
               <td colspan="7"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
             </tr>
             {% endif %}
-            <tr data-position-row data-position-key="{{ p.position_key }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
+            <tr data-position-row data-position-key="{{ p.position_key }}" data-price-state="{{ p.price_state }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
               <td class="select-col" data-label="Выбрать"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} в поиск агентом" title="Выбрать позицию для поиска цены агентом" /></td>
               <td class="row-no" data-label="№">{{ p.item_no }}</td>
               <td class="position-name" data-label="Позиция">
@@ -358,7 +371,7 @@
               </td>
               <td data-label="Ед. / объём"><b>{{ p.unit }}</b><small>{{ p.quantity_fmt if p.quantity is not none else "объём не указан" }}</small></td>
               <td class="money" data-label="Смета"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money market-price market-price-{{ p.verdict_class }}" data-label="Рынок" title="{{ p.verdict }}" aria-label="Рыночная цена {{ p.market_unit_fmt }}. {{ p.verdict }}"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}медиана проверенных цен · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% if p.market_status %}<small class="row-status">{{ p.market_status }}</small>{% endif %}</td>
+              <td class="money market-price market-price-{{ p.verdict_class }}" data-label="Рынок" title="{{ p.verdict }}" aria-label="Рыночная цена {{ p.market_unit_fmt }}. {{ p.verdict }}"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}медиана проверенных цен · {{ p.market_ratio_fmt }}{% else %}не принято в расчёт{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}<small class="row-status">{{ p.price_reason }}</small></td>
               <td class="sources" data-label="Источники">
                 {% if p.verified_count %}<span class="source-count verified">✓ {{ p.verified_count }} проверено</span>{% endif %}
                 {% if p.candidate_count %}<span class="source-count candidate">? {{ p.candidate_count }} кандид.</span>{% endif %}
@@ -463,7 +476,7 @@
   <aside class="feature-modal" id="agentMarketModal" hidden aria-labelledby="agentMarketModalTitle">
     <button class="feature-modal-backdrop" type="button" data-feature-close aria-label="Закрыть"></button>
     <section class="feature-modal-panel is-wide" role="dialog" aria-modal="true">
-      <header class="feature-modal-head"><div><small>Дополнительные источники · сайты поставщиков</small><h2 id="agentMarketModalTitle">Повторно найти недостающие цены</h2><p>Выберите строки таблицы или отправьте первые 20 позиций без цены. Поиск проверит прямые страницы поставщиков и сохранит источники цен. Страницу можно закрыть.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
+      <header class="feature-modal-head"><div><h2 id="agentMarketModalTitle">Найти недостающие цены</h2><p>Запустите поиск по всей смете или выберите отдельные строки. Очередь сохранится, даже если закрыть вкладку. В расчёт попадут только цены с подтверждением.</p></div><button type="button" data-feature-close aria-label="Закрыть">×</button></header>
       <div class="feature-modal-body" data-feature-body></div>
     </section>
   </aside>
@@ -513,6 +526,7 @@
     const avitoRunResults = document.getElementById("avitoRunResults");
     const avitoRunPositionList = document.getElementById("avitoRunPositionList");
     const queueAgentMarketButton = document.getElementById("queueAgentMarketBtn");
+    const stopAgentMarketButton = document.getElementById("stopAgentMarketBtn");
     const agentMarketNote = document.getElementById("agentMarketNote");
     const agentMarketJobs = document.getElementById("agentMarketJobs");
     const crmButton = document.getElementById("addTenderToCrmBtn");
@@ -589,6 +603,7 @@
 
     function filterRows() {
       const query = (document.getElementById("positionSearch")?.value || "").trim().toLocaleLowerCase("ru");
+      const state = document.getElementById("priceStateFilter")?.value || "all";
       let shown = 0;
       document.querySelectorAll("[data-position-row]").forEach(function(row) {
         const bucketOk = activeBucket === "all"
@@ -596,7 +611,9 @@
           || (activeBucket === "verified" && row.dataset.marketVerified === "1")
           || row.dataset.bucket === activeBucket;
         const queryOk = !query || (row.dataset.search || "").includes(query);
-        row.hidden = !(bucketOk && queryOk);
+        const stateOk = state === "all" || row.dataset.priceState === state
+          || (state === "missing" && !["verified", "excluded"].includes(row.dataset.priceState));
+        row.hidden = !(bucketOk && queryOk && stateOk);
         if (!row.hidden) shown += 1;
       });
       document.querySelectorAll("[data-section-row]").forEach(function(sectionRow) {
@@ -631,6 +648,7 @@
       });
     });
     document.getElementById("positionSearch")?.addEventListener("input", filterRows);
+    document.getElementById("priceStateFilter")?.addEventListener("change", filterRows);
 
     function selectedAgentKeys() {
       return Array.from(document.querySelectorAll("[data-agent-position]:checked")).map(function(input) { return input.value; });
@@ -678,7 +696,7 @@
         queueAgentMarketButton.disabled = marketBusy || !agentQueueEnabled || agentQueuePosting;
         queueAgentMarketButton.textContent = agentQueuePosting
           ? "Ставлю в очередь…"
-          : (count ? "Дожать выбранные · " + count : "Проверить 20 позиций");
+          : (count ? "Проверить выбранные · " + count : "Найти цены по всей смете");
       }
       if (avitoSafeButton) {
         avitoSafeButton.disabled = marketBusy || !avitoAgentQueueEnabled || avitoAgentQueuePosting;
@@ -707,7 +725,7 @@
       refreshAgentSelection();
     });
 
-    const agentStatusLabels = { queued: "В очереди", leased: "Ищет на Mac", completed: "Получено", failed: "Ошибка", canceled: "Отменено" };
+    const agentStatusLabels = { queued: "В очереди", leased: "В работе", completed: "Получено", failed: "Ошибка", canceled: "Отменено" };
 
     async function refreshAgentJobs() {
       if (!document.getElementById("agentMarketCard")) return;
@@ -746,18 +764,21 @@
         const launcherStatus = document.getElementById("agentLauncherStatus");
         const launcherFill = document.getElementById("agentLauncherFill");
         const commandState = document.getElementById("commandCenterState");
-        if (headline) headline.textContent = total ? ("Обработано " + processed + " из " + total) : "Заданий пока нет";
+        const canceled = Number(progress.canceled || 0);
+        const stopped = canceled > 0 && !progress.running;
+        if (stopAgentMarketButton) stopAgentMarketButton.hidden = !progress.running;
+        if (headline) headline.textContent = total ? ("Обработано " + (processed - canceled) + " из " + total) : "Заданий пока нет";
         if (percentNode) percentNode.textContent = percent + "%";
         if (fill) fill.style.width = percent + "%";
         if (launcherFill) launcherFill.style.width = percent + "%";
         if (track) track.setAttribute("aria-valuenow", String(percent));
         if (meta) {
           meta.textContent = total
-            ? ("Осталось: " + Number(progress.remaining || 0) + " · найдено предложений: " + Number(progress.offers_found || 0) + (progress.failed ? " · ошибок: " + Number(progress.failed) : ""))
-            : "Нажмите «Повторно найти цены», чтобы проверить первые 20 позиций без цены";
+            ? ("Осталось: " + Number(progress.remaining || 0) + " · найдено предложений: " + Number(progress.offers_found || 0) + (canceled ? " · отменено: " + canceled : "") + (progress.failed ? " · ошибок: " + Number(progress.failed) : ""))
+            : "Запустите поиск по всей смете. Смета длинная — идём по порядку.";
         }
         live?.classList.toggle("is-running", !!progress.running);
-        live?.classList.toggle("is-done", !!total && processed >= total);
+        live?.classList.toggle("is-done", !!total && processed >= total && !canceled);
         if (current) {
           const currentNo = Number(progress.current_index || Math.min(total, processed + 1));
           if (ordinal) ordinal.textContent = "Сейчас · позиция " + currentNo + " из " + total;
@@ -772,19 +793,25 @@
           if (launcherStatus) launcherStatus.textContent = "Сейчас: " + (current.position_name || "позиция без названия");
           if (commandState) commandState.textContent = (current.status === "leased" ? "Исполнитель взял задание" : "Ожидаем исполнителя") + " · " + currentNo + " из " + total;
         } else {
-          if (ordinal) ordinal.textContent = total && processed >= total ? "Очередь завершена" : "Текущая позиция";
-          if (position) position.textContent = total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
+          if (ordinal) ordinal.textContent = stopped ? "Поиск остановлен" : total && processed >= total ? "Очередь завершена" : "Текущая позиция";
+          if (position) position.textContent = stopped ? "Сохранённые результаты доступны в таблице" : total && processed >= total ? "Все задания обработаны" : "Ожидаю новые задания";
           if (currentStatus) currentStatus.textContent = total && processed >= total ? "Найденные предложения и ошибки доступны в журнале" : "Активных заданий нет";
           if (updated) updated.textContent = "";
-          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + processed + " из " + total) : "Повторно найти цены";
-          if (launcherStatus) launcherStatus.textContent = total && processed >= total ? "Все задания завершены" : "До 20 сложных строк, где цены ещё нет";
-          if (commandState) commandState.textContent = total && processed >= total ? "Очередь обработана" : "Заданий пока нет";
+          if (launcherTitle) launcherTitle.textContent = total ? ("Обработано " + (processed - canceled) + " из " + total) : "Повторно найти цены";
+          if (launcherStatus) launcherStatus.textContent = stopped ? "Поиск остановлен" : total && processed >= total ? "Все задания завершены" : "Все подготовленные позиции без цены";
+          if (commandState) commandState.textContent = stopped ? "Поиск остановлен" : total && processed >= total ? "Очередь обработана" : "Заданий пока нет";
         }
         if (agentMarketNote) {
           agentMarketNote.textContent = data.enabled
             ? (data.executor === "server" ? "Серверный поиск обрабатывает очередь по одной позиции. Страницу можно закрыть." : (Number(progress.leased || 0) > 0 ? "Исполнитель взял задание. Страницу можно закрыть." : "Для обработки очереди нужен подключённый исполнитель. Постановка задания ещё не означает запуск поиска."))
             : "Подключение поискового исполнителя пока не настроено.";
           agentMarketNote.classList.toggle("is-warning", !data.enabled);
+          const plan = data.latest_run?.estimate_plan;
+          if (plan?.scope === "all_without_verified") {
+            agentMarketNote.textContent += " В плане: " + Number(plan.total_positions || 0) +
+              " строк; уже с ценой: " + Number(plan.already_verified || 0) +
+              "; требуют уточнения: " + Number(plan.needs_details || 0) + ".";
+          }
         }
         const jobs = (current ? [current] : []).concat(progress.recent || []).slice(0, 7);
         const journal = document.getElementById("agentJournal");
@@ -962,17 +989,17 @@
         const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({ mode: "web", position_keys: keys, limit: keys.length ? 50 : 20 }),
+          body: JSON.stringify({ mode: "web", position_keys: keys, scope: keys.length ? "selected" : "all_without_verified" }),
         });
         const data = await response.json().catch(function() { return {}; });
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
         document.querySelectorAll("[data-agent-position]:checked").forEach(function(input) { input.checked = false; });
         refreshAgentSelection();
+        await refreshAgentJobs();
         if (agentMarketNote) {
           const ineligible = Array.isArray(data.skipped_ineligible) ? data.skipped_ineligible.length : 0;
-          agentMarketNote.textContent = "Добавлено заданий: " + data.created + (data.skipped_active ? ". Уже были в очереди: " + data.skipped_active : "") + (ineligible ? ". Не отправлено мусорных/несравнимых строк: " + ineligible : "") + ".";
+          agentMarketNote.textContent = "Добавлено заданий: " + data.created + (data.skipped_active ? ". Уже были в очереди: " + data.skipped_active : "") + (ineligible ? ". Требуют уточнения: " + ineligible : "") + ".";
         }
-        await refreshAgentJobs();
       } catch (error) {
         if (agentMarketNote) {
           agentMarketNote.textContent = "Не удалось создать задания: " + (error.message || error);
@@ -981,6 +1008,25 @@
       } finally {
         agentQueuePosting = false;
         refreshAgentSelection();
+      }
+    });
+
+    stopAgentMarketButton?.addEventListener("click", async function() {
+      stopAgentMarketButton.disabled = true;
+      try {
+        const response = await fetch("/api/tenders/" + encodeURIComponent(TENDER_ID) + "/agent-market/jobs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "web", action: "cancel_pending" }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
+        await refreshAgentJobs();
+        agentMarketNote.textContent = "Отменено заданий: " + data.canceled + ". Уже принятые цены завершат сохранение.";
+      } catch (error) {
+        agentMarketNote.textContent = "Не удалось остановить поиск: " + (error.message || error);
+        agentMarketNote.classList.add("is-warning");
+      } finally {
+        stopAgentMarketButton.disabled = false;
       }
     });
 
@@ -1024,7 +1070,9 @@
       }
     }
 
-    marketButton?.addEventListener("click", function() { postRun(marketButton.dataset.resetMarket === "1", 0); });
+    marketButton?.addEventListener("click", function() {
+      setFeatureModalOpen(document.getElementById("agentMarketModal"), true);
+    });
     marketSampleButton?.addEventListener("click", function() { postRun(false, 10); });
     avitoSafeButton?.addEventListener("click", async function() {
       const keys = selectedAgentKeys();

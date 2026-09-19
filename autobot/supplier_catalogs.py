@@ -10,6 +10,7 @@ import re
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
+from autobot.market_requirements import technical_specs
 
 
 REGISTRY_PATH = Path(__file__).with_name('supplier_catalogs.json')
@@ -37,8 +38,9 @@ def _words(value: str) -> set[str]:
 
 def _specs(value: str) -> set[str]:
     folded = _fold(value).replace('m', 'м').replace('b', 'в')
-    return {re.sub(r'\s+', '', part).replace(',', '.') for part in re.findall(
+    result = {re.sub(r'\s+', '', part).replace(',', '.') for part in re.findall(
         r'[а-я]\s*\d{2,}(?:[.,]\d+)?|\d+\s*[-–—]\s*\d+', folded)}
+    return result | {spec['value'] for spec in technical_specs(value)}
 
 
 def catalog_sources(query: str) -> list[dict]:
@@ -117,6 +119,10 @@ def catalog_links(page_html: str, base_url: str, query: str, *, limit: int = 2) 
         if not overlap and not is_catalog and not spec_hits:
             continue
         score = overlap * 10 + spec_hits * 15 + int(is_catalog)
+        # A metre-priced cable is easier to compare than an otherwise matching
+        # 50/100 m coil. This only orders real links; it never converts a price.
+        if re.search(r'кабел|провод', _fold(query)) and re.search(r'\b\d+(?:[.,]\d+)?\s*м\b', _fold(title)):
+            score -= 5
         found[url] = max(found.get(url, 0), score)
     return sorted(found, key=lambda url: -found[url])[:max(0, min(3, limit))]
 
@@ -129,7 +135,7 @@ def discover_catalog_pages(query: str, load_page, *, limit: int = 8) -> list[Cat
         html = load_page(start)
         if not html:
             continue
-        if source.get('price_page') is True or urlparse(start).path not in {'', '/'}:
+        if source.get('price_page') is True:
             result.append(catalogue_page(html, start))
         # Leave product navigation to the price verifier so a slow second
         # supplier cannot spend the entire budget before any price is checked.

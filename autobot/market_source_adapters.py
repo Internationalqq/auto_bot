@@ -151,6 +151,8 @@ def parse_ruble_values(text: object) -> list[float]:
 def _is_noise_price_context(context: object, name: object) -> bool:
     folded = _fold(context)
     wanted = _fold(name)
+    if re.search(r'(?:сумм\w*\s+(?:всего\s+)?заказ\w*|минимальн\w*\s+(?:сумм\w*|заказ\w*))', folded):
+        return True
     for marker in _NOISE_PRICE_MARKERS:
         if marker not in folded or marker in wanted:
             continue
@@ -316,7 +318,8 @@ def _jsonld_facts(soup: BeautifulSoup, name: str) -> list[_PriceFact]:
                 price = _parse_number(node.get(key))
                 if price is None:
                     continue
-                evidence = _clean(f"{node_title} {price} руб. {node_unit}")
+                qualifier = 'от ' if key == 'lowPrice' or 'aggregateoffer' in node_types else ''
+                evidence = _clean(f"{node_title} {qualifier}{price} руб. {node_unit}")
                 facts.append(_PriceFact(node_title or name, price, normalize_unit(node_unit) or detect_price_unit(evidence), "product", evidence, "json-ld", _overlap(name, evidence)))
         for value in node.values():
             if isinstance(value, (dict, list)):
@@ -346,9 +349,13 @@ def _microdata_facts(soup: BeautifulSoup, name: str) -> list[_PriceFact]:
         if not _is_ruble_currency(currency):
             continue
         name_tag = container.select_one("[itemprop='name']") if container else None
+        if name_tag is None:
+            product = price_tag.find_parent(attrs={'itemtype': re.compile(r'(?:/|:)Product$', re.I)})
+            name_tag = product.select_one("[itemprop='name']") if product else None
+        if name_tag is None:
+            name_tag = soup.find('h1') or soup.title
         title = _clean(
             (name_tag.get("content") if name_tag and name_tag.get("content") else name_tag.get_text(" ", strip=True) if name_tag else "")
-            or name
         )
         unit_tag = container.select_one("[itemprop='unitText'], [itemprop='unitCode']") if container else None
         unit_text = _clean(
@@ -521,6 +528,7 @@ def _inline_price_facts(page_text: str, name: str, position_bucket: str) -> list
 
 def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, name: str) -> _PriceFact | None:
     target = normalize_unit(target_unit)
+    from autobot.market_requirements import technical_conflict
 
     def rank(fact: _PriceFact) -> tuple[float, float, float, float]:
         unit_score = 1.0 if target and fact.unit == target else 0.0
@@ -540,6 +548,8 @@ def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, 
         fact
         for fact in facts
         if fact.overlap >= 0.28 and _specification_compatible(name, fact.title)
+        and not (position_bucket == 'materials' and fact.extractor == 'inline-regex'
+                 and technical_conflict(name, fact.title))
     ]
     if target:
         same_unit = [fact for fact in suitable if units_compatible(fact.unit, target)]
@@ -575,7 +585,18 @@ def inspect_source_page(
         adapter = "avito" if "avito.ru" in host else "catalog"
         return PageInspection(False, "blocked", adapter, reason="Источник показал антибот-защиту")
     soup = BeautifulSoup(page_html, "lxml")
+    # Recommendations belong to other product URLs. Never borrow their price
+    # when the current card has no quote (a common WooCommerce layout).
+    for node in soup.select('.related, .upsells, .up-sells, .cross-sells, '
+                            '.recommended-products, .recommendations, .recently-viewed, '
+                            '[data-recommendations]'):
+        node.decompose()
     page_text = _clean(soup.get_text(" ", strip=True))[:180_000]
+    product_cards = soup.select('.catalog_item, .product-item, .products > .product, '
+                                '[itemtype$="/Product"]', limit=3)
+    if position_bucket == 'materials' and len(product_cards) > 1:
+        return PageInspection(False, 'listing', 'material-catalog',
+                              reason='Несколько товаров на странице: нужна прямая карточка выбранного товара')
     listing_path = (
         any(marker in path for marker in _LISTING_PATH_MARKERS)
         or path.rstrip("/").endswith("/catalog")

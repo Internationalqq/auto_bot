@@ -29,6 +29,19 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(market, '_WEB_BROWSER_BLOCKED_UNTIL', 0)
 
 
+def test_each_position_receives_page_budget_without_resetting_blocked_cache(monkeypatch):
+    browser = market.WebBrowserFetcher()
+    market._save_source_page_cache('https://supplier.example/', error='CAPTCHA', method='playwright')
+    browser.source_browser_count = 8
+    browser.source_domain_failures['supplier.example'] = 2
+    browser._catalog_pages['https://supplier.example/'] = ''
+    browser.begin_position()
+    assert browser.source_browser_count == 0 and not browser.source_domain_failures
+    assert not browser._catalog_pages
+    monkeypatch.setattr(browser, 'fetch_source_page', lambda url: pytest.fail('Repeated a blocked page'))
+    assert browser._load_catalog_page('https://supplier.example/') == ''
+
+
 def test_google_result_links_do_not_mix_sellers_or_follow_opaque_redirects():
     rows = google_result_links(GOOGLE)
     assert [row['url'] for row in rows] == ['https://supplier.example/m300/', 'https://other.example/m300/']

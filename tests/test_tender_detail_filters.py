@@ -206,7 +206,7 @@ def test_feature_modals_expand_crm_workspace_and_avito_uses_brand_mark():
     assert "max-height: calc(100dvh - 20px)" in styles
     assert 'JSON.stringify({ mode: "web"' in template
     assert 'JSON.stringify({ mode: "avito"' in template
-    assert "Проверить 20 позиций" in template
+    assert "Найти цены по всей смете" in template
 
 
 def test_avito_modal_shows_one_minimal_latest_run_summary():

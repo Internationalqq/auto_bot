@@ -162,7 +162,7 @@ class MarketStrategyTests(unittest.TestCase):
             "ФСБЦ-01.7.06.01-1000",
         )
 
-        self.assertIn("щебень гранитный", crushed_stone.queries[0])
+        self.assertIn("щебень из плотных горных пород", crushed_stone.queries[0])
         self.assertIn("бетон В15 М200", concrete.queries[0])
         self.assertIn("геотекстиль нетканый иглопробивной", geotextile.queries[0])
 
@@ -185,7 +185,7 @@ class MarketStrategyTests(unittest.TestCase):
         )
 
         self.assertIn("бетон В20 М250", concrete_v20.queries[0])
-        self.assertIn("камень бортовой бетонный БР", border.queries[0])
+        self.assertIn("Камни бортовые бетонные марки БР, БВ", border.queries[0])
         self.assertIn("земля растительная", earth.queries[0])
         self.assertIn("щит с монтажной панелью 800х600х250 IP54", enclosure.queries[0])
 

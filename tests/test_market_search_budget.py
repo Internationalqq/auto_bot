@@ -110,6 +110,22 @@ def test_query_budget_and_duplicate_links(search, monkeypatch):
     assert len(search) == 1
 
 
+def test_unconfirmed_catalogue_does_not_hide_other_web_sources(search, monkeypatch):
+    from types import SimpleNamespace
+    browser = SimpleNamespace(catalogs_enabled=True)
+    bad, good = candidate(1), candidate(2)
+    bad.price = 1
+    channels = []
+    def discover(query, **kwargs):
+        channels.append(kwargs['browser_fetcher'])
+        return ([bad] if kwargs['browser_fetcher'] else [good]), ''
+    monkeypatch.setattr(market, 'search_market', discover)
+    offers, _, _ = market.research_position_market('Бетон М300', unit='м3', region='Ярославль',
+                         sources=['web'], max_results=3, browser_fetcher=browser)
+    assert channels[0] is browser and channels[1] is None
+    assert any(offer.url == good.url and offer.verification == 'verified' for offer in offers)
+
+
 def test_deeper_discovery_refreshes_shallow_cache(search, monkeypatch):
     market._save_search_cache('web', 'q', 'region', [candidate(1)], requested_results=3)
     calls = []

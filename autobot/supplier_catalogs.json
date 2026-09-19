@@ -17,5 +17,17 @@
     "url": "https://samosval76.ru/",
     "regions": ["ярослав"],
     "topics": ["песок", "щебень", "гравий", "грунт", "торф", "керамзит", "отсев", "самосвал", "экскаватор", "вывоз мусора", "уборка снега"]
+  },
+  {
+    "name": "Центр кровли — сухие штукатурки",
+    "url": "https://centr-krovli.com/stroitelnye-materialy/stroitelnye-smesi/shtukaturki/sukhie-shtukaturki/",
+    "regions": ["ярослав"],
+    "topics": ["штукатурка", "ротбанд", "rotband"]
+  },
+  {
+    "name": "Петрович — силовой кабель, Ярославль",
+    "url": "https://yaroslavl.petrovich.ru/catalog/1389/",
+    "regions": ["ярослав"],
+    "topics": ["кабель", "ввг", "nym", "провод"]
   }
 ]

@@ -130,7 +130,8 @@ def specification_reason(name: object, evidence: object) -> str:
         left, right = set(re.findall(pattern, wanted)), set(re.findall(pattern, found))
         if left and right and left.isdisjoint(right):
             return 'Не совпадает фракция щебня'
-    return ''
+    from autobot.market_requirements import technical_conflict
+    return technical_conflict(name, evidence)
 
 
 def independent_source_key(offer: dict) -> str:

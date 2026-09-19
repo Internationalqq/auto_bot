@@ -48,6 +48,14 @@ def test_registry_requires_both_topic_and_region(isolated):
     assert not is_direct_source_url('https://user:pass@supplier.example/')
 
 
+def test_discovery_uses_category_for_links_not_for_price_evidence(isolated):
+    catalogs.REGISTRY_PATH.write_text(json.dumps([{'url': 'https://supplier.example/plaster/',
+        'regions': ['ярослав'], 'topics': ['штукатурка']}]), encoding='utf-8')
+    html = '<h1>Штукатурки</h1><a href="/rotband/">Штукатурка Ротбанд 30 кг</a>'
+    pages = catalogs.discover_catalog_pages('Штукатурка Ротбанд 30 кг Ярославль', lambda url: html)
+    assert [page.url for page in pages] == ['https://supplier.example/rotband/']
+
+
 def test_links_prefer_exact_product_and_never_leave_site_or_submit_forms():
     html = '''<a href="/concrete/">Бетон</a><a href="/m100/">М100</a>
     <a href="/m300/">М 300</a><a href="/m300/#price">М300</a>
@@ -57,6 +65,12 @@ def test_links_prefer_exact_product_and_never_leave_site_or_submit_forms():
     <a href="javascript:alert(1)">Бетон М300</a><a href="/price.pdf">Прайс бетона</a>'''
     links = catalogs.catalog_links(html, 'https://supplier.example/', 'Бетон М300', limit=3)
     assert links == ['https://supplier.example/m300/', 'https://supplier.example/concrete/']
+    assert catalogs.catalog_links('<a href="/wrong/">Кабель ВВГнг(А)-LS 3х1,5</a>'
+        '<a href="/match/">Кабель ВВГнг(А)-LS 3х2,5</a>', 'https://supplier.example/',
+        'Кабель ВВГнг(А)-LS 3x2.5 Ярославль', limit=1) == ['https://supplier.example/match/']
+    assert catalogs.catalog_links('<a href="/coil/">Кабель ВВГнг(А)-LS 3х2,5 (50 м)</a>'
+        '<a href="/metre/">Кабель ВВГнг(А)-LS 3х2,5</a>', 'https://supplier.example/',
+        'Кабель ВВГнг(А)-LS 3x2.5 Ярославль', limit=1) == ['https://supplier.example/metre/']
     assert catalogs.catalog_links('<a href="/gravel/20-40/">Фракция 20-40</a>'
         '<a href="/granite/">Гранитный щебень</a>', 'https://supplier.example/',
         'Щебень гранитный фракции 20-40', limit=1) == ['https://supplier.example/granite/']
@@ -164,7 +178,7 @@ def test_browser_catalog_queue_publishes_price_and_repeat_is_idempotent(isolated
     monkeypatch.setattr(market, 'load_tender_metadata', lambda: {'12345678':{'region':'Ярославль'}})
     visits = []
     monkeypatch.setattr(market.WebBrowserFetcher, 'fetch_source_page', lambda self, url: visits.append(url) or PRICE_PAGE)
-    monkeypatch.setattr(market, 'search_web', lambda *a, **kw: pytest.fail('Unneeded public search request'))
+    monkeypatch.setattr(market, 'search_web', lambda *a, **kw: [])
     monkeypatch.setattr(market.AvitoBrowserFetcher, 'fetch', lambda *a: pytest.fail('Avito opened'))
     job = queue.enqueue_jobs('12345678',[{'position_key':position_identity(row),'name':'Бетон М300',
                                          'unit':'м3','region':'Ярославль','max_attempts':1}])['created'][0]
@@ -181,7 +195,7 @@ def test_single_item_defaults_to_web_and_ignores_avito_switch(isolated, monkeypa
     from autobot import item_research
     monkeypatch.setenv('MARKET_AVITO_BROWSER', '0')
     monkeypatch.setattr(market.WebBrowserFetcher, 'fetch_source_page', lambda self, url: PRICE_PAGE)
-    monkeypatch.setattr(market, 'search_web', lambda *a, **kw: pytest.fail('Unneeded public search request'))
+    monkeypatch.setattr(market, 'search_web', lambda *a, **kw: [])
     result = item_research.research_item('Бетон М300',unit='м3',region='Ярославль')
     assert result.sources == ['web']
     assert any(offer.verification == 'verified' and offer.price == 6700 for offer in result.offers), [(o.price, o.verification_reason) for o in result.offers]

@@ -432,6 +432,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
                 "bucket": bucket,
                 "bucket_label": plan.position.bucket_label,
                 "classification_reason": plan.position.reason,
+                "requirements": plan.requirements,
                 "unit": _display_unit(
                     name,
                     unit,
@@ -471,6 +472,8 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
             }
         )
 
+    from autobot.market_coverage import annotate_coverage
+    price_coverage = annotate_coverage(positions)
     file_summaries: dict[str, dict[str, Any]] = {}
     section_summaries: dict[str, dict[str, Any]] = {}
     for position in positions:
@@ -612,6 +615,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         "steps": steps,
         "market_health": market_health,
         "positions": positions,
+        "price_coverage": price_coverage,
         "counts": counts,
         "total_positions": total_positions,
         "coverage": coverage,
