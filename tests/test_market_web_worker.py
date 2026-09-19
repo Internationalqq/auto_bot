@@ -289,6 +289,40 @@ def test_network_failures_stop_at_attempt_limit(job_context, monkeypatch):
     assert queue.get_job(job_id)['attempts'] == 2 and not output.exists()
 
 
+@pytest.mark.parametrize('requested_mode', [None, 'web', 'avito'])
+def test_external_api_cannot_take_server_web_jobs(job_context, monkeypatch, requested_mode):
+    from autobot import web_ui
+    _, payload, job_id, _, _ = job_context
+    monkeypatch.setenv('MARKET_AGENT_TOKEN', 'fixture-token')
+    monkeypatch.setenv('MARKET_WEB_WORKER', '1')
+    client = web_ui.app.test_client()
+    headers = {'Authorization': 'Bearer fixture-token'}
+    data = {'worker_id': 'mac-mini-hermes'}
+    if requested_mode is not None:
+        data['mode'] = requested_mode
+    assert client.post('/api/agent-market/v1/claim', json=data, headers=headers).get_json()['job'] is None
+    assert queue.get_job(job_id)['status'] == 'queued'
+    assert queue.get_job(job_id)['attempts'] == 0
+    avito = queue.enqueue_jobs('12345678', [dict(payload, job_mode='avito')])['created'][0]
+    claimed = client.post('/api/agent-market/v1/claim', json=data, headers=headers).get_json()['job']
+    if requested_mode == 'web':
+        assert claimed is None
+        assert queue.get_job(avito['id'])['status'] == 'queued'
+    else:
+        assert claimed['id'] == avito['id']
+    assert queue.claim_job('server', mode='web')['id'] == job_id
+
+
+def test_external_web_claim_still_works_when_server_executor_disabled(job_context, monkeypatch):
+    from autobot import web_ui
+    monkeypatch.setenv('MARKET_AGENT_TOKEN', 'fixture-token')
+    monkeypatch.setenv('MARKET_WEB_WORKER', '0')
+    result = web_ui.app.test_client().post('/api/agent-market/v1/claim',
+        json={'worker_id': 'external', 'mode': 'web'},
+        headers={'Authorization': 'Bearer fixture-token'})
+    assert result.status_code == 200 and result.get_json()['job']['id'] == job_context[2]
+
+
 def test_fresh_rejected_page_invalidates_cached_quote_and_blocks_late_old_write(tmp_path, monkeypatch):
     from autobot import market_price_index as index
     monkeypatch.setattr(index, 'REPO_ROOT', tmp_path)

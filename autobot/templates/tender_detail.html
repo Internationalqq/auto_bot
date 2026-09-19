@@ -727,6 +727,25 @@
 
     const agentStatusLabels = { queued: "В очереди", leased: "В работе", completed: "Получено", failed: "Ошибка", canceled: "Отменено" };
 
+    function agentMarketRunView(data) {
+      const run = data.latest_run;
+      if (!run || !run.id || !Number(run.total)) {
+        return { progress: data.progress || data.summary || {},
+          results: data.results || [], totals: data.result_totals || {} };
+      }
+      const positions = Array.isArray(run.positions) ? run.positions : [];
+      return {
+        progress: { ...run, running: run.status === "running",
+          remaining: Math.max(0, Number(run.total) - Number(run.processed || 0)),
+          recent: positions.filter(item => item.status !== "queued" && item.status !== "leased")
+            .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))
+            .map(item => ({ ...item, error: item.reason || "" })) },
+        results: Array.isArray(run.results) ? run.results : positions.flatMap(item => item.offers || []),
+        totals: { found: run.offers_found || 0, verified: run.verified_offers || 0,
+          candidate: run.candidate_offers || 0, rejected: run.rejected_offers || 0 }
+      };
+    }
+
     async function refreshAgentJobs() {
       if (!document.getElementById("agentMarketCard")) return;
       try {
@@ -735,8 +754,8 @@
         if (!response.ok || !data.ok) throw new Error(data.message || ("HTTP " + response.status));
         agentQueueEnabled = !!data.enabled;
         refreshAgentSelection();
-        const summary = data.summary || {};
-        const progress = data.progress || summary;
+        const runView = agentMarketRunView(data);
+        const progress = runView.progress;
         [["agentQueuedCount", "queued"], ["agentLeasedCount", "leased"], ["agentCompletedCount", "completed"], ["agentFailedCount", "failed"]].forEach(function(pair) {
           const node = document.getElementById(pair[0]);
           if (node) node.textContent = String(progress[pair[1]] || 0);
@@ -766,7 +785,7 @@
         const commandState = document.getElementById("commandCenterState");
         const canceled = Number(progress.canceled || 0);
         const stopped = canceled > 0 && !progress.running;
-        if (stopAgentMarketButton) stopAgentMarketButton.hidden = !progress.running;
+        if (stopAgentMarketButton) stopAgentMarketButton.hidden = !progress.running && !data.progress?.running;
         if (headline) headline.textContent = total ? ("Обработано " + (processed - canceled) + " из " + total) : "Заданий пока нет";
         if (percentNode) percentNode.textContent = percent + "%";
         if (fill) fill.style.width = percent + "%";
@@ -806,6 +825,9 @@
             ? (data.executor === "server" ? "Серверный поиск обрабатывает очередь по одной позиции. Страницу можно закрыть." : (Number(progress.leased || 0) > 0 ? "Исполнитель взял задание. Страницу можно закрыть." : "Для обработки очереди нужен подключённый исполнитель. Постановка задания ещё не означает запуск поиска."))
             : "Подключение поискового исполнителя пока не настроено.";
           agentMarketNote.classList.toggle("is-warning", !data.enabled);
+          if (!progress.running && data.progress?.running) {
+            agentMarketNote.textContent += " Другие задания этого тендера ещё выполняются; их также можно остановить.";
+          }
           const plan = data.latest_run?.estimate_plan;
           if (plan?.scope === "all_without_verified") {
             agentMarketNote.textContent += " В плане: " + Number(plan.total_positions || 0) +
@@ -825,8 +847,8 @@
             return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
           }).join("");
         }
-        const resultRows = Array.isArray(data.results) ? data.results : [];
-        const resultTotals = data.result_totals || {};
+        const resultRows = runView.results;
+        const resultTotals = runView.totals;
         const resultsPanel = document.getElementById("agentResults");
         const resultList = document.getElementById("agentResultList");
         [["agentResultFound", "found"], ["agentResultVerified", "verified"], ["agentResultCandidate", "candidate"], ["agentResultRejected", "rejected"]].forEach(function(pair) {

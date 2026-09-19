@@ -17,6 +17,11 @@ class AgentMarketApiTests(unittest.TestCase):
         self.original_path = queue.DEFAULT_DB_PATH
         queue.DEFAULT_DB_PATH = Path(self.tempdir.name) / "jobs.sqlite3"
         self.original_token = os.environ.get("MARKET_AGENT_TOKEN")
+        # This class exercises the external-executor contract. Server ownership
+        # is covered separately in test_market_web_worker.
+        worker_mode = patch.dict(os.environ, {"MARKET_WEB_WORKER": "0"})
+        worker_mode.start()
+        self.addCleanup(worker_mode.stop)
         os.environ["MARKET_AGENT_TOKEN"] = "unit-test-secret"
         self.client = app.test_client()
         queue.enqueue_jobs(

@@ -10664,6 +10664,7 @@ def _agent_market_latest_run(jobs: list[dict]) -> dict:
         "current_index": min(total, processed + 1) if active else processed,
         "current": active[0] if active else None,
         "positions": positions[:250],
+        "results": [offer for position in positions for offer in position["offers"]][:60],
         "positions_truncated": len(positions) > 250,
         "estimate_plan": newest_payload.get('estimate_plan') or {},
     }
@@ -11020,7 +11021,17 @@ def api_agent_market_claim():
         return jsonify({"ok": False, "message": "Нужен worker_id"}), 400
     try:
         lease_seconds = _agent_market_lease_seconds(data)
-        job = claim_job(worker_id, lease_seconds=lease_seconds, mode=data.get("mode"))
+        mode = data.get("mode")
+        if mode is not None and mode not in ("web", "avito"):
+            raise ValueError("mode must be web or avito")
+        from autobot.market_web_worker import web_worker_enabled
+        if web_worker_enabled():
+            # The built-in worker claims web jobs directly. Legacy external
+            # clients must not race it, including clients without a mode.
+            if mode == "web":
+                return jsonify({"ok": True, "job": None, "executor": "server"})
+            mode = "avito"
+        job = claim_job(worker_id, lease_seconds=lease_seconds, mode=mode)
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     if not job:
