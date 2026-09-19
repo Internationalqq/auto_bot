@@ -76,6 +76,11 @@ def price_terms_reason(offer: dict) -> str:
     if re.search(r'/(?:articles?|blog|news|stati|novosti)(?:/|$)', path):
         return 'Цена из статьи: требуется предложение поставщика'
     evidence = text(offer.get('evidence') or offer.get('snippet')).casefold()
+    # Supplier notes can qualify an otherwise exact-looking table amount.
+    # Older captures sometimes stored the note with delivery terms.
+    conditions = evidence + ' ' + text(offer.get('delivery_terms')).casefold()
+    if re.search(r'\b(?:минимальн\w*|ориентировочн\w*|приблизительн\w*)\s+цен\w*|\bцен\w*\s+(?:минимальн\w*|ориентировочн\w*|приблизительн\w*)', conditions):
+        return 'Поставщик указал минимальную или ориентировочную цену; точная стоимость требует расчёта'
     if re.search(r'(?:/|за\s+)\s*км\b', evidence) and re.search(r'\bм\s*[3³]\b', evidence):
         return 'Тариф зависит от объёма и километража; это не цена за один м³'
     amount = r'\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?'

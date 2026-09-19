@@ -676,6 +676,14 @@ def inspect_source_page(
         reason = "На странице не найдена рублёвая цена" if not facts else f"Найдено цен: {len(facts)}, но ни одна не относится к позиции и единице"
         return PageInspection(False, "no-match", adapter, reason=reason, facts_found=len(facts))
     from autobot.market_evidence_policy import price_terms_reason
+    # A global note below the table still applies to its numbers. Do not
+    # borrow arbitrary prices or conditions from unrelated product text.
+    for note in soup.select('p,li,small'):
+        value = _clean(note.get_text(' ', strip=True))
+        if (len(value) <= 600 and re.search(r'в\s+(?:таблиц\w*|прайс\w*)|на\s+сайте|все\s+цен\w*', value, re.I)
+                and price_terms_reason({'evidence': value})):
+            best = replace(best, evidence=(best.evidence + ' · Условия прайса: ' + value)[:2400])
+            break
     terms_reason = price_terms_reason({'url': url, 'evidence': best.evidence})
     if terms_reason:
         return PageInspection(False, "conditional-price", adapter, best.price, best.unit, best.scope, best.title, best.evidence, terms_reason, best.extractor, len(facts))

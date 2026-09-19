@@ -216,3 +216,26 @@ def test_price_list_follows_product_page_to_confirm_required_aggregate(monkeypat
     result=market._verify_offers(row,[market.MarketOffer('Интернет','Бетон М200',0,'https://supplier.example/')],build_search_plan(name,'м3'))
     assert visits==['https://supplier.example/','https://supplier.example/m200']
     assert result[0].verification=='verified' and 'гравийный' in result[0].evidence
+
+
+def test_minimum_price_note_below_table_cannot_be_verified(monkeypatch,tmp_path):
+    monkeypatch.setattr(market,'_MARKET_CACHE_DIR',tmp_path)
+    monkeypatch.setattr(market,'_MARKET_SEARCH_LOG_PATH',tmp_path/'log')
+    note='В таблице указана минимальная цена, для точного расчета позвоните нам.'
+    page=TABLE+'<p>'+note+'</p>'
+    monkeypatch.setattr(market,'_fetch_source_page',lambda *a,**kw:(page,'','requests'))
+    parsed=inspect(page)
+    assert parsed.price==5900 and not parsed.accepted and note in parsed.evidence
+    row=pd.Series({market.COL_NAME:'Бетон М200 В15','Ед. изм.':'м3',market.COL_QTY:10})
+    result=market._verify_offers(row,[market.MarketOffer('Интернет','Бетон М200',5900,'https://supplier.example/m200')],build_search_plan('Бетон М200 В15','м3'))
+    assert result[0].verification=='candidate' and 'минимальную' in result[0].verification_reason
+
+
+def test_previously_accepted_minimum_price_is_downgraded_on_reload():
+    saved={'verification':'verified','price':3200,'url':'http://supplier.example/m250',
+        'matched_unit':'м3','observed_at':market.datetime.now(market.timezone.utc).isoformat(),
+        'evidence':'Бетон М250 В20 на гравии. Цена 1 м3: 3200 р.',
+        'delivery_terms':'Цена включает доставку. В таблице указана минимальная цена, для точного расчета позвоните.'}
+    row={market.COL_NAME:'Бетон М250 В20 на гравии','Ед. изм.':'м3',market.COL_QTY:9,BUNDLE_COLUMN:json.dumps([saved])}
+    assert offers_for_row(row)[0]['verification']=='candidate'
+    assert 'минимальную' in offers_for_row(row)[0]['verification_reason']
