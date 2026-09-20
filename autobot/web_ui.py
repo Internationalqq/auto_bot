@@ -94,6 +94,8 @@ from autobot.uploaded_review import blueprint as uploaded_review_blueprint
 app.register_blueprint(uploaded_review_blueprint)
 from autobot.tender_review import blueprint as tender_review_blueprint
 app.register_blueprint(tender_review_blueprint)
+from autobot.supplier_catalog_routes import blueprint as supplier_catalog_blueprint
+app.register_blueprint(supplier_catalog_blueprint)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 _estimate_capability_secret_raw = str(os.environ.get("AUTOBOT_BRIDGE_SIGNING_SECRET") or "")
 _ESTIMATE_IMPORT_CAPABILITY_SECRET = (
@@ -9753,6 +9755,8 @@ if __name__ == "__main__":
     start_delivery_recovery()
     from autobot.market_web_worker import start_web_worker
     start_web_worker()
+    from autobot.supplier_catalog_worker import start_worker as start_supplier_catalog_worker
+    start_supplier_catalog_worker()
     from autobot.main_job_runtime import start_recovery
     start_recovery(_main_job_path(), env=_parse_env())
     app.run(host=_host, port=_port, debug=False)

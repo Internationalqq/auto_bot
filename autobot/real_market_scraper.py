@@ -216,6 +216,8 @@ class MarketOffer:
     index_hit: bool = False
     index_match_score: float = 0.0
     audit_record_path: str = ""
+    catalog_item_id: str = ""
+    catalog_observation_id: str = ""
     snapshot_path: str = ""
     discovery_engine: str = ""
     discovery_score: float = 0.0
@@ -2292,6 +2294,8 @@ def _offer_bundle(offers: list[MarketOffer]) -> list[dict[str, object]]:
             "index_hit": bool(o.index_hit),
             "index_match_score": round(float(o.index_match_score or 0), 4),
             "audit_record_path": o.audit_record_path,
+            "catalog_item_id": o.catalog_item_id,
+            "catalog_observation_id": o.catalog_observation_id,
             "snapshot_path": o.snapshot_path,
             "discovery_engine": o.discovery_engine,
             "discovery_score": round(float(o.discovery_score or 0), 3),
@@ -3388,6 +3392,12 @@ def _merge_rows(prev: pd.DataFrame, rows: list[dict]) -> pd.DataFrame:
 
 
 def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: str = "") -> list[MarketOffer]:
+    from autobot.supplier_catalog_match import lookup as lookup_catalog
+    catalog_rows = lookup_catalog(
+        name=src_row.get(COL_NAME, ''), unit=src_row.get('Ед. изм.', ''),
+        basis_code=src_row.get('basis_code', ''), section=src_row.get('Раздел', ''),
+        region=region, quantity=src_row.get(COL_QTY), limit=max_results,
+    )
     rows = lookup_verified_offers(
         name=src_row.get(COL_NAME, ""),
         unit=src_row.get("Ед. изм.", ""),
@@ -3396,6 +3406,11 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
         region=region,
         limit=max_results,
     )
+    catalog_urls = {item['url'] for item in catalog_rows}
+    from autobot.supplier_catalog_store import latest_capture_times
+    captured = latest_capture_times([item.get('url') for item in rows if item.get('url')])
+    rows = catalog_rows + [item for item in rows if item.get('url') not in catalog_urls
+        and float(item.get('observed_at') or 0) >= captured.get(item.get('url'), 0)]
     offers: list[MarketOffer] = []
     for item in rows:
         try:
@@ -3430,6 +3445,8 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
             index_hit=True,
             index_match_score=float(item.get("match_score") or 0),
             audit_record_path=str(item.get("audit_record_path") or ""),
+            catalog_item_id=str(item.get('catalog_item_id') or ''),
+            catalog_observation_id=str(item.get('catalog_observation_id') or ''),
             snapshot_path=str(item.get("snapshot_path") or ""),
             identity_verified=True,
         )

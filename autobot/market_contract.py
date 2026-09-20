@@ -115,6 +115,9 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
             if not reason and assessment.status in {"review", "extreme"}:
                 reason = assessment.reason
         offer["price"] = price
+        if not reason and clean(item.get('catalog_item_id')):
+            from autobot.supplier_catalog_store import observation_reason
+            reason = observation_reason(clean(item['catalog_item_id']), clean(item.get('catalog_observation_id')))
         offer["verification"] = "candidate" if reason else "verified"
         if reason:
             offer["verification_reason"] = reason

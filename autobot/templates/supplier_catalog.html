@@ -1,0 +1,71 @@
+{% from "ui_icons.html" import icon %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Поставщики и цены · AutoBot</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260920-catalog-1">
+  <link rel="stylesheet" href="/tenders/suppliers/catalog.css?v=20260920-catalog-1">
+  <script defer src="/tenders/suppliers/catalog.js?v=20260920-catalog-1"></script>
+  <script defer src="/static/embed_bridge.js?v=20260824-1"></script>
+</head>
+<body class="autobot-page supplier-catalog-page">
+  <header class="topbar autobot-section-bar">
+    <a class="brand" href="/estimates"><span class="brand-mark" aria-hidden="true"><i></i></span><span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span></a>
+    <nav class="topnav" aria-label="Разделы AutoBot">
+      <a href="/estimates">Сметы</a><a href="/tenders">Тендеры</a>
+      <a class="is-active" aria-current="page" href="{{ page_url }}">Поставщики и цены</a>
+      <a href="/research">Поиск позиции</a>
+    </nav>
+  </header>
+  <main class="catalog-page">
+    <div class="catalog-heading"><div><h1>Поставщики и цены</h1><p>Товары и услуги из каталогов поставщиков. Цена, ссылка и условия — в одной строке.</p></div>
+      {% if view=='sources' %}<button type="button" class="catalog-button primary" data-import-all>Обновить каталоги</button>{% endif %}
+    </div>
+    <nav class="catalog-tabs" aria-label="База поставщиков">
+      <a href="{{ page_url }}" {% if view=='prices' %}aria-current="page"{% endif %}>Товары и услуги</a>
+      <a href="{{ page_url }}?view=sources" {% if view=='sources' %}aria-current="page"{% endif %}>Источники <span>{{ suppliers|length }}</span></a>
+    </nav>
+    <p class="catalog-feedback" id="catalogFeedback" role="status" aria-live="polite" hidden></p>
+    {% if view=='prices' %}
+    <form class="catalog-filters" method="get" action="{{ page_url }}">
+      <label class="supplier-search-field"><span>Товар или услуга</span><input type="search" name="query" value="{{ filters.query }}" placeholder="Например, АВБШв 4х50" maxlength="200"></label>
+      <label><span>Поставщик</span><select name="source_id"><option value="">Все поставщики</option>{% for supplier in suppliers %}<option value="{{ supplier.id }}" {% if filters.source_id==supplier.id %}selected{% endif %}>{{ supplier.name }}</option>{% endfor %}</select></label>
+      <label><span>Тип</span><select name="bucket"><option value="">Товары и услуги</option><option value="materials" {% if filters.bucket=='materials' %}selected{% endif %}>Материалы</option><option value="works" {% if filters.bucket=='works' %}selected{% endif %}>Работы</option><option value="equipment" {% if filters.bucket=='equipment' %}selected{% endif %}>Техника</option></select></label>
+      <label><span>Регион</span><input name="region" value="{{ filters.region }}" placeholder="Город или область" maxlength="100"></label>
+      <label><span>Цена</span><select name="price_kind"><option value="">Все предложения</option><option value="published" {% if filters.price_kind=='published' %}selected{% endif %}>Цена опубликована</option><option value="conditional" {% if filters.price_kind=='conditional' %}selected{% endif %}>Есть условия</option><option value="on_request" {% if filters.price_kind=='on_request' %}selected{% endif %}>По запросу</option></select></label>
+      <button class="catalog-button primary" type="submit">Найти</button>
+    </form>
+    <div class="catalog-list-heading"><p>Найдено предложений: <strong>{{ catalog.total }}</strong></p><a href="{{ page_url }}">Сбросить фильтры</a></div>
+    {% if catalog['items'] %}
+    <div class="catalog-table-wrap"><table class="catalog-table price-table">
+      <thead><tr><th>Товар или услуга</th><th class="price-column">Цена поставщика</th><th>Поставщик и регион</th><th>Проверка</th></tr></thead>
+      <tbody>{% for item in catalog['items'] %}<tr>
+        <td class="item-name"><a class="product-link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.name }} {{ icon('external') }}</a><span class="type-label">{{ 'Работы' if item.bucket=='works' else 'Техника' if item.bucket=='equipment' else 'Материал' }}</span>
+          <details class="item-details" data-item-id="{{ item.id }}"><summary>Условия и история</summary><div class="item-detail-body"><p>{{ item.evidence }}</p>{% if item.reason %}<p class="price-caution">{{ item.reason }}</p>{% endif %}{% if item.details.stock %}<p>На сайте: {{ item.details.stock }}</p>{% endif %}<div data-history>История загружается при открытии.</div></div></details>
+        </td>
+        <td class="item-price price-column" data-label="Цена поставщика"><strong>{% if item.details.price_prefix %}{{ item.details.price_prefix }} {% endif %}{{ money(item.price_kopecks) }}</strong>{% if item.price_kopecks is not none %}<span> / {{ item.unit or 'ед. не указана' }}</span>{% endif %}
+          {% if item.stale %}<span class="price-caution">Требуется обновление</span>{% elif item.price_kind=='conditional' %}<span class="price-caution">Есть условия</span>{% elif item.price_kind=='published' %}<span class="price-caption">Опубликовано на сайте</span>{% endif %}
+        </td>
+        <td class="item-supplier" data-label="Поставщик"><a href="{{ page_url }}?source_id={{ item.source_id }}">{{ item.supplier_name }}</a><span>{{ item.region_label }}{% if item.coverage.national_delivery %} · доставка по России{% endif %}</span></td>
+        <td class="item-date" data-label="Проверено"><time>{{ date(item.observed_at) }}</time><a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Открыть источник</a></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    <div class="catalog-pagination"><span>{{ catalog.offset+1 }}–{{ [catalog.offset+catalog.limit,catalog.total]|min }} из {{ catalog.total }}</span><div>{% if catalog.offset %}<button type="button" class="catalog-button" data-page-offset="{{ [0,catalog.offset-catalog.limit]|max }}">Назад</button>{% endif %}{% if catalog.offset+catalog.limit < catalog.total %}<button type="button" class="catalog-button" data-page-offset="{{ catalog.offset+catalog.limit }}">Дальше</button>{% endif %}</div></div>
+    {% else %}<div class="catalog-empty"><h2>{{ 'По этим условиям предложений пока нет' if suppliers else 'Добавим первые каталоги' }}</h2><p>Откройте источники и загрузите каталог поставщика. Найденные товары и услуги появятся здесь со ссылками и ценами.</p><a class="catalog-button" href="{{ page_url }}?view=sources">Перейти к источникам</a></div>{% endif %}
+    <p class="catalog-footnote">Для сметы Автобот отдельно проверяет характеристики, единицы, объём и регион. Стоимость доставки уточняется для конкретного объекта.</p>
+    {% else %}
+    <p class="catalog-description">Здесь видны границы каждого каталога и результат последнего обхода. Загрузка продолжается после закрытия страницы.</p>
+    <div class="catalog-table-wrap"><table class="catalog-table source-table"><thead><tr><th>Поставщик / раздел каталога</th><th>Регион</th><th>В базе</th><th>Обновление</th></tr></thead><tbody>
+    {% for supplier in suppliers %}<tr data-source-id="{{ supplier.id }}"><td class="item-name"><a class="product-link" href="{{ supplier.url }}" target="_blank" rel="noopener noreferrer">{{ supplier.name }} {{ icon('external') }}</a><span class="type-label">{{ 'Прайс работ' if supplier.bucket=='works' else 'Каталог материалов' }}</span>{% if supplier.contact_evidence %}<details class="item-details"><summary>Контакты из источника</summary><p>{{ supplier.contact_evidence }}</p><a href="{{ supplier.contact_url }}" target="_blank" rel="noopener noreferrer">Страница контактов</a></details>{% endif %}</td>
+      <td class="item-supplier" data-label="Регион">{{ supplier.region_label }}{% if supplier.coverage.national_delivery %}<span>Доставка по России</span>{% endif %}</td>
+      <td data-label="В базе"><a href="{{ page_url }}?source_id={{ supplier.id }}"><strong data-item-count>{{ supplier.item_count }}</strong> предложений</a><span class="price-caption" data-last-import>{{ date(supplier.last_import_at) }}</span></td>
+      <td class="source-actions" data-label="Обновление"><span data-job-status>{{ 'Готов к загрузке' if supplier.enabled else 'Импорт ещё не настроен' }}</span><button type="button" class="catalog-button" data-import-source="{{ supplier.id }}" {% if not supplier.enabled %}disabled{% endif %}>{{ 'Обновить' if supplier.item_count else 'Загрузить' }}</button></td>
+    </tr>{% endfor %}
+    </tbody></table></div>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -1,6 +1,7 @@
 [
   {
     "name": "ШтеттерБетон",
+    "catalog": {"adapter": "table", "region_label": "Ярославская область"},
     "url": "https://beton-yar.ru/",
     "price_page": true,
     "regions": ["ярослав"],
@@ -9,6 +10,7 @@
   },
   {
     "name": "Гамма-Бетон — Ярославль",
+    "catalog": {"adapter": "table", "region_label": "Ярославская область"},
     "url": "https://yaroslavl.gamma-beton.ru/price",
     "price_page": true,
     "regions": ["ярослав"],
@@ -45,6 +47,7 @@
   },
   {
     "name": "Электротехническая компания — АВБШв",
+    "catalog": {"adapter": "ekc", "region_label": "Москва"},
     "url": "https://e-kc.ru/price/cable-avbshv",
     "regions": ["*"],
     "topics": ["кабель", "авбшв"],
@@ -60,6 +63,7 @@
   },
   {
     "name": "Гео76 — геоматериалы",
+    "catalog": {"adapter": "geo76", "region_label": "Ярославская область"},
     "url": "https://www.geo76.com/cp/80-7e12-igloprobivnoj-geotekstil-dornit.html",
     "regions": ["ярослав"],
     "topics": ["геотекстиль", "геополотно", "георешетка", "дренаж"],
@@ -74,6 +78,7 @@
   },
   {
     "name": "СтройГарант — электромонтажные работы",
+    "catalog": {"adapter": "table", "bucket": "works", "region_label": "Ярославская область"},
     "url": "https://stroygarant76.ru/ceny/elektromontazhnye-raboty.php",
     "price_page": true,
     "regions": ["ярослав"],
@@ -89,6 +94,7 @@
   },
   {
     "name": "Орион — дорожные работы, Ярославль",
+    "catalog": {"adapter": "table", "bucket": "works", "region_label": "Ярославская область"},
     "url": "https://orion76.ru/czeny/",
     "price_page": true,
     "regions": ["ярослав"],
