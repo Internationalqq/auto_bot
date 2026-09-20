@@ -329,7 +329,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
     if metadata.get('region'):
         estimate['Регион поиска'] = str(metadata['region'])
     parse_manifest = _estimate_parse_manifest(tender_id)
-    from autobot.market_contract import merge_market_frames, position_identity
+    from autobot.market_contract import merge_market_frames, position_identity, review_position_identity
     from autobot.tender_viability import compute_viability_stats, _estimate_numeric_for_compare
     estimate = merge_market_frames(estimate, market)
     viability = compute_viability_stats(estimate)
@@ -422,7 +422,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         positions.append(
             {
                 "position_key": position_identity(row),
-                "review_id": parent_id or _clean(row.get('position_id')) or 'legacy:' + position_identity(row),
+                "review_id": review_position_identity(row, parent_id or None),
                 "is_resource": bool(parent_id),
                 "has_resources": has_resources,
                 "index": index,

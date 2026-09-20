@@ -13,7 +13,7 @@ from autobot.atomic_output import output_lock
 from autobot.document_bundle import bundle_path, current_files
 from autobot.estimate_parse_worker import EstimateParseRejected, validate_snapshot
 from autobot.estimate_publication_recovery import consistent_report, output_names, activate
-from autobot.market_contract import clean, position_identity
+from autobot.market_contract import clean, position_identity, review_position_identity
 from autobot.tender_search_state import atomic_json
 from autobot.upload_admission import operation_key
 from autobot import uploaded_corrections as common
@@ -43,7 +43,7 @@ def _decimal(value):
 def rows(frame):
     result, used = [], set()
     for record in frame.to_dict('records'):
-        key = clean(record.get('position_id')) or 'legacy:' + position_identity(record)
+        key = review_position_identity(record)
         if key in used:
             raise CorrectionError('В отчёте есть неразличимые строки. Повторите разбор исходной сметы.', 409)
         used.add(key)
@@ -185,7 +185,9 @@ def _overridden(frame, overrides):
             frame.at[index, column] = value
         if 'position_id' not in frame.columns:
             frame['position_id'] = None
-        frame.at[index, 'position_id'] = row['position_id']
+        # Keep physical PDF IDs used by nested resources; the review ID adds
+        # the document namespace without changing those source coordinates.
+        frame.at[index, 'position_id'] = clean(frame.at[index, 'position_id']) or row['position_id']
         # The legacy display column must follow an explicitly edited unit/quantity.
         qty, unit = frame.at[index, COLUMNS['qty']], clean(frame.at[index, COLUMNS['unit']])
         frame.at[index, 'Объем'] = (str(qty) + ' ' + unit).strip() if _decimal(qty) is not None else ''

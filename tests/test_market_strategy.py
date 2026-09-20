@@ -16,6 +16,11 @@ from autobot.market_strategy import (
 
 
 class MarketStrategyTests(unittest.TestCase):
+    def test_supplier_set_abbreviation_is_not_a_tonne(self) -> None:
+        for value in ('к-т.', 'к-т', 'к-кт.'):
+            self.assertEqual(normalize_unit(value), normalize_unit('комплект'))
+            self.assertFalse(units_compatible(value, 'т'))
+
     def test_work_and_material_use_different_buckets(self) -> None:
         work = classify_position("Монтаж кабеля в лотках", "100 м")
         material = classify_position("Кабель силовой ВВГнг 3x2,5", "м")

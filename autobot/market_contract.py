@@ -197,6 +197,15 @@ def position_identity(row: Mapping[str, Any]) -> str:
     return hashlib.sha256("\x1f".join(values).encode("utf-8")).hexdigest()[:32]
 
 
+def review_position_identity(row: Mapping[str, Any], position_id=None) -> str:
+    """Review IDs stay stable on edits and distinguish equal PDF coordinates."""
+    raw = clean(row.get('position_id') if position_id is None else position_id)
+    source = clean(row.get('Файл ЛСР')).replace('\\', '/')
+    if source and re.fullmatch(r'pdf:native:\d+:\d+(?:\.\d+)?', raw):
+        return raw + ':' + hashlib.sha256(source.encode('utf-8')).hexdigest()[:16]
+    return raw or 'legacy:' + position_identity(row)
+
+
 def _compatible(left: Mapping, right: Mapping) -> bool:
     lv, rv = clean(left.get('estimate_version')), clean(right.get('estimate_version'))
     if (lv.startswith('correction:') or rv.startswith('correction:')) and lv != rv:

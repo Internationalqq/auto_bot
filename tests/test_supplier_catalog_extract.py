@@ -6,6 +6,13 @@ from autobot.supplier_catalog_extract import table_records,product_records,navig
 from autobot.supplier_catalog_worker import public_address
 
 
+def test_supplier_set_price_cannot_enter_tonne_catalogue():
+    html='''<table><tr><th>Товар</th><th>Цена (руб с НДС)</th><th>Ед. измер.</th></tr>
+      <tr><td>Муфта концевая 5ПКТп-1-16/25</td><td>2400</td><td>к-т.</td></tr></table>'''
+    row=table_records(html,'https://supplier.example/price','materials')[0]
+    assert row['unit']=='шт' and row['price']==2400
+
+
 def test_parallel_price_columns_do_not_cross_products():
     html='''<table><tr><th>Марка бетона</th><th>Цена с НДС</th><th>Марка раствора</th><th>Цена с НДС</th></tr>
         <tr><td>В15 (М200)</td><td>6 150 руб/м 3</td><td>М100</td><td>5 200 руб/м 3</td></tr></table>'''

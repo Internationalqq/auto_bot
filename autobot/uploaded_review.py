@@ -37,6 +37,10 @@ def position(snapshot, key):
     for row, original in zip(snapshot['rows'], snapshot['original_rows']):
         if row['position_id'] == key:
             return row, original
+    if re.fullmatch(r'pdf:native:\d+:\d+(?:\.\d+)?', key):
+        matches=[(row,original) for row,original in zip(snapshot['rows'],snapshot['original_rows'])
+                 if re.fullmatch(re.escape(key)+r':[a-f0-9]{16}',row['position_id'])]
+        if len(matches)==1:return matches[0]
     raise corrections.CorrectionError('Позиция не найдена в смете.', 404)
 
 

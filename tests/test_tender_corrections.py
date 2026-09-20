@@ -12,6 +12,30 @@ from test_estimate_parse_pipeline import setup, TID, saved_reports
 ACTOR = {'id': 7, 'name': 'Автор проверки'}
 
 
+def test_equal_native_coordinates_from_different_documents_remain_editable():
+    from test_estimate_scope import primary
+    from autobot.estimate_scope import expand_resources,financial_scope
+    from autobot.market_contract import review_position_identity
+    from autobot.uploaded_review import position
+    first=primary();second=dict(primary(),**{'Файл ЛСР':'b.pdf'})
+    frame=pd.DataFrame([first,second]);before=edit.rows(frame)
+    keys=[r['position_id'] for r in before]
+    assert keys[0]!=keys[1]
+    selected,_=position({'rows':before,'original_rows':before},keys[1])
+    assert selected['source_file']=='b.pdf'
+    with pytest.raises(edit.CorrectionError):
+        position({'rows':before,'original_rows':before},first['position_id'])
+    assert position({'rows':before[:1],'original_rows':before[:1]},first['position_id'])[0]==before[0]
+    changed=edit._overridden(frame,{keys[1]:{'name':'Укладка геотекстиля, проверено'}})
+    assert changed.iloc[0][edit.COLUMNS['name']]==first[edit.COLUMNS['name']]
+    assert changed.iloc[1]['position_id']==first['position_id']
+    assert [r['position_id'] for r in edit.rows(changed)]==keys
+    expanded=expand_resources(changed)
+    assert len(expanded)==4 and financial_scope(expanded)['Сумма, руб'].sum()==180000
+    assert review_position_identity(expanded.iloc[1],expanded.iloc[1]['parent_position_id'])==keys[0]
+    with pytest.raises(edit.CorrectionError):edit.rows(pd.DataFrame([first,first]))
+
+
 @pytest.fixture
 def context(tmp_path, monkeypatch):
     paths, source, tender = setup(tmp_path)
