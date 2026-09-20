@@ -1018,6 +1018,7 @@ class WebBrowserFetcher(AvitoBrowserFetcher):
         self.search_enabled = self.google_enabled or self.catalogs_enabled
         self.search_unavailable = False
         self._catalog_pages: dict[str, str] = {}
+        self.position_bucket = ''
         self.catalog_errors: list[str] = []
         if self.catalogs_enabled:
             from autobot.supplier_catalogs import REGISTRY_PATH
@@ -1032,10 +1033,11 @@ class WebBrowserFetcher(AvitoBrowserFetcher):
     def __enter__(self):
         return self
 
-    def begin_position(self) -> None:
+    def begin_position(self, *, position_bucket: str = '') -> None:
         # A full tender reuses the context. Give every row its own page budget;
         # durable negative page caches still keep blocked sites on cooldown.
         self.source_browser_count = 0
+        self.position_bucket = position_bucket
         self.source_domain_failures.clear()
         self._catalog_pages.clear()
         self.catalog_errors.clear()
@@ -1045,20 +1047,17 @@ class WebBrowserFetcher(AvitoBrowserFetcher):
         if url in self._catalog_pages:
             return self._catalog_pages[url]
         cached = _load_source_page_cache(url)
-        if cached is not None and cached[2] == 'playwright':
+        if cached is not None:
             self._catalog_pages[url] = cached[0]
             if not cached[0] and cached[1]:
                 self.catalog_errors.append(f'Каталог {urlparse(url).hostname}: {cached[1]}')
             return cached[0]
-        page_html = self.fetch_source_page(url)
-        # Share this exact observation with price verification. A reread of a
-        # cached page never moves its capture date forward.
-        if page_html:
-            _save_source_page_cache(url, page_html=page_html, method='playwright')
-        elif 'капч' in self.last_error.casefold() or 'защит' in self.last_error.casefold():
-            _save_source_page_cache(url, error=self.last_error, method='playwright')
-            self.catalog_errors.append(f'Каталог {urlparse(url).hostname}: {self.last_error}')
-            _append_market_search_log('browser_catalog_unavailable', url=url, reason=self.last_error)
+        # Static catalogues need no renderer. Share the same HTTP/browser
+        # cache and original capture time with price verification.
+        page_html, error, _ = _fetch_source_page(url, timeout=6, browser_fetcher=self)
+        if not page_html and error:
+            self.catalog_errors.append(f'Каталог {urlparse(url).hostname}: {error}')
+            _append_market_search_log('browser_catalog_unavailable', url=url, reason=error)
         self._catalog_pages[url] = page_html
         return page_html
 
@@ -1068,13 +1067,14 @@ class WebBrowserFetcher(AvitoBrowserFetcher):
             return []
         if self.catalogs_enabled:
             from autobot.supplier_catalogs import discover_catalog_pages
-            pages = discover_catalog_pages(query, self._load_catalog_page, limit=min(6, max_results))
+            pages = discover_catalog_pages(query, self._load_catalog_page,
+                                           limit=min(6, max_results), bucket=self.position_bucket)
             if pages:
                 _append_market_search_log('browser_catalog_discovery', query=query,
                                           pages=len(pages), urls=[page.url for page in pages])
                 return [MarketOffer(source='Интернет', title=page.title, price=0,
                                     url=page.url, snippet=page.snippet,
-                                    discovery_engine='Каталог поставщика · Chromium') for page in pages]
+                                    discovery_engine='Каталог поставщика') for page in pages]
         if not self.google_enabled or self.search_unavailable or time.monotonic() < _WEB_BROWSER_BLOCKED_UNTIL:
             return []
         from autobot.browser_search_results import google_result_links
@@ -1964,6 +1964,8 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
                             discovery_engine=f"DDGS/{backend}",
                         )
                     )
+                if len(_relevant_search_offers(offers, query, max_results=3, write_log=False)) >= 3:
+                    return _dedupe_and_sort(offers, max_results=max_results), last_err
             except Exception as e:
                 last_err = f"{backend}: {type(e).__name__}: {e}"[:300]
                 folded_error = str(e).casefold()
@@ -2107,30 +2109,44 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
     q = _web_query(query, region)
     errors: list[str] = []
     raw_offers: list[MarketOffer] = []
+    excluded = set(exclude_urls or ())
+    def unseen(offers):
+        return [offer for offer in offers if _canonical_offer_url(offer.url) not in excluded]
 
-    # Bing RSS остаётся быстрым первым источником, но больше не завершает поиск:
-    # минимум один независимый движок дополняет его нишевыми поставщиками.
+    def useful_batch():
+        return _relevant_search_offers(unseen(raw_offers), q, max_results=max_results, write_log=False)
+
+    # Verify a useful batch promptly; subsequent position queries can seek
+    # more suppliers if these pages do not produce comparable prices.
     bing_rss_url = "https://www.bing.com/search?" + urlencode(
         {"format": "rss", "q": q, "mkt": "ru-RU", "setlang": "ru", "cc": "RU"}
     )
     try:
-        page = _session_get(bing_rss_url)
+        page = _session_get(bing_rss_url, timeout=6)
         raw_offers.extend(_tag_search_engine(_parse_bing_rss(page, max_results=max_results * 6), "Bing RSS"))
     except Exception as e:
         errors.append(f"Bing RSS: {type(e).__name__}: {e}")
 
+    if len(useful_batch()) >= min(max_results, 3):
+        return useful_batch()
+    # Yandex supplied most useful links in the full-run audit. Give it a turn
+    # before slower fallback engines can exhaust discovery's own deadline.
+    ddgs_offers, ddgs_err = _search_web_ddgs(q, max_results=max_results * 5)
+    raw_offers.extend(ddgs_offers)
+    if ddgs_err:
+        errors.append(ddgs_err)
+    if useful_batch():
+        return useful_batch()
+
     yahoo_url = "https://search.yahoo.com/search?" + urlencode({"p": q})
     yahoo_offers: list[MarketOffer] = []
     try:
-        page = _session_get(yahoo_url, timeout=18)
+        page = _session_get(yahoo_url, timeout=6)
         yahoo_offers = _parse_yahoo_html(page, max_results=max_results * 6)
         raw_offers.extend(yahoo_offers)
     except Exception as e:
         errors.append(f"Yahoo: {type(e).__name__}: {e}")
 
-    excluded = set(exclude_urls or ())
-    def unseen(offers):
-        return [offer for offer in offers if _canonical_offer_url(offer.url) not in excluded]
     early = _relevant_search_offers(unseen(raw_offers), q, max_results=max_results, write_log=False)
     if len(early) >= min(max_results, 3):
         for error in errors:
@@ -2162,13 +2178,6 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
     raw_offers.extend(searx_offers)
     if searx_err:
         errors.append(searx_err)
-
-    before_ddgs = _relevant_search_offers(raw_offers, q, max_results=max_results, write_log=False)
-    if not (yahoo_offers or searx_offers) or len(before_ddgs) < max_results:
-        ddgs_offers, ddgs_err = _search_web_ddgs(q, max_results=max_results * 5)
-        raw_offers.extend(ddgs_offers)
-        if ddgs_err:
-            errors.append(ddgs_err)
 
     provisional = _relevant_search_offers(raw_offers, q, max_results=max_results, write_log=False)
     ddg_url = "https://duckduckgo.com/html/?" + urlencode({"q": q})
@@ -2625,17 +2634,23 @@ def _enrich_offer_from_page(
     captured = observed_timestamp(cached_record.get('created_at')) or time.time()
     offer.observed_at = datetime.fromtimestamp(captured, tz=timezone.utc).isoformat(timespec='seconds')
     offer.search_region = str(src_row.get('Регион поиска') or '').strip()
-    from autobot.supplier_evidence import supplier_identity, supplier_context_links, delivery_terms
+    from autobot.supplier_evidence import supplier_identity, supplier_context_links, delivery_terms, outdated_price_notice
     offer.supplier_evidence = supplier_identity(page_html)
     offer.region_evidence = source_region_evidence(page_html, offer.search_region, plan.position.bucket)
     offer.region_source_url = offer.url if offer.region_evidence else ''
     offer.delivery_terms = delivery_terms(page_html, inspection.evidence)
+    price_notice = outdated_price_notice(page_html)
+    if price_notice:
+        offer.delivery_terms += ' ' + price_notice
     offer.quantity_terms = list(inspection.quantity_terms)
     # Only a usable quote warrants up to two same-site contact lookups.
     if not is_avito and inspection.accepted and not offer.region_evidence:
         for context_url in supplier_context_links(page_html, offer.url):
             try:
                 context_html, _, _ = _fetch_source_page(context_url, timeout=6, browser_fetcher=browser_fetcher)
+                price_notice = outdated_price_notice(context_html)
+                if price_notice:
+                    offer.delivery_terms += ' ' + price_notice
                 proof=source_region_evidence(context_html, offer.search_region, plan.position.bucket)
                 if proof:
                     offer.region_evidence=proof
@@ -2886,6 +2901,9 @@ def _diverse_market_offers(offers: list[MarketOffer], limit: int) -> list[Market
             seen.add(key)
         else:
             remaining.append(offer)
+    remaining.sort(key=lambda offer: (
+        not bool(offer.evidence and offer.extractor),
+        not bool(offer.region_evidence), not bool(offer.matched_unit)))
     return (primary + remaining)[:limit]
 
 
@@ -2911,7 +2929,9 @@ def _research_row_market(
     if not plan.can_auto_price:
         return pool, plan.warning
     begin_position = getattr(browser_fetcher, 'begin_position', None)
-    if callable(begin_position):
+    if isinstance(browser_fetcher, WebBrowserFetcher):
+        browser_fetcher.begin_position(position_bucket=plan.position.bucket)
+    elif callable(begin_position):
         begin_position()
     queries = list(plan.queries) or [_compact_query(str(row.get(COL_NAME, '')))]
     if avito_collect_only and sources == ['avito']:
@@ -2938,15 +2958,20 @@ def _research_row_market(
                 break
             _remaining_timeout(seconds)
             query_count += 1
-            found, error = search_market(
-                query, region='' if plan.queries else str(row.get('Регион поиска', '') or ''),
-                sources=selected_sources,
-                max_results=min(page_limit, max(6, max_results * 3)),
-                exclude_urls=seen,
-                browser_fetcher=(None if query_count > 1
-                                 and getattr(browser_fetcher, 'catalogs_enabled', False)
-                                 else browser_fetcher),
-            )
+            discovery_seconds = _bounded_setting('MARKET_DISCOVERY_TIMEOUT_SEC', 25, 5, 60)
+            discovery_token = _SEARCH_DEADLINE.set(min(deadline, time.monotonic() + discovery_seconds))
+            try:
+                found, error = search_market(
+                    query, region='' if plan.queries else str(row.get('Регион поиска', '') or ''),
+                    sources=selected_sources,
+                    max_results=min(page_limit, max(6, max_results * 3)),
+                    exclude_urls=seen,
+                    browser_fetcher=(None if query_count > 1
+                                     and getattr(browser_fetcher, 'catalogs_enabled', False)
+                                     else browser_fetcher),
+                )
+            finally:
+                _SEARCH_DEADLINE.reset(discovery_token)
             if error:
                 errors.append(error)
             for offer in found:
@@ -2985,6 +3010,8 @@ def _friendly_market_error(err: str) -> str:
     folded = str(err or "").casefold()
     if not folded:
         return ""
+    if 'поиск выполнен;' in folded:
+        return err
     if "429" in folded or "too many requests" in folded:
         return "часть источников ограничила частоту запросов"
     if any(marker in folded for marker in ("ddgs", "connecterror", "httperror", "timed out", "timeout")):
@@ -3659,7 +3686,7 @@ def prepare_builtin_market_result(tender_id, position_payload, *, cancelled=None
         offers, notes = _research_row_market(row, plan, sources=['web'], max_results=limit,
                                              browser_fetcher=browser, cancelled=cancelled)
     prepared = {'schema_version': 1, 'estimate_digest': digest, 'position_key': key,
-                'region': row['Регион поиска'], 'offers': [vars(offer) for offer in offers]}
+                'region': row['Регион поиска'], 'offers': [vars(offer) for offer in offers], 'notes': notes}
     result = {'schema_version': 2, 'position_key': key, 'executor': 'server',
               'offers': [dict(vars(offer), unit=offer.matched_unit) for offer in offers],
               'notes': notes or ('Подтверждённых цен не найдено' if not offers else '')}
@@ -3778,6 +3805,7 @@ def prepare_agent_market_result(tender_id, position_payload, result):
     return {
         'schema_version': 1, 'estimate_digest': digest, 'position_key': key,
         'region': source_row['Регион поиска'], 'offers': [vars(offer) for offer in imported],
+        'notes': str(result.get('notes') or '')[:2000],
     }
 
 
@@ -3822,8 +3850,6 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
     if region_key(prepared.get('region')) != region_key(source_row['Регион поиска']):
         raise ValueError('Регион изменился после проверки цены; нужен новый поиск')
     imported = [MarketOffer(**offer) for offer in prepared.get('offers', [])]
-    if not imported:
-        return {'imported': 0, 'message': 'Агент не вернул пригодных цен'}
     from autobot.market_contract import position_identity
     output_path = output_path_for_tender(tid)
     previous = _read_previous(output_path)
@@ -3836,7 +3862,9 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
     if not query:
         queries = position_payload.get("queries") or plan.queries
         query = str(next(iter(queries), "") if queries else market_query_name(name))
-    row = _build_output_row(source_row, offers=offers, query=query, err="", plan=plan)
+    from autobot.market_coverage import search_result_reason
+    search_note = search_result_reason(prepared.get('notes')) if not offers else ''
+    row = _build_output_row(source_row, offers=offers, query=query, err=search_note, plan=plan)
     output_rows = [row]
     output_keys = {key}
     for equivalent in list(position_payload.get("equivalent_positions") or []):
@@ -3868,7 +3896,8 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
         from dataclasses import replace
         equivalent_offers = _latest_offers_for_row(equivalent_row, _saved_offers_for_key(previous, equivalent_key),
                                                    [replace(offer) for offer in imported])
-        output_rows.append(_build_output_row(equivalent_row, offers=equivalent_offers, query=query, err="", plan=equivalent_plan))
+        output_rows.append(_build_output_row(equivalent_row, offers=equivalent_offers, query=query,
+                                            err=search_note if not equivalent_offers else '', plan=equivalent_plan))
         output_keys.add(equivalent_key)
     merged = _merge_rows(previous, output_rows)
     write_excel(merged, output_path)

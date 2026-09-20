@@ -365,7 +365,8 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
     # A product's application or section ("монтаж", "доставка") is not its
     # type. Respect explicit price-code classifications above, then the noun
     # being purchased before descriptive words later in the title.
-    material_head = re.match(r'^(?:георешет\w*|геополот\w*|геотекст\w*|пен[аы]\s+монтаж\w*|'
+    material_head = re.match(r'^(?:земл[яи]\s+раститель\w*|раститель\w*\s+грунт\w*|грунт\s+раститель\w*|'
+                             r'георешет\w*|геополот\w*|геотекст\w*|пен[аы]\s+монтаж\w*|'
                              r'штукатурк[аи]\s+(?:гипсов\w*|цемент\w*|декоратив\w*)|'
                              r'шпаклев\w*|смес[ьи]\s+сух\w*)\b', title)
     product_head = re.match(r'^(?:кабел\w*|труб[аы]\w*|щит\w*|шкаф\w*|светильник\w*|'
@@ -399,6 +400,15 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
     value = re.sub(r"\s+", " ", value).strip(" ,.;:-")
     folded = value.casefold().replace("ё", "е")
     position_slug = str(position_type or "").strip().casefold()
+    if position_slug not in {'work', 'service'} and 'кабел' in folded:
+        from autobot.market_requirements import technical_specs
+        specs = technical_specs(value)
+        if any(s['kind'] == 'cable_model' for s in specs):
+            parts = []
+            for kind in ('cable_model', 'dimensions', 'cable_stranding', 'cable_voltage'):
+                parts.extend(s['value'] + 'В' if kind == 'cable_voltage' else s['evidence']
+                             for s in specs if s['kind'] == kind)
+            return 'кабель ' + ' '.join(parts)
     # Сметные формулировки плохо ищутся дословно. Для рынка используем обычное
     # название той же операции, но исходное название в отчёте не меняем.
     if "тротуар" in folded and "плит" in folded and ("покрыт" in folded or "устройств" in folded):
@@ -453,13 +463,13 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
         return f"бетон В{display_class}" + (f" {grade}" if grade else "")
     if "песок" in folded and "строитель" in folded:
         return "песок строительный мелкий" if "мелк" in folded else "песок строительный"
-    if "геополотно" in folded or "геотекст" in folded:
-        density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", folded)
+    if position_slug not in {'work', 'service'} and ("геополотно" in folded or "геотекст" in folded):
+        density = re.search(r"\b(\d{2,4})\s*г(?:р(?:амм(?:а|ов)?)?)?\.?\s*/?\s*м(?:2|²)\b", folded)
         traits = ' нетканый' if 'неткан' in folded else ''
         traits += ' иглопробивной' if 'иглопробив' in folded else ''
         traits += ' полиэфирный' if 'полиэфир' in folded else ''
         return "геотекстиль" + traits + (f" {density.group(1)} г/м²" if density else "")
-    if "георешет" in folded:
+    if position_slug not in {'work', 'service'} and "георешет" in folded:
         material = next((label for stem, label in [('полиэтилен', 'полиэтиленовая'),
                          ('полипропилен', 'полипропиленовая'), ('композит', 'композитная')]
                          if stem in folded), '')
@@ -494,6 +504,15 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
         return "уплотнение грунта трамбовкой"
     if "прослойк" in folded and ("неткан" in folded or "нсм" in folded):
         return "укладка геотекстиля"
+    if position_slug in {'work', 'service'}:
+        if 'затягиван' in folded and 'провод' in folded and 'труб' in folded:
+            return 'протяжка провода в трубе'
+        if 'опор' in folded and 'освещен' in folded and 'фланцев' in folded:
+            return 'монтаж фланцевых опор освещения'
+        if 'георешет' in folded:
+            return 'укладка георешетки'
+        if 'посев' in folded and 'газон' in folded:
+            return 'посев газона вручную' if 'вручную' in folded else 'посев газона'
     return " ".join(value.split()[:max_words])
 
 
@@ -548,28 +567,28 @@ def build_search_plan(
 
     if position.bucket == "materials":
         queries = (
-            f"{exact_title} цена прайс {price_marker}{place}".strip(),
             f"{discovery_title}{place} цена {broad_unit}".strip(),
+            f"{exact_title} цена прайс {price_marker}{place}".strip(),
             f"{title} купить поставщик цена {broad_unit}{place}".strip(),
         )
         return MarketSearchPlan(
             position, queries, "Товар: точная модель/характеристики и цена за единицу",
             "Каталоги поставщиков; объявления — только как резерв", unit_norm,
-            bool(unit_norm and not position.needs_decomposition),
-            "Нужны характеристики и единица измерения" if position.needs_decomposition else "",
+            passport['can_search'],
+            '; '.join(passport['issues']) if not passport['can_search'] else '',
             requirements=passport,
         )
     if position.bucket == "works":
         queries = (
-            f"{exact_title} стоимость работ прайс {price_marker}{place}".strip(),
             f"{title}{place} цена {broad_unit}".strip(),
+            f"{exact_title} стоимость работ прайс {price_marker}{place}".strip(),
             f"{title} подрядчик стоимость работы {broad_unit}{place}".strip(),
         )
         return MarketSearchPlan(
             position, queries, "Работа: цена выполнения без стоимости материалов",
             "Прайсы подрядчиков и объявления услуг", unit_norm,
-            bool(unit_norm and not position.needs_decomposition),
-            "Без единицы измерения цену нельзя сравнить автоматически" if not unit_norm else "",
+            passport['can_search'],
+            '; '.join(passport['issues']) if not passport['can_search'] else '',
             requirements=passport,
         )
     return MarketSearchPlan(
@@ -587,7 +606,8 @@ def normalize_grade_notation(value: object) -> str:
 
 
 def _tokens(value: object) -> set[str]:
-    words = re.findall(r"[0-9a-zа-я]{3,}", normalize_grade_notation(value))
+    from autobot.market_requirements import comparable_wording
+    words = re.findall(r"[0-9a-zа-я]{3,}", normalize_grade_notation(comparable_wording(value)))
     return {word for word in words if word not in _STOP_WORDS and not word.isdigit()}
 
 
@@ -742,9 +762,10 @@ def check_offer(
         )
     geotextile_required = "геополотно" in name_folded or "геотекст" in name_folded
     geotextile_seen = "геополотно" in evidence_folded or "геотекст" in evidence_folded
-    required_density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", name_folded)
+    density_pattern = r"\b(\d{2,4})\s*г(?:р(?:амм(?:а|ов)?)?)?\.?\s*/?\s*м(?:2|²)\b"
+    required_density = re.search(density_pattern, name_folded)
     if geotextile_required and required_density:
-        offered_density = re.search(r"\b(\d{2,4})\s*г\s*/?\s*м(?:2|²)\b", evidence_folded)
+        offered_density = re.search(density_pattern, evidence_folded)
         if not offered_density or offered_density.group(1) != required_density.group(1):
             return OfferCheck(
                 "candidate",

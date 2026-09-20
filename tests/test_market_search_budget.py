@@ -208,7 +208,7 @@ def test_search_backends_contribute_results_independently(search, monkeypatch):
 
 def test_natural_query_keeps_grade_and_region_without_changing_verification_name():
     plan = market.build_search_plan('Бетон тяжелый М300', 'м3', region='Ярославль')
-    assert plan.queries[1] == 'Бетон М300 Ярославль цена за м3'
+    assert plan.queries[0] == 'Бетон М300 Ярославль цена за м3'
     assert market.market_query_name('Бетон тяжелый М300') == 'Бетон тяжелый М300'
 
 

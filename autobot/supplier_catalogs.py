@@ -43,7 +43,7 @@ def _specs(value: str) -> set[str]:
     return result | {spec['value'] for spec in technical_specs(value)}
 
 
-def catalog_sources(query: str) -> list[dict]:
+def catalog_sources(query: str, *, bucket: str = '') -> list[dict]:
     """Only visit suppliers whose declared region and topic fit this query."""
     try:
         rows = json.loads(REGISTRY_PATH.read_text(encoding='utf-8'))
@@ -55,10 +55,12 @@ def catalog_sources(query: str) -> list[dict]:
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
+        if bucket and row.get('buckets') and bucket not in row['buckets']:
+            continue
         regions, topics = row.get('regions', []), row.get('topics', [])
         if (not isinstance(regions, list) or not isinstance(topics, list)
                 or not all(isinstance(value, str) and value.strip() for value in regions + topics)
-                or not regions or not any(_fold(region) in folded for region in regions)
+                or not regions or not any(region == '*' or _fold(region) in folded for region in regions)
                 or not words.intersection(_words(' '.join(topics)))):
             continue
         start = str(row.get('url') or '')
@@ -71,6 +73,8 @@ def catalog_sources(query: str) -> list[dict]:
         except ValueError:
             continue
         selected.append(row)
+    # A catalogue for an exact model/family precedes a general-purpose store.
+    selected.sort(key=lambda row: -len(words & _words(' '.join(row['topics']))))
     return selected[:3]
 
 
@@ -127,12 +131,17 @@ def catalog_links(page_html: str, base_url: str, query: str, *, limit: int = 2) 
     return sorted(found, key=lambda url: -found[url])[:max(0, min(3, limit))]
 
 
-def discover_catalog_pages(query: str, load_page, *, limit: int = 8) -> list[CatalogPage]:
+def discover_catalog_pages(query: str, load_page, *, limit: int = 8, bucket: str = '') -> list[CatalogPage]:
     """Read at most three catalogues; let verification open product links."""
     result = []
-    for source in catalog_sources(query):
+    for source in catalog_sources(query, bucket=bucket):
         start = source['url']
-        html = load_page(start)
+        try:
+            html = load_page(start)
+        except TimeoutError:
+            # Retain discovered URLs if a later supplier spends the deadline.
+            # Cancellation is checked before verification.
+            break
         if not html:
             continue
         if source.get('price_page') is True:

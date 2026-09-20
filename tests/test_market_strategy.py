@@ -241,11 +241,12 @@ class MarketStrategyTests(unittest.TestCase):
         self.assertEqual(exact_tape.status, "verified")
         self.assertEqual(steel_strip.status, "verified")
 
-    def test_search_queries_use_exact_price_marker_then_regional_fallback(self) -> None:
+    def test_search_queries_use_natural_name_then_exact_price_marker(self) -> None:
         plan = build_search_plan("Плитка керамическая", "кв. м", "ФСБЦ", "Материалы")
 
-        self.assertIn('"плитка керамическая"', plan.queries[0].casefold())
-        self.assertIn("₽/м²", plan.queries[0])
+        self.assertEqual('плитка керамическая цена за м2', plan.queries[0].casefold())
+        self.assertIn('"плитка керамическая"', plan.queries[1].casefold())
+        self.assertIn("₽/м²", plan.queries[1])
         self.assertIn("поставщик", plan.queries[2])
 
     def test_crushed_stone_fraction_is_kept_in_compact_query(self) -> None:

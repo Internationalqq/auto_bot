@@ -93,7 +93,7 @@ class MarketSourceAdapterTests(unittest.TestCase):
         result = inspect_source_page(
             page,
             "https://supplier.example/products/vvgnga-3x2-5",
-            name="Кабель ВВГнг 3х2,5",
+            name="Кабель ВВГнг(А) 3х2,5",
             target_unit="м",
             position_bucket="materials",
         )

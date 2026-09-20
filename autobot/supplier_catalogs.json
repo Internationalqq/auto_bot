@@ -4,44 +4,95 @@
     "url": "https://beton-yar.ru/",
     "price_page": true,
     "regions": ["ярослав"],
-    "topics": ["бетон", "раствор"]
+    "topics": ["бетон", "раствор"],
+    "buckets": ["materials"]
   },
   {
     "name": "Гамма-Бетон — Ярославль",
     "url": "https://yaroslavl.gamma-beton.ru/price",
     "price_page": true,
     "regions": ["ярослав"],
-    "topics": ["бетон", "раствор"]
+    "topics": ["бетон", "раствор"],
+    "buckets": ["materials"]
   },
   {
     "name": "РБУ Рыбинск",
     "url": "https://betonrybynsk.ru/",
     "price_page": true,
     "regions": ["ярослав", "рыбинск"],
-    "topics": ["бетон", "раствор"]
+    "topics": ["бетон", "раствор"],
+    "buckets": ["materials"]
   },
   {
     "name": "БетонТоп — Ярославль",
     "url": "https://yaroslavl-beton.ru/",
     "regions": ["ярослав"],
-    "topics": ["бетон", "раствор"]
+    "topics": ["бетон", "раствор"],
+    "buckets": ["materials"]
   },
   {
     "name": "Ярославские карьеры",
     "url": "https://samosval76.ru/",
     "regions": ["ярослав"],
-    "topics": ["песок", "щебень", "гравий", "грунт", "торф", "керамзит", "отсев", "самосвал", "экскаватор", "вывоз мусора", "уборка снега"]
+    "topics": ["песок", "щебень", "гравий", "грунт", "земля растительная", "торф", "керамзит", "отсев", "самосвал", "экскаватор", "вывоз мусора", "уборка снега"]
   },
   {
     "name": "Центр кровли — сухие штукатурки",
     "url": "https://centr-krovli.com/stroitelnye-materialy/stroitelnye-smesi/shtukaturki/sukhie-shtukaturki/",
     "regions": ["ярослав"],
-    "topics": ["штукатурка", "ротбанд", "rotband"]
+    "topics": ["штукатурка", "ротбанд", "rotband"],
+    "buckets": ["materials"]
+  },
+  {
+    "name": "Электротехническая компания — АВБШв",
+    "url": "https://e-kc.ru/price/cable-avbshv",
+    "regions": ["*"],
+    "topics": ["кабель", "авбшв"],
+    "buckets": ["materials"]
+  },
+  {
+    "name": "Электромонтажник — Ярославль, АВБШв",
+    "url": "https://esh76.ru/catalog/kabelno-provodnikovaya-produktsiya/kabel-avbshv/",
+    "price_page": true,
+    "regions": ["ярослав"],
+    "topics": ["авбшв", "авббшв"],
+    "buckets": ["materials"]
+  },
+  {
+    "name": "Гео76 — геоматериалы",
+    "url": "https://www.geo76.com/cp/80-7e12-igloprobivnoj-geotekstil-dornit.html",
+    "regions": ["ярослав"],
+    "topics": ["геотекстиль", "геополотно", "георешетка", "дренаж"],
+    "buckets": ["materials"]
+  },
+  {
+    "name": "СИЯН — плитка и бордюры",
+    "url": "https://siyan.ru/",
+    "regions": ["ярослав"],
+    "topics": ["бортовые камни", "бордюр", "тротуарная плитка", "геотекстиль"],
+    "buckets": ["materials"]
+  },
+  {
+    "name": "СтройГарант — электромонтажные работы",
+    "url": "https://stroygarant76.ru/ceny/elektromontazhnye-raboty.php",
+    "price_page": true,
+    "regions": ["ярослав"],
+    "topics": ["протяжка", "прокладка провода", "монтаж кабеля", "электропроводка", "светильник"],
+    "buckets": ["works"]
   },
   {
     "name": "Петрович — силовой кабель, Ярославль",
     "url": "https://yaroslavl.petrovich.ru/catalog/1389/",
     "regions": ["ярослав"],
-    "topics": ["кабель", "ввг", "nym", "провод"]
+    "topics": ["кабель", "ввг", "nym", "провод"],
+    "buckets": ["materials"]
+  },
+  {
+    "name": "Орион — дорожные работы, Ярославль",
+    "url": "https://orion76.ru/czeny/",
+    "price_page": true,
+    "regions": ["ярослав"],
+    "topics": ["геотекстиль", "асфальт", "демонтаж", "грунт", "щебень", "погрузка", "вывоз", "аренда"],
+    "buckets": ["works"]
   }
 ]

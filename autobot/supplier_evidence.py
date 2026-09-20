@@ -69,6 +69,16 @@ def delivery_terms(page_html: str, evidence: str) -> str:
     return 'Стоимость доставки до объекта не подтверждена; в цену автоматически не добавляется.'
 
 
+def outdated_price_notice(page_html: str) -> str:
+    """A contact page can explicitly invalidate the supplier's price list."""
+    soup = BeautifulSoup(page_html, 'html.parser')
+    for node in soup.select('p,li,td,small'):
+        value = re.sub(r'\s+', ' ', node.get_text(' ', strip=True))
+        if len(value) <= 1200 and re.search(r'цен[аы].{0,100}(?:не\s+(?:совсем\s+)?актуальн|устарел)', value, re.I):
+            return value[:1000]
+    return ''
+
+
 def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
     """Read-only validation is repeated after reload as well as on capture."""
     from autobot.market_strategy import normalize_unit, estimate_unit_multiplier

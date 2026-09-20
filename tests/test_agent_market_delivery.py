@@ -179,6 +179,23 @@ def test_changed_estimate_invalidates_accepted_package(isolated_queue, prepared_
     assert queue.get_job(job['id'])['status'] == 'failed'
 
 
+def test_empty_completed_search_is_published_and_repeat_keeps_existing_quote(prepared_market):
+    estimate_path, market_path, payload, result, prepared = prepared_market
+    original = estimate_path.read_bytes()
+    empty = dict(prepared, offers=[], notes='Лимит времени поиска исчерпан')
+    assert market.publish_agent_market_result('12345678', payload, empty)['imported'] == 0
+    frame = pd.read_excel(market_path)
+    from autobot.market_contract import merge_market_frames
+    merged = merge_market_frames(pd.read_excel(estimate_path), frame)
+    assert len(frame) == 1 and merged.iloc[0]['Рынок обработано'] == 'Да'
+    assert 'времени' in frame.iloc[0]['Ошибка / статус']
+    market.publish_agent_market_result('12345678', payload, prepared)
+    market.publish_agent_market_result('12345678', payload, empty)
+    frame = pd.read_excel(market_path)
+    assert len(frame) == 1 and len(json.loads(frame.iloc[0][BUNDLE_COLUMN])) == 1
+    assert estimate_path.read_bytes() == original
+
+
 def test_operating_system_releases_file_lock_when_process_exits(tmp_path):
     from autobot.atomic_output import output_lock
     destination = tmp_path / 'result.xlsx'

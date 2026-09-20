@@ -142,7 +142,7 @@ def _market_median_for_row(row: pd.Series, rub_col: str | None = None) -> float 
     if not nums:
         return None
     scale = estimate_unit_multiplier(row.get(COL_NAME), row.get(COL_UNIT),
-        estimate_price=row.get(COL_UNIT_PRICE), quantity=row.get(COL_QTY), total=row.get(COL_SUM))
+        estimate_price=_estimate_numeric_for_compare(row), quantity=row.get(COL_QTY), total=row.get(COL_SUM))
     from decimal import Decimal
     return float(statistics.median([Decimal(str(n)) for n in nums]) * Decimal(str(scale)))
 

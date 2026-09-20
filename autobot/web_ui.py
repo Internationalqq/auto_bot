@@ -8712,6 +8712,10 @@ def _agent_market_research_key(
     from autobot.market_strategy import market_query_name, normalize_unit
 
     query = re.sub(r"\s+", " ", market_query_name(name, str(position_type or ""))).strip().casefold().replace("ё", "е")
+    if 'кабел' in str(name or '').casefold():
+        # A short model query drops catalogue wording. It is discovery, not
+        # proof that differently named rows can share a completed job.
+        query += '|' + re.sub(r'\s+', ' ', str(name or '')).strip().casefold().replace('ё', 'е')
     canonical_unit = normalize_unit(unit)
     # Different estimate catalogue codes can still describe the same market
     # product (the Volga estimate contains exactly that case for concrete B20).

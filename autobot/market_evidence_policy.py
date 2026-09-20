@@ -79,6 +79,20 @@ def price_terms_reason(offer: dict) -> str:
     # Supplier notes can qualify an otherwise exact-looking table amount.
     # Older captures sometimes stored the note with delivery terms.
     conditions = evidence + ' ' + text(offer.get('delivery_terms')).casefold()
+    if (text(offer.get('matched_unit')).replace('²','2') == 'м2'
+            and re.search(r'рул', evidence)
+            and not re.search(r'(?:руб\.?|₽|р\.)\s*(?:/|за)\s*м[2²]|'
+                              r'цен[аы]\s+за\s+м[2²]\s*:?\s*\d', evidence)):
+        return 'Цена рулона не подтверждает цену за м²; требуется отдельная цена за площадь'
+    if re.search(r'цен[аы].{0,100}(?:не\s+(?:совсем\s+)?актуальн|устарел)', conditions):
+        return 'Поставщик предупреждает, что опубликованные цены устарели; требуется актуальная стоимость'
+    # A table can qualify the entire price column, separated from its amount
+    # by the unit/name columns. Do not confuse "от 20 м3" (quantity tier)
+    # with "Цена руб. от" (a lower-bound price).
+    if re.search(r'\b(?:цен[аы]|стоимость)\s*[,:(]?\s*'
+                 r'(?:(?:руб(?:лей)?\.?|₽|р\.)(?:\s*/\s*[\w²³]+)?\s*[,):]?\s*)?'
+                 r'от(?=\s*(?:$|[(:;|]|ед\.?\s*изм))', conditions):
+        return 'Заголовок прайса указывает цену «от»; требуется стоимость для нужного объёма'
     if re.search(r'\b(?:минимальн\w*|ориентировочн\w*|приблизительн\w*)\s+цен\w*|\bцен\w*\s+(?:минимальн\w*|ориентировочн\w*|приблизительн\w*)', conditions):
         return 'Поставщик указал минимальную или ориентировочную цену; точная стоимость требует расчёта'
     if re.search(r'(?:/|за\s+)\s*км\b', evidence) and re.search(r'\bм\s*[3³]\b', evidence):

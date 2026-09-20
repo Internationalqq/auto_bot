@@ -76,7 +76,8 @@ def _fold(value: object) -> str:
 
 
 def _tokens(value: object) -> set[str]:
-    folded = normalize_grade_notation(value)
+    from autobot.market_requirements import comparable_wording
+    folded = normalize_grade_notation(comparable_wording(value))
     return {
         word for word in re.findall(r"[0-9a-zа-я]{2,}", folded)
         if word not in _STOP_WORDS
@@ -179,6 +180,9 @@ def _is_ruble_currency(value: object) -> bool:
 
 def detect_price_unit(text: object) -> str:
     value = _fold(text).replace("²", "2").replace("³", "3")
+    # Surface density and roll coverage describe the product, not its price.
+    value = re.sub(r'\d+(?:[.,]\d+)?\s*г(?:р(?:амм(?:а|ов)?)?)?\.?\s*/?\s*м2', '', value)
+    value = re.sub(r'\d+(?:[.,]\d+)?\s*м2\s*(?:/\s*)?рул\w*', '', value)
     checks = (
         ("м2", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:кв\.?\s*м|м\s*2|m\s*2|mtk)", r"за\s+(?:квадрат\w*\s+метр|м\s*2)")),
         ("м3", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:куб(?:\.?\s*м|/м)?|м\s*3|m\s*3|mtq)\b", r"за\s+(?:кубичес\w*\s+метр|м\s*3)")),
@@ -252,6 +256,12 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
             return value[:500]
         if bucket == 'materials' and re.search(r'достав\w*\s+по\s+(?:всей\s+)?россии', folded):
             return value[:500]
+    if bucket == 'materials':
+        for node in soup.select('h2,h3,h4,h5,h6,div,span'):
+            value = _clean(node.get_text(' ', strip=True))
+            if (len(value) <= 250 and not re.search(r'\b(?:не достав|кроме|исключ)', _fold(value))
+                    and re.search(r'достав\w*\s+(?:по\s+всей\s+(?:россии|рф)|во\s+все\s+регионы\s+россии)\b', value, re.I)):
+                return value
     # Membership is explicit, not a substring guess (Ярославский район in
     # Moscow is not Ярославль). This proves a local supplier, not delivery.
     # Municipality list: https://smo.yarregion.ru/index.php/munitsipalnye-obrazovaniya
@@ -259,7 +269,7 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
     from autobot.supplier_evidence import supplier_identity
     if supplier_identity(page_html):
         for city in localities.get(_fold(region), ()):
-            for node in soup.select('address, tr, [itemprop="addressLocality"], p'):
+            for node in soup.select('address, tr, [itemprop="addressLocality"], p, div'):
                 value = _clean(node.get_text(' ', strip=True))
                 if (len(value) <= 600 and region_matches_label(city, value)
                         and re.search(r'адрес|улиц|ул\.|просп|набережн|г\.', value, re.I)):
@@ -286,7 +296,7 @@ def _scope(text: object, page_text: object = "") -> str:
     # подрядчиков без фразы «без материалов» отбрасывались целиком.
     work_markers = (
         "работ", "услуг", "монтаж", "укладк", "установк", "демонтаж",
-        "разработк", "перевозк", "погрузк", "вывоз", "аренд",
+        "разработк", "перевозк", "погрузк", "вывоз", "аренд", "протяжк", "затягиван", "затяжк",
     )
     material_markers = ("под ключ", "с материал", "материалы включ", "материал включ")
     if any(marker in local for marker in work_markers) and not any(marker in local for marker in material_markers):
@@ -339,7 +349,7 @@ def _jsonld_facts(soup: BeautifulSoup, name: str) -> list[_PriceFact]:
                     continue
                 qualifier = 'от ' if key == 'lowPrice' or 'aggregateoffer' in node_types else ''
                 evidence = _clean(f"{node_title} {qualifier}{price} руб. {node_unit}")
-                facts.append(_PriceFact(node_title or name, price, normalize_unit(node_unit) or detect_price_unit(evidence), "product", evidence, "json-ld", _overlap(name, evidence)))
+                facts.append(_PriceFact(node_title or name, price, normalize_unit(node_unit), "product", evidence, "json-ld", _overlap(name, evidence)))
         for value in node.values():
             if isinstance(value, (dict, list)):
                 walk(value, node_title, node_unit, node_currency)
@@ -386,7 +396,7 @@ def _microdata_facts(soup: BeautifulSoup, name: str) -> list[_PriceFact]:
         if key in seen:
             continue
         seen.add(key)
-        facts.append(_PriceFact(title, price, normalize_unit(unit_text) or detect_price_unit(evidence), "product", evidence, "microdata", _overlap(name, evidence)))
+        facts.append(_PriceFact(title, price, normalize_unit(unit_text), "product", evidence, "microdata", _overlap(name, evidence)))
     return facts
 
 
@@ -423,7 +433,7 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
     facts: list[_PriceFact] = []
     seen: set[str] = set()
     selectors = (
-        "tr, li, p, [itemprop='offers'], [itemprop='priceSpecification'], "
+        "tr, li, p, h2, h3, h4, [itemprop='offers'], [itemprop='priceSpecification'], "
         ".price-wrapper, .product__pr-price-new, .product-price, .product_price, .price-current"
     )
     # На справочных порталах бывают десятки тысяч p/li. Для подтверждения цены
@@ -433,6 +443,9 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
             continue
         header = tag.find_previous(["h1", "h2", "h3", "h4"])
         context = _clean(header.get_text(" ", strip=True) if header else "")
+        if position_bucket == 'materials' and tag.name in {'h2','h3','h4'}:
+            product_heading = soup.find('h1')
+            context = _clean(product_heading.get_text(' ', strip=True) if product_heading else '')
         for text in _price_segments(tag):
             if len(text) < 8 or len(text) > 900 or text in seen:
                 continue
@@ -449,7 +462,7 @@ def _block_facts(soup: BeautifulSoup, name: str, page_text: str, position_bucket
                 continue
             seen.add(text)
             evidence = _clean(f"{context}. {text}")[:1600]
-            unit = detect_price_unit(evidence)
+            unit = detect_price_unit(text)
             fact_scope = _scope(evidence, page_text) if position_bucket == "works" else "product"
             # The surrounding page heading only identifies the service family.
             # The priced row itself must match the requested operation; otherwise
@@ -503,11 +516,24 @@ def _table_row_facts(soup: BeautifulSoup, name: str, position_bucket: str) -> li
                 if not values: continue
                 title=''
                 for previous in reversed(texts[:index]):
-                    if re.search(r'[а-яa-z]',previous,re.I) and not parse_ruble_values(previous):
+                    if (re.search(r'[а-яa-z]',previous,re.I) and not parse_ruble_values(previous)
+                            and not re.fullmatch(r'(?:\d+(?:[.,]\d+)?\s*)?(?:м[2²3³]?|шт|кг|т|л|пог\.?\s*м)\.?', _fold(previous))):
                         title=previous; break
                 if not title: continue
                 evidence=_clean(f'{family}. {context}. {title}. {header}: {value}')[:1600]
-                unit=detect_price_unit(f'{header} {value}') or detect_price_unit(context)
+                unit=detect_price_unit(f'{header} {value}')
+                if not unit:
+                    for column, cell_text in enumerate(texts):
+                        label = headers[column] if column < len(headers) else ''
+                        if re.search(r'ед\.?\s*изм|единиц', _fold(label)):
+                            unit = normalize_unit(cell_text)
+                            break
+                if not unit:
+                    standalone = [normalize_unit(t) for t in texts if re.fullmatch(
+                        r'(?:м[2²3³]?|шт|кг|т|л|пог\.?\s*м)\.?', _fold(t))]
+                    if len(set(standalone)) == 1:
+                        unit = standalone[0]
+                unit = unit or detect_price_unit(context)
                 terms=list(conditional)
                 lot=re.fullmatch(r'(\d+(?:[.,]\d+)?)\s*(м[3³]|тонн?|т)',_fold(header))
                 if lot:
@@ -535,6 +561,14 @@ def _inline_price_facts(page_text: str, name: str, position_bucket: str) -> list
         # Never borrow a unit or product title through a neighbouring price.
         start = max(previous_end, match.start() - 90)
         end = min(next_start, match.end() + 90)
+        # Flattened tables can place the next numbered service between this
+        # price and the next price. Its name/unit belongs to that other row.
+        next_row = re.search(r'\s+\d{1,4}[.)]?\s+[а-яa-z]', page_text[match.end():end], re.I)
+        if next_row:
+            end = match.end() + next_row.start()
+        next_label = re.search(r'\b(?:цена|стоимость)\s+(?:за\b|:)', page_text[match.end():end], re.I)
+        if next_label:
+            end = match.end() + next_label.start()
         evidence = _clean(page_text[start:end])
         if not evidence or _is_noise_price_context(evidence, name):
             continue
@@ -573,6 +607,7 @@ def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, 
         fact
         for fact in facts
         if fact.overlap >= 0.28 and _specification_compatible(name, fact.title)
+        and not technical_conflict(name, fact.title, require_all=False)
         and not (position_bucket == 'materials' and fact.extractor == 'inline-regex'
                  and technical_conflict(name, fact.title))
     ]
@@ -615,7 +650,7 @@ def inspect_source_page(
     # when the current card has no quote (a common WooCommerce layout).
     for node in soup.select('.related, .upsells, .up-sells, .cross-sells, '
                             '.recommended-products, .recommendations, .recently-viewed, '
-                            '[data-recommendations]'):
+                            '[data-recommendations], .analogs'):
         node.decompose()
     page_text = _clean(soup.get_text(" ", strip=True))[:180_000]
     product_cards = soup.select('.catalog_item, .product-item, .products > .product, '

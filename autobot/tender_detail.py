@@ -208,7 +208,7 @@ def _parse_bundle(
         if not isinstance(item, dict):
             continue
         url = _clean(item.get("url"))
-        if not is_direct_source_url(url):
+        if not is_direct_source_url(url, supplier_evidence=_clean(item.get('supplier_evidence'))):
             continue
         verification = _clean(item.get("verification")).casefold()
         if verification not in {"verified", "candidate"}:
@@ -477,7 +477,12 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
             }
         )
 
-    from autobot.market_coverage import annotate_coverage
+    from autobot.market_coverage import annotate_coverage, reconcile_search_history
+    from autobot import agent_market_queue
+    if agent_market_queue.DEFAULT_DB_PATH.is_file():
+        reconcile_search_history(positions, agent_market_queue.latest_position_jobs(tender_id, mode='web'),
+                                 region=metadata.get('region', ''))
+        counts['processed'] = sum(bool(row['market_processed']) for row in positions)
     price_coverage = annotate_coverage(positions)
     file_summaries: dict[str, dict[str, Any]] = {}
     section_summaries: dict[str, dict[str, Any]] = {}
