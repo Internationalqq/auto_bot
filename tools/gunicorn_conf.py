@@ -43,6 +43,8 @@ def post_worker_init(worker):
     start_delivery_recovery()
     from autobot.market_web_worker import start_web_worker
     start_web_worker()
+    from autobot.supplier_catalog_worker import start_worker as start_supplier_catalog_worker
+    start_supplier_catalog_worker()
 
     from autobot.main_job_runtime import start_recovery
     from autobot.web_ui import DATA_DIR, _parse_env

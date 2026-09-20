@@ -62,3 +62,46 @@ def test_worker_recovers_interrupted_fetch_after_restart(catalog):
     result=run_once(path=path,reader=lambda url:(table(),time.time(),url))
     assert result['status']=='completed' and result['processed']==1
     assert store.items(path=path)['total']==1
+
+
+def test_production_startup_consumes_durable_catalog_job(tmp_path,monkeypatch):
+    import runpy,sys,threading
+    from pathlib import Path
+    from types import SimpleNamespace
+    from autobot import market_price_index as index,supplier_catalog_worker as worker
+
+    monkeypatch.setattr(index,'INDEX_DB',tmp_path/'catalog.sqlite3')
+    monkeypatch.setenv('SUPPLIER_CATALOG_WORKER','1')
+    monkeypatch.setattr(worker,'_thread',None)
+    monkeypatch.setattr(worker,'_stop',threading.Event())
+    monkeypatch.setattr(worker,'SiteReader',lambda source:lambda url:(table(),time.time(),url))
+    # Keep unrelated recovery jobs out of this isolated production-startup check.
+    stubs={
+        'autobot.estimate_publication_recovery':dict(recover_pending_publications=lambda path:None),
+        'autobot.report_prompt':dict(REPORTS_DIR=tmp_path),
+        'autobot.agent_market_delivery':dict(start_delivery_recovery=lambda:None),
+        'autobot.market_web_worker':dict(start_web_worker=lambda:None),
+        'autobot.main_job_runtime':dict(start_recovery=lambda *args,**kwargs:None),
+        'autobot.web_ui':dict(DATA_DIR=tmp_path,_parse_env=lambda:{}),
+    }
+    for name,values in stubs.items(): monkeypatch.setitem(sys.modules,name,SimpleNamespace(**values))
+    store.initialize();store.seed_sources()
+    source=next(s for s in store.sources() if 'gamma-beton' in s['url'])
+    job_id=jobs.enqueue(source['id'])
+    config=runpy.run_path(str(Path(__file__).parents[1]/'tools/gunicorn_conf.py'))
+    try:
+        config['post_worker_init'](None)
+        running=worker._thread
+        assert running is not None and running.is_alive()
+        config['post_worker_init'](None)
+        assert worker._thread is running
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            job=next(j for j in jobs.list_jobs() if j['id']==job_id)
+            if job['status']=='completed': break
+            time.sleep(.02)
+        assert job['status']=='completed'
+        assert store.items()['items'][0]['price_kopecks']==450000
+    finally:
+        worker._stop.set()
+        if worker._thread is not None: worker._thread.join(timeout=2)
