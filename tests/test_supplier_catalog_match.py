@@ -22,6 +22,18 @@ def test_finished_concrete_kerb_is_not_ready_mix(catalog):
     assert lookup(name='Бетон В22.5 М300 на гравии',unit='м3',region='Ярославская область',quantity=10,path=path)
 
 
+def test_exact_article_is_not_discarded_for_missing_generic_product_words(catalog):
+    path,src,_,body=catalog
+    model='DH-IPC-HDBW3441FP-AS-0280B-S2'
+    record={'name':model,'price':22021.8,'unit':'шт','url':src['url'],
+            'evidence':model+' — 22021.80 руб/шт','details':{'price_scope':'product'}}
+    decoys=[dict(record,name='IP-камера Dahua different-'+str(n),item_key=str(n),
+                 evidence='IP-камера Dahua different-'+str(n)+' — 1000 руб/шт') for n in range(70)]
+    store.save_page(src['id'],src['url'],body,time.time(),[record,*decoys],path=path)
+    result=lookup(name='IP-камера Dahua '+model,unit='шт',region='Ярославская область',quantity=2,path=path)
+    assert len(result)==1 and result[0]['price']==22021.8
+
+
 def test_wrong_grade_region_and_missing_spec_are_rejected(catalog):
     path,_,_,_=catalog
     assert not lookup(name='Бетон В15 М200 на гравии',unit='м3',region='Ярославская область',quantity=10,path=path)
@@ -70,3 +82,29 @@ def test_work_price_must_match_surface_material(catalog):
     store.save_page(src['id'],src['url'],body,time.time(),rows,path=path)
     offers=lookup(name='Монтаж кабель-канала по бетону',unit='м',region='Ярославская область',quantity=100,path=path)
     assert [o['price'] for o in offers]==[150]
+
+
+def test_whole_roll_purchase_is_quantity_specific_and_survives_revalidation(catalog,monkeypatch):
+    from autobot.supplier_catalog_match import purchase_price
+    from autobot.market_evidence_policy import price_terms_reason
+    from autobot.supplier_evidence import quantity_terms_reason
+    row={'price_kopecks':410000,'unit':'рулон','evidence':'Геотекстиль 200 г/м2 · 4100 руб / рулон'}
+    details={'package':{'unit':'м2','amount':100,'evidence':'Площадь покрытия: 100 м2. Цена за 1 рулон'}}
+    price,unit,evidence,terms=purchase_price(row,details,'м2',250)
+    assert price==49.2 and unit=='м2'
+    assert not price_terms_reason({'matched_unit':unit,'evidence':evidence})
+    assert not quantity_terms_reason(terms,250,'м2')
+    assert quantity_terms_reason(terms,300,'м2')
+    assert purchase_price(row,{},'м2',250) is None
+    assert purchase_price(row,details,'м2',None) is None
+    assert purchase_price(row,details,'м2',0) is None
+
+
+def test_conditional_supplier_price_is_a_candidate_not_a_confirmed_price(catalog):
+    path,src,record,body=catalog
+    record.update(price_kind='conditional',reason='Цена от 4720 руб',evidence='Бетон В22.5 М300 на гравии · от 4720 руб/м3')
+    store.save_page(src['id'],src['url'],body,time.time(),[record],path=path)
+    args=dict(name='Бетон В22.5 М300 на гравии',unit='м3',region='Ярославская область',quantity=10,path=path)
+    assert not lookup(**args)
+    offers=lookup(**args,include_candidates=True)
+    assert len(offers)==1 and offers[0]['verification']=='candidate' and offers[0]['price']==4720

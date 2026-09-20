@@ -66,7 +66,7 @@ def fetch_page(url,allowed_host):
             if response.getheader('Content-Encoding','identity') not in {'','identity'}:
                 raise ValueError('Сайт прислал неподдерживаемое сжатие')
             content_type=response.getheader('Content-Type','text/html')
-            if not any(t in content_type for t in ('text/','html','xml')):
+            if not any(t in content_type for t in ('text/','html','xml','application/json')):
                 raise ValueError('Для этого формата документа нужен отдельный импорт')
             body=UnicodeDammit(raw,is_html=True).unicode_markup
             if not body: raise ValueError('Сайт вернул пустую страницу')

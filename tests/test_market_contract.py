@@ -37,6 +37,14 @@ def test_title_ruble_numbers_and_candidate_bundle_do_not_become_market_prices():
     assert compute_viability_stats(result).comparable == 0
 
 
+@pytest.mark.parametrize('details', [
+    {'extractor':'metadata', 'evidence':'Щебень гранитный 5-20 2500 руб/м3'},
+    {'extractor':'price-block', 'evidence':'Похожие товары. Щебень гранитный 5-20 2500 руб/м3'},
+])
+def test_old_metadata_and_recommendation_prices_are_rechecked(details):
+    assert not confirmed_prices(offer(position(), **details))
+
+
 @pytest.mark.parametrize("bundle", ["broken json", "{}", "[]", "", None])
 def test_missing_or_corrupt_evidence_does_not_fall_back_to_old_numeric_columns(bundle):
     row = position(**{BUNDLE_COLUMN: bundle, "Рынок цены за ед. (итог)": "2500"})
@@ -48,6 +56,19 @@ def test_same_name_unit_in_different_files_matches_its_own_source():
     a, b = position(**{"Файл ЛСР": "a.xlsx"}), position(**{"Файл ЛСР": "b.xlsx"})
     merged = merge_market_frames(pd.DataFrame([a, b]), pd.DataFrame([offer(b, 2600), offer(a, 2500)]))
     assert merged["Рынок цены за ед. (итог)"].tolist() == ["2500", "2600"]
+
+
+def test_xlsx_mixed_primary_and_resource_numbers_keep_market_identity(tmp_path):
+    from autobot.market_contract import position_identity
+    rows=[position(**{'№ п/п':'42', 'position_id':'pdf:12:42'}),
+          position(**{'№ п/п':'42.1', 'position_id':'pdf:12:42.1'})]
+    path=tmp_path/'market.xlsx'
+    pd.DataFrame([offer(row) for row in rows]).to_excel(path,index=False)
+    saved=pd.read_excel(path)
+    assert [position_identity(row) for row in rows] == [position_identity(row) for _,row in saved.iterrows()]
+    merged=merge_market_frames(pd.DataFrame(rows),saved)
+    assert merged['Рынок цены за ед. (итог)'].tolist()==['2500','2500']
+    assert not match_market_rows(pd.DataFrame([rows[0]]), saved.iloc[1:])[0]
 
 
 def test_missing_context_does_not_guess_between_identical_rows():

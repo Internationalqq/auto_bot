@@ -114,6 +114,9 @@ def specification_reason(name: object, evidence: object) -> str:
     wanted, found = (text(value).casefold().replace('ё', 'е') for value in (name, evidence))
     if not wanted or not found:
         return ''
+    curb = re.compile(r'бордюр\w*|бортов\w*\s+кам\w*|кам\w*\s+бортов\w*|\bб[рв]\s*\d')
+    if curb.search(wanted) and not curb.search(found):
+        return 'Цена материала не подтверждает стоимость готового бортового камня'
     manual = re.compile(r'\b(?:ручн\w*|вручную)\b')
     machine = re.compile(r'\b(?:механиз\w*|экскават\w*|бульдозер\w*|автомобил\w*|автосамосвал\w*)\b')
     if manual.search(wanted) and not machine.search(wanted) and machine.search(found) and not manual.search(found):
@@ -151,6 +154,14 @@ def specification_reason(name: object, evidence: object) -> str:
             return 'Не совпадает фракция щебня'
     from autobot.market_requirements import technical_conflict
     return technical_conflict(name, evidence)
+
+
+def price_origin_reason(offer: dict) -> str:
+    if text(offer.get('extractor')) == 'metadata':
+        return 'Цена найдена только в заголовке страницы; нужна цена в карточке товара'
+    if re.search(r'похожие\s+товары|рекомендуемые\s+товары|с\s+этим\s+товаром\s+покупают', text(offer.get('evidence')), re.I):
+        return 'Цена из блока рекомендаций; нужна цена основной карточки товара'
+    return ''
 
 
 def independent_source_key(offer: dict) -> str:

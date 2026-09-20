@@ -323,7 +323,8 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
     estimate_path = REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx"
     market_path = _market_path(tender_id)
     comparison_path = REPORTS_DIR / f"{OUT_PREFIX}{tender_id}.xlsx"
-    estimate = _read_excel(estimate_path)
+    from autobot.estimate_scope import expand_resources, PARENT
+    estimate = expand_resources(_read_excel(estimate_path))
     market = _read_excel(market_path)
     if metadata.get('region'):
         estimate['Регион поиска'] = str(metadata['region'])
@@ -376,7 +377,9 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
 
         estimate_unit = _estimate_numeric_for_compare(row)
         row_total = _number(row.get(COL_SUM))
-        if row_total is not None:
+        parent_id = _clean(row.get(PARENT))
+        has_resources = row.get('has_resources') is True
+        if row_total is not None and not parent_id:
             estimate_total += row_total
         market_row = row if row.get("Рынок обработано") == "Да" else None
         market_processed = market_row is not None
@@ -419,12 +422,15 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         positions.append(
             {
                 "position_key": position_identity(row),
-                "review_id": _clean(row.get('position_id')) or 'legacy:' + position_identity(row),
+                "review_id": parent_id or _clean(row.get('position_id')) or 'legacy:' + position_identity(row),
+                "is_resource": bool(parent_id),
+                "has_resources": has_resources,
                 "index": index,
                 "item_no": _clean(row.get("№ п/п", "")) or str(section_position_index),
                 "name": name,
                 "section": section,
-                "section_note": "",
+                "section_note": ("Ресурс позиции " + _clean(row.get('parent_item_no')) + "; уже включён в её сумму"
+                                 if parent_id else "Включает отдельные ресурсы ниже; цена работы не закрывает весь состав" if has_resources else ""),
                 "section_title": _section_title(section),
                 "section_group": section_group,
                 "source_file": source_file,
@@ -470,7 +476,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
                 "verdict_class": verdict_class,
                 "strategy": plan.strategy_label,
                 "source_strategy": plan.source_label,
-                "can_auto_price": plan.can_auto_price,
+                "can_auto_price": plan.can_auto_price and (_number(row.get(COL_QTY)) is None or _number(row.get(COL_QTY))>0),
                 "warning": plan.warning,
                 "market_status": status_text,
                 "queries": list(plan.queries),
@@ -492,13 +498,13 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
             {"count": 0, "total": 0.0},
         )
         file_summary["count"] += 1
-        file_summary["total"] += position["estimate_total"] or 0.0
+        file_summary["total"] += (position["estimate_total"] or 0.0) if not position['is_resource'] else 0
         summary = section_summaries.setdefault(
             position["section_group"],
             {"count": 0, "total": 0.0},
         )
         summary["count"] += 1
-        summary["total"] += position["estimate_total"] or 0.0
+        summary["total"] += (position["estimate_total"] or 0.0) if not position['is_resource'] else 0
     previous_file_group = ""
     previous_section_group = ""
     for position in positions:
@@ -514,7 +520,8 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         previous_section_group = position["section_group"]
 
     total_positions = len(positions)
-    coverage = round(counts["verified"] * 100 / total_positions) if total_positions else 0
+    priceable_positions = price_coverage['priceable']
+    coverage = round(counts["verified"] * 100 / priceable_positions) if priceable_positions else 0
     initial_price = _number(metadata.get("price_rub"))
     estimate_files_count = 0
     if not estimate.empty and "Файл ЛСР" in estimate.columns:

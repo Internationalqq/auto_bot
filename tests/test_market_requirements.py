@@ -95,6 +95,52 @@ def test_different_required_sizes_have_different_reusable_price_identity():
     assert left.normalized_key != right.normalized_key
 
 
+def test_electronic_models_cannot_match_another_device_in_same_catalogue():
+    assert technical_conflict('Коммутатор TFortis SWU-16T','Коммутатор TFortis SWU-8T')
+    assert not technical_conflict('Коммутатор TFortis SWU-16T','TFortis SWU-16T, 104100 руб/шт')
+    assert technical_conflict('Клеммник WAGO 222-413','Клеммник WAGO 222-412')
+    assert technical_conflict('Труба EKF tpndg-50','Труба EKF tpndg-25')
+    assert technical_conflict('Камера Dahua DH-IPC-HDBW3441FP-AS-0280B-S2','Dahua DH-IPC-HDBW3441FP-AS-0360B-S2')
+
+
+def test_exact_model_does_not_require_generic_product_words():
+    result = check_offer(name='IP-камера Dahua DH-IPC-HDBW3441FP-AS-0280B-S2', unit='шт',
+                         title='Dahua DH-IPC-HDBW3441FP-AS-0280B-S2', snippet='22021,80 руб/шт',
+                         price=22021.8, url='https://supplier.example/product/123', page_checked=True, source_unit='шт')
+    assert result.status == 'verified'
+    assert technical_conflict('Лента сигнальная ЛСЭ-300', 'Лента сигнальная ЛСЭ-150')
+
+
+def test_native_product_and_normative_adjustment_have_separate_search_routes():
+    assert build_search_plan('Бордюрный камень 100.20.8 Тиманфайа', 'м').position.slug == 'material'
+    assert build_search_plan('Монтажная коробка Dahua DH-PFA136', 'шт').position.slug == 'product'
+    plan = build_search_plan('За каждые последующие 500 м испытания кабеля добавлять к норме', '100 м', basis_code='ГЭСНп01')
+    assert plan.position.slug == 'aggregate' and not plan.can_auto_price
+
+
+def test_fineness_module_does_not_supply_an_unwritten_sand_class():
+    assert not technical_conflict('Песок мелкий', 'Песок, модуль крупности 1,5–2,0')
+    assert technical_conflict('Песок I класса мелкий', 'Песок, модуль крупности 1,5–2,0')
+    assert technical_conflict('Песок мелкий', 'Песок, модуль крупности 1–1,5')
+
+
+def test_concrete_grade_does_not_turn_bulk_concrete_into_finished_kerbs():
+    result=check_offer(name='Камни бортовые бетонные марки БР, БВ, бетон В22,5 (М300)', unit='м3',
+                       title='Бетон М300 В22,5', snippet='Бетон М300 В22,5 4720 руб/м3', price=4720,
+                       url='https://supplier.example/concrete/m300',page_checked=True,source_unit='м3')
+    assert result.status == 'candidate' and 'бортового камня' in result.reason
+
+
+def test_explicit_concrete_durability_is_part_of_the_requested_variant():
+    assert technical_conflict('Бетон В20 F(1)150 W6 на гравии','Бетон В20 F150 W4 на гравии')
+    assert technical_conflict('Бетон В20 F(1)100 W4 на гравии','Бетон В20 на гравии')
+    assert not technical_conflict('Бетон В20 F(1)150 W6 на гравии','Бетон В20 F(1)150 W6 на гравии')
+    assert technical_conflict('Кабель АВБШв 4х16ок(N)-660','Кабель АВБШв 4х120ос(N)-660').startswith('Не совпадает')
+    assert technical_conflict('Щебень М1200 20-40 мм','Щебень 20-40 мм')
+    assert technical_conflict('Песок I класс мелкий','Песок карьерный')
+    assert not technical_conflict('Песок I класс мелкий','Песок мелкозернистый 1 класса')
+
+
 def test_stored_wrong_variant_is_rechecked_when_report_is_opened():
     from datetime import datetime, timezone
     offer = {'title': 'Кабель ВВГнг-LS 3х1,5', 'price': 120, 'unit': 'м', 'matched_unit': 'м',

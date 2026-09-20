@@ -96,7 +96,8 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
         ):
             reason = "Единица предложения не совпадает с позицией сметы"
         else:
-            reason = freshness_reason(item, position.bucket) or price_terms_reason(item) or specification_reason(
+            from autobot.market_evidence_policy import price_origin_reason
+            reason = freshness_reason(item, position.bucket) or price_terms_reason(item) or price_origin_reason(item) or specification_reason(
                 row.get(COL_NAME), clean(item.get('evidence')) or clean(item.get('snippet')) or clean(item.get('title')),
             )
             from autobot.supplier_evidence import quantity_terms_reason
@@ -114,6 +115,8 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
             )
             if not reason and assessment.status in {"review", "extreme"}:
                 reason = assessment.reason
+        if not reason and clean(row.get('has_resources')).casefold() == 'true':
+            reason = 'Расценка работы не подтверждает стоимость всех её ресурсов, техники и начислений'
         offer["price"] = price
         if not reason and clean(item.get('catalog_item_id')):
             from autobot.supplier_catalog_store import observation_reason
@@ -178,12 +181,19 @@ def sanitize_market_frame(frame: pd.DataFrame) -> pd.DataFrame:
 _CONTEXT = ("position_id", "estimate_version", "Файл ЛСР", "Лист", "Строка Excel", "№ п/п", "basis_code", "Раздел")
 
 
+def _context_key(field: str, value: Any) -> str:
+    # Pandas reads the mixed column 42 / 42.1 as floats after XLSX export.
+    # This is still position 42, not a different estimate coordinate.
+    number = decimal_number(value) if field in {'№ п/п', 'Строка Excel'} else None
+    return format(number.normalize(), 'f') if number is not None else key(value)
+
+
 def position_identity(row: Mapping[str, Any]) -> str:
     fields = (COL_NAME, COL_UNIT, *_CONTEXT, COL_QTY, COL_UNIT_PRICE, COL_SUM)
     values = []
     for field in fields:
         number = decimal_number(row.get(field)) if field in (COL_QTY, COL_UNIT_PRICE, COL_SUM) else None
-        values.append(format(number.normalize(), "f") if number is not None else key(row.get(field)))
+        values.append(format(number.normalize(), "f") if number is not None else _context_key(field, row.get(field)))
     return hashlib.sha256("\x1f".join(values).encode("utf-8")).hexdigest()[:32]
 
 
@@ -201,7 +211,7 @@ def _compatible(left: Mapping, right: Mapping) -> bool:
         from autobot.market_strategy import estimate_unit_multiplier
         if estimate_unit_multiplier("", lu) != estimate_unit_multiplier("", ru):
             return False
-    if any(key(left.get(c)) and key(right.get(c)) and key(left.get(c)) != key(right.get(c)) for c in _CONTEXT):
+    if any(_context_key(c,left.get(c)) and _context_key(c,right.get(c)) and _context_key(c,left.get(c)) != _context_key(c,right.get(c)) for c in _CONTEXT):
         return False
     for column in (COL_QTY, COL_UNIT_PRICE, COL_SUM):
         a, b = decimal_number(left.get(column)), decimal_number(right.get(column))
@@ -244,7 +254,8 @@ def merge_market_frames(estimate: pd.DataFrame, market: pd.DataFrame) -> pd.Data
         row["Сопоставление рынка"] = "Позиция сопоставлена" if matched is not None else "Нет однозначного соответствия"
         if matched is not None:
             for column, value in matched.items():
-                if column not in {COL_NAME, COL_UNIT, COL_QTY, COL_SUM, COL_UNIT_PRICE, *_CONTEXT} and not (
+                if column not in {COL_NAME, COL_UNIT, COL_QTY, COL_SUM, COL_UNIT_PRICE, *_CONTEXT,
+                                  'parent_position_id', 'has_resources', 'parent_item_no', 'Ресурсы позиции (json)'} and not (
                     column == 'Регион поиска' and clean(original.get('Регион поиска'))
                 ):
                     row[column] = value

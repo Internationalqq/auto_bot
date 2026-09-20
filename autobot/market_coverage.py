@@ -31,8 +31,10 @@ def reconcile_search_history(positions: list[dict], jobs: list[dict], *, region:
 
 
 def position_outcome(position: dict) -> tuple[str, str]:
+    if position.get('quantity') is not None and position['quantity']<=0:
+        return 'excluded','Вычет или нулевой объём сметы: закупка не требуется'
     if position.get('type_slug') == 'aggregate':
-        return 'excluded', 'Сводная строка: отдельная рыночная цена не требуется'
+        return 'excluded', 'Расчётная строка: отдельная рыночная цена не требуется'
     if not position.get('can_auto_price'):
         issues = (position.get('requirements') or {}).get('issues') or []
         return 'needs_details', position.get('warning') or '; '.join(issues) or 'Уточните название и единицу'
@@ -54,5 +56,5 @@ def annotate_coverage(positions: list[dict]) -> dict:
         state, reason = position_outcome(row)
         row['price_state'], row['price_reason'] = state, reason
         counts[state] += 1
-    return {'total': len(positions), **{key: counts[key] for key in (
+    return {'total': len(positions), 'priceable': len(positions) - counts['excluded'], **{key: counts[key] for key in (
         'verified', 'candidate', 'needs_details', 'blocked', 'no_quote', 'pending', 'excluded')}}

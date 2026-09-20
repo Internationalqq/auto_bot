@@ -98,12 +98,15 @@ def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
         try:
             quote_from = float(condition['quote_from']) if condition.get('quote_from') is not None else None
             lot = float(condition['lot']) if condition.get('lot') is not None else None
-            if any(value is not None and (not math.isfinite(value) or value <= 0) for value in (quote_from, lot)):
+            minimum = float(condition['minimum']) if condition.get('minimum') is not None else None
+            if any(value is not None and (not math.isfinite(value) or value <= 0) for value in (quote_from, lot, minimum)):
                 return 'Не удалось прочитать условия объёма поставщика'
         except (ValueError, TypeError):
             return 'Не удалось прочитать условия объёма поставщика'
         if quote_from is not None and amount >= quote_from:
             return 'На объём сметы поставщик просит расчёт: ' + str(condition.get('evidence') or '')
+        if minimum is not None and amount < minimum:
+            return 'Объём сметы меньше минимального заказа: ' + str(condition.get('evidence') or '')
         if lot is not None and abs(amount - lot) > 1e-6:
             return 'Опубликованная цена относится к другой партии: ' + str(condition.get('evidence') or '')
     return ''

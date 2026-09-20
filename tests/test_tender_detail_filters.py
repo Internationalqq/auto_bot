@@ -165,7 +165,7 @@ def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp
     assert len(row.select(':scope > td')) == 8
     assert row.select_one('input[data-agent-position]')['value'] == detail['positions'][0]['position_key']
     assert '100 ₽' in row.select_one('.col-estimate').get_text()
-    assert 'Нет подтверждённой цены' in row.select_one('.col-market').get_text()
+    assert 'Нет сопоставимой цены' in row.select_one('.col-market').get_text()
     assert 'Ждём цену рынка' in row.select_one('.col-difference').get_text()
     assert row.select_one('a')['href'].startswith('/tenders/' + tid + '/review?position_id=')
     assert page.select_one('[data-open-workspace="search"]')

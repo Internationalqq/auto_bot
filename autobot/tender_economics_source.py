@@ -54,7 +54,7 @@ def _consistent_build_source(tender_id, metadata, reports, build_detail):
         raise ValueError('source_changed')
     priced, market_total, verified = 0, 0, []
     for row in detail['positions']:
-        if not row.get('verified_count'):
+        if not row.get('verified_count') or row.get('has_resources'):
             continue
         amount = relative_market_total_kopecks(row.get('estimate_total'), row.get('estimate_unit'), row.get('market_unit'))
         if amount is not None:
@@ -66,6 +66,8 @@ def _consistent_build_source(tender_id, metadata, reports, build_detail):
               'rows_total': len(detail['positions']), 'rows_priced': priced,
               'known_market_kopecks': market_total if priced else None,
               'source_warning': detail.get('estimate_check_detail', '')[:4000]}
+    if any(row.get('has_resources') for row in detail['positions']):
+        source['source_warning'] += ' Составные работы требуют раздельной оценки труда, техники и ресурсов; в известные затраты включены только отдельные ресурсы и простые позиции.'
     material = {'summary': source, 'files': before, 'verified_positions': verified, 'region': metadata.get('region')}
     source['version'] = hashlib.sha256(json.dumps(material, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()
     return source

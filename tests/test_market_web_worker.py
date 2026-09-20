@@ -91,6 +91,19 @@ def test_payload_region_is_used_by_query_plan_when_metadata_has_none(job_context
     assert any('Ярославль' in query for query in context[6].queries)
 
 
+def test_server_queue_uses_catalogue_before_web_discovery(job_context,monkeypatch):
+    _,_,job_id,_,output=job_context
+    calls=[]
+    monkeypatch.setattr(market,'_offers_from_local_index',lambda row,**kw:calls.append(kw) or [quote()])
+    def search(row,plan,*,initial_offers,**kwargs):
+        assert len(initial_offers)==1 and initial_offers[0].price==2500
+        return initial_offers,''
+    monkeypatch.setattr(market,'_research_row_market',search)
+    assert worker.run_once('catalogue-test')['status']=='completed'
+    assert calls==[{'max_results':3,'region':'Ярославль'}]
+    assert confirmed_prices(pd.read_excel(output).iloc[0])==[2500]
+
+
 @pytest.mark.parametrize('change', ['cancel', 'expire', 'estimate', 'region'])
 def test_changed_attempt_or_input_never_publishes(job_context, monkeypatch, change):
     row, payload, job_id, estimate, output = job_context

@@ -83,3 +83,18 @@ def test_roll_price_does_not_inherit_square_metres_from_dimensions():
     row=product_records(html,'https://supplier.example/product','','geo76','materials')[0]
     assert row['unit']=='рулон' and row['price']==4100
     assert row['price_kind']=='published'
+    assert row['details']['package']['amount']==100
+
+
+def test_price_table_unit_after_price_and_actual_date_stay_with_product():
+    html='''<form><table><tr><th>Товар<input name="filter"></th><th>Цена (руб с НДС)</th><th>Ед. измер.</th><th>Актуальность</th></tr>
+       <tr><td>Труба EKF tpndg-50</td><td>169.16</td><td>м</td><td>26.06.26</td></tr></table></form>'''
+    item=table_records(html,'https://supplier.example/prices','materials')[0]
+    assert item['unit']=='м' and item['price']==169.16 and item['price_kind']=='published'
+    assert item['details']['published_at']=='2026-06-26T00:00:00+00:00'
+
+
+def test_price_list_pagination_stays_inside_selected_brand():
+    config={'url':'https://supplier.example/prajs-list/price/ekf','catalog':{'adapter':'svetelektro'}}
+    html='<a href="/prajs-list/price/ekf/100">2</a><a href="/prajs-list/price/iek/100">IEK</a><a href="/prajs-list/price/ekf?format=xls">XLS</a>'
+    assert [link['url'] for link in navigate(html,config['url'],config)]==['https://supplier.example/prajs-list/price/ekf/100']

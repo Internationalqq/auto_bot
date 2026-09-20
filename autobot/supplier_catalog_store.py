@@ -186,7 +186,8 @@ def save_contact(source_id, evidence, url, observed_at, path=None):
 
 
 def save_coverage(source_id,proof,url,observed_at,*,path=None):
-    national=bool(re.search(r'по\s+(?:всей\s+)?(?:россии|рф)|во\s+все\s+регионы\s+россии',proof,re.I))
+    national=bool(not re.search(r'\b(?:не достав|кроме|исключ)',proof,re.I) and
+                  re.search(r'по\s+(?:всей\s+)?(?:россии|рф)|во\s+все\s+регионы\s+россии|достав\w*(?:\s+(?:товара|оборудования|заказа|заказов))?\s+в\s+регионы\s+россии',proof,re.I))
     coverage={'national_delivery':national,'evidence':clean(proof)[:1200],'url':url,'observed_at':observed_at}
     with connect(path,write=True) as con:
         old=con.execute('SELECT coverage_json FROM supplier_catalog_sources WHERE id=?',(source_id,)).fetchone()

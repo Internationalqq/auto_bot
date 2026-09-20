@@ -22,7 +22,7 @@ except ImportError:
 
 import pandas as pd
 
-from autobot.market_analytics import COL_NAME
+from autobot.market_analytics import COL_NAME, COL_SUM, COL_UNIT_PRICE
 from autobot.report_prompt import REPORTS_DIR, load_tender_metadata
 
 MARKET_PREFIX = "РЫНОК_ИСТОЧНИКИ_"
@@ -153,7 +153,8 @@ def _consistent_merge_estimate_and_market(tender_id: str) -> Path | None:
     market_path = _market_or_market_path(est_path.stem)
     if not est_path.is_file() or not market_path.is_file():
         return None
-    est = pd.read_excel(est_path)
+    from autobot.estimate_scope import expand_resources, financial_scope, PARENT
+    est = expand_resources(pd.read_excel(est_path))
     region = (load_tender_metadata().get(tid) or {}).get('region')
     if region:
         est['Регион поиска'] = str(region)
@@ -161,6 +162,14 @@ def _consistent_merge_estimate_and_market(tender_id: str) -> Path | None:
     if COL_NAME not in est.columns or COL_NAME not in market.columns:
         return None
     merged = merge_market_frames(est, market)
+    if PARENT in merged.columns:
+        from autobot.market_contract import position_identity
+        def budget_key(row):
+            return position_identity(dict(row, **{COL_SUM:None,COL_UNIT_PRICE:None}))
+        budget={budget_key(row):row[COL_SUM] for _,row in financial_scope(merged).iterrows()}
+        merged['Бюджет без повторного учёта ресурсов, руб']=[budget.get(budget_key(row),0) for _,row in merged.iterrows()]
+        merged['Состав позиции']=['Ресурс, включённый в позицию '+str(row.get('parent_item_no') or '')
+                                if row.get(PARENT) else 'Полная позиция сметы' for _,row in merged.iterrows()]
     out_path = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
     write_excel(merged, out_path)
     return out_path

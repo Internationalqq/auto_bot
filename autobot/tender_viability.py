@@ -187,6 +187,8 @@ def _fmt_rub(v: float | None) -> str:
 
 def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
     from autobot.market_contract import clean, decimal_number, kopecks, relative_market_total_kopecks
+    from autobot.estimate_scope import financial_scope
+    df = financial_scope(df)
 
     # Preserve the original row total. Recalculating block quantities here used
     # to multiply an already extended amount for a second time.
@@ -201,6 +203,9 @@ def compute_viability_stats(df: pd.DataFrame) -> ViabilityStats:
         if amount is None:
             price, qty = decimal_number(row.get(COL_UNIT_PRICE)), decimal_number(row.get(COL_QTY))
             amount = price * qty if price is not None and qty is not None and qty > 0 else None
+        if amount is not None and amount<0 and clean(row.get('Источник извлечения'))=='PDF text LSR':
+            total_kop += kopecks(amount)
+            continue
         if amount is None or amount < 0:
             amount = None
             missing_amount += 1

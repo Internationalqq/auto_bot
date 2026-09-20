@@ -2930,6 +2930,9 @@ def _research_row_market(
     seconds = _bounded_setting('MARKET_POSITION_TIMEOUT_SEC', 90, 10, 300)
     target = min(max_results, _bounded_setting('MARKET_INDEX_MIN_SOURCES', 3, 1, 10))
     pool = list(initial_offers or [])
+    quantity = pd.to_numeric(row.get(COL_QTY), errors='coerce')
+    if pd.notna(quantity) and quantity<=0:
+        return [], 'Вычет или нулевой объём сметы: закупка не требуется'
     if not plan.can_auto_price:
         return pool, plan.warning
     begin_position = getattr(browser_fetcher, 'begin_position', None)
@@ -3396,7 +3399,7 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
     catalog_rows = lookup_catalog(
         name=src_row.get(COL_NAME, ''), unit=src_row.get('Ед. изм.', ''),
         basis_code=src_row.get('basis_code', ''), section=src_row.get('Раздел', ''),
-        region=region, quantity=src_row.get(COL_QTY), limit=max_results,
+        region=region, quantity=src_row.get(COL_QTY), limit=max_results, include_candidates=True,
     )
     rows = lookup_verified_offers(
         name=src_row.get(COL_NAME, ""),
@@ -3423,9 +3426,9 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
             price=float(item.get("price") or 0),
             url=str(item.get("url") or ""),
             snippet="Переиспользовано из локального индекса проверенных цен",
-            verification="verified",
+            verification=str(item.get('verification') or 'verified'),
             confidence=max(0.05, min(1.0, float(item.get("confidence") or 0.5) * float(item.get("match_score") or 1))),
-            verification_reason="Проверенный источник из локального индекса; TTL не истёк",
+            verification_reason=str(item.get('verification_reason') or 'Проверенный источник из локального индекса; TTL не истёк'),
             matched_unit=str(item.get("matched_unit") or ""),
             observed_at=observed_at,
             position_type=str(item.get("position_type") or ""),
@@ -3583,7 +3586,8 @@ def probe_agent_market_start_urls(
     if not estimate_path.is_file():
         return {"schema_version": 2, "position_key": str(position_payload.get("position_key") or ""), "offers": [], "notes": "Нет сметы для проверки прямых источников"}
     import io
-    estimate = pd.read_excel(io.BytesIO(_estimate_bytes(tid)))
+    from autobot.estimate_scope import expand_resources
+    estimate = expand_resources(pd.read_excel(io.BytesIO(_estimate_bytes(tid))))
     try:
         source_row = _resolve_agent_source_row(estimate, position_payload)
     except ValueError as error:
@@ -3669,7 +3673,8 @@ def _agent_import_context(tender_id, position_payload):
     import hashlib
     import io
     captured = _estimate_bytes(tid)
-    estimate = pd.read_excel(io.BytesIO(captured))
+    from autobot.estimate_scope import expand_resources
+    estimate = expand_resources(pd.read_excel(io.BytesIO(captured)))
     if COL_NAME not in estimate.columns:
         raise ValueError(f"В смете нет колонки {COL_NAME!r}")
     source_row = _resolve_agent_source_row(estimate, position_payload)
@@ -3700,8 +3705,9 @@ def prepare_builtin_market_result(tender_id, position_payload, *, cancelled=None
     except (ValueError, TypeError):
         limit = 3
     with WebBrowserFetcher() as browser:
+        local = _offers_from_local_index(row, max_results=limit, region=row['Регион поиска'])
         offers, notes = _research_row_market(row, plan, sources=['web'], max_results=limit,
-                                             browser_fetcher=browser, cancelled=cancelled)
+                                             browser_fetcher=browser, initial_offers=local, cancelled=cancelled)
     prepared = {'schema_version': 1, 'estimate_digest': digest, 'position_key': key,
                 'region': row['Регион поиска'], 'offers': [vars(offer) for offer in offers], 'notes': notes}
     result = {'schema_version': 2, 'position_key': key, 'executor': 'server',
@@ -3990,7 +3996,8 @@ def run_tender(
     import io
     captured_estimate = _estimate_bytes(tid)
     estimate_digest = hashlib.sha256(captured_estimate).hexdigest()
-    est = pd.read_excel(io.BytesIO(captured_estimate))
+    from autobot.estimate_scope import expand_resources
+    est = expand_resources(pd.read_excel(io.BytesIO(captured_estimate)))
     if COL_NAME not in est.columns:
         raise ValueError(f"В смете нет колонки {COL_NAME!r}")
 

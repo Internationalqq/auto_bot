@@ -1,4 +1,23 @@
 [
+  {"name":"ЯМЦК — нерудные материалы", "catalog":{"adapter":"yamck","region_label":"Ярославская область"},"url":"https://yamck.ru/nerudnye-materialy.html","price_page":true,"regions":["ярослав"],"topics":["песок","щебень","ПГС","гравий","отсев"],"buckets":["materials"]},
+  {"name":"ТИНКО — видеонаблюдение и сети", "catalog":{"adapter":"tinko","region_label":"Москва; доставка по России","seed_urls":["/catalog/product/281906/","/catalog/product/312876/","/catalog/product/290192/","/catalog/product/268801/","/catalog/product/338117/","/catalog/product/340546/"]},"url":"https://www.tinko.ru/catalog/product/320544/","price_page":true,"regions":["*"],"topics":["Dahua","TFortis","SWU","TRASSIR","DuoStation","ОГЦ","видеокамера","видеорегистратор","HDD","жесткий диск"],"buckets":["materials"]},
+  {
+    "name": "СветЭлектро — электротехника EKF",
+    "catalog": {"adapter": "svetelektro", "region_label": "Москва; доставка уточняется"},
+    "url": "https://svetelektro.net/prajs-list/price/ekf",
+    "price_page": true,
+    "regions": ["*"],
+    "topics": ["EKF", "PROxima", "tpndg", "труба", "выключатель", "щит", "клемма", "изолятор"],
+    "buckets": ["materials"]
+  },
+  {"name":"СветЭлектро — IEK", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/iek","price_page":true,"regions":["*"],"topics":["IEK","ИЭК","выключатель","щит","ЩМП","ЩРН","ВА88","блок распределительный"],"buckets":["materials"]},
+  {"name":"СветЭлектро — WAGO", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/wago","price_page":true,"regions":["*"],"topics":["WAGO","клеммник","клемма"],"buckets":["materials"]},
+  {"name":"СветЭлектро — Dahua", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/dahua","price_page":true,"regions":["*"],"topics":["Dahua","IP-камера","коммутатор","видеорегистратор"],"buckets":["materials"]},
+  {"name":"СветЭлектро — TFortis", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/tfortis","price_page":true,"regions":["*"],"topics":["TFortis","коммутатор","SWU","PSW","SFP"],"buckets":["materials"]},
+  {"name":"СветЭлектро — TRASSIR", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/trassir","price_page":true,"regions":["*"],"topics":["TRASSIR","DuoStation","видеорегистратор"],"buckets":["materials"]},
+  {"name":"СветЭлектро — ЦМО", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/tsmo","price_page":true,"regions":["*"],"topics":["ЦМО","шкаф","ШРН","DIN","КП-АВ"],"buckets":["materials"]},
+  {"name":"СветЭлектро — КВТ", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/kvt","price_page":true,"regions":["*"],"topics":["КВТ","муфта","зажим","4ПКТп","5ПКТп"],"buckets":["materials"]},
+  {"name":"СветЭлектро — ATEN", "catalog":{"adapter":"svetelektro","region_label":"Москва"},"url":"https://svetelektro.net/prajs-list/price/aten","price_page":true,"regions":["*"],"topics":["ATEN","KVM","консоль"],"buckets":["materials"]},
   {
     "name": "ШтеттерБетон",
     "catalog": {"adapter": "table", "region_label": "Ярославская область"},

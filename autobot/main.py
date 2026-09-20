@@ -1333,13 +1333,18 @@ def _natural_path_sort_key(path: Path) -> tuple:
 
 def extract_pdf_estimate_total(path: Path) -> float | None:
     """Читает официальный итог «ВСЕГО по смете» с одной из последних страниц ЛСР."""
+    from autobot.pdf_native_lsr import read_native_total
+    try:
+        native_total = read_native_total(path.read_bytes())
+    except OSError:
+        native_total = None
+    if native_total is not None:
+        return native_total
     try:
         try:
             import pymupdf as fitz
         except ImportError:
             import fitz
-        import pytesseract
-        from PIL import Image
     except ImportError:
         return None
 
@@ -1354,19 +1359,23 @@ def extract_pdf_estimate_total(path: Path) -> float | None:
     try:
         for page_index in range(len(document) - 1, max(-1, len(document) - 4), -1):
             page = document[page_index]
-            texts = [page.get_text("text") or ""]
+            text = page.get_text("text") or ""
+            for raw_value in reversed(total_pattern.findall(text)):
+                value = to_float(raw_value)
+                if value is not None and value > 0:
+                    return value
             try:
+                import pytesseract
+                from PIL import Image
                 pix = page.get_pixmap(matrix=fitz.Matrix(200 / 72, 200 / 72), alpha=False)
                 image = Image.open(io.BytesIO(pix.tobytes("png")))
-                texts.append(pytesseract.image_to_string(image, lang="rus+eng", config="--psm 6"))
+                text = pytesseract.image_to_string(image, lang="rus+eng", config="--psm 6")
             except Exception:
-                pass
-            for text in texts:
-                matches = total_pattern.findall(text)
-                for raw_value in reversed(matches):
-                    value = to_float(raw_value)
-                    if value is not None and value > 0:
-                        return value
+                continue
+            for raw_value in reversed(total_pattern.findall(text)):
+                value = to_float(raw_value)
+                if value is not None and value > 0:
+                    return value
     finally:
         document.close()
     return None
@@ -2242,13 +2251,14 @@ def _normalize_pdf_unit_qty(unit: object, qty: object, name: object = "", basis_
 
 
 def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
-    """Преобразует координатное OCR ЛСР в общий формат отчёта AutoBot."""
+    """Преобразует позиции текстовой или распознанной ЛСР в общий отчёт."""
     from autobot.pdf_estimate_adapter import pdf_to_position_records
 
     rows: list[dict] = []
     for record_index, record in enumerate(pdf_to_position_records(path), start=1):
         work_name = _cell_text(record.get("name"))
-        if len(work_name) < 8 or len(work_name) > 500:
+        native = record.get('extract_source') == 'PDF text LSR'
+        if not work_name or (not native and (len(work_name) < 8 or len(work_name) > 500)):
             continue
         basis_code = _cell_text(record.get("code"))
         unit, qty = _normalize_pdf_unit_qty(record.get("unit"), record.get("qty"), work_name, basis_code)
@@ -2256,7 +2266,7 @@ def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
         total = to_float(record.get("total"))
         if total is None and unit_price is not None and qty is not None:
             total = unit_price * qty
-        if total is not None and (total <= 0 or total > 5_000_000_000):
+        if total is not None and (abs(total) > 5_000_000_000 or (not native and total <= 0)):
             continue
         page = int(to_float(record.get("page")) or 0)
         rows.append(
@@ -2266,7 +2276,7 @@ def _rows_from_pdf_adapter(path: Path, tender: Tender) -> list[dict]:
                 "tender_title": tender.title,
                 "tender_url": tender.url,
                 "source_file": str(path),
-                "extract_source": "PDF OCR LSR",
+                "extract_source": record.get("extract_source") or "PDF OCR LSR",
                 "position_id": _cell_text(record.get('position_id')) or f'pdf:ocr:{page}:row{record_index}',
                 "resources": record.get('resources', []),
                 "item_no": _cell_text(record.get("position")),
@@ -2420,6 +2430,11 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if 'position_id' in df.columns:
         source_columns.append('position_id')
+    if 'resources' in df.columns:
+        from autobot.estimate_scope import RESOURCES
+        df[RESOURCES] = df['resources'].map(lambda value: json.dumps(value, ensure_ascii=False, allow_nan=False)
+            if isinstance(value, list) and value else '')
+        source_columns.append(RESOURCES)
     for col in source_columns:
         if col not in df.columns:
             df[col] = None
@@ -2450,11 +2465,15 @@ def _build_tender_clean_df(rows: list[dict]) -> pd.DataFrame:
     )
     clean_df = clean_df.dropna(subset=["Название работы/услуги"])
     clean_df["Название работы/услуги"] = clean_df["Название работы/услуги"].astype(str).str.strip()
-    clean_df = clean_df[clean_df["Название работы/услуги"].str.len() >= 6]
+    native = clean_df['Источник извлечения'].eq('PDF text LSR')
+    clean_df = clean_df[native | (clean_df["Название работы/услуги"].str.len() >= 6)]
     clean_df = clean_df[~clean_df["Название работы/услуги"].str.lower().str.contains("|".join(SKIP_ROW_HINTS), regex=True)]
     # A recognized PDF position without its amount is still part of the scope.
     # Keep the gap visible so price coverage cannot become falsely complete.
-    clean_df = clean_df[clean_df["Сумма, руб"].isna() | (clean_df["Сумма, руб"] > 0)]
+    # Text-column positions include explicit negative adjustments and zero
+    # amounts. Removing them changes the estimate's source total.
+    clean_df = clean_df[clean_df['Источник извлечения'].eq('PDF text LSR') |
+                        clean_df["Сумма, руб"].isna() | (clean_df["Сумма, руб"] > 0)]
     # Убираем только точные повторы одной физической строки. Повторяющиеся
     # работы с теми же названием, количеством и суммой на других строках ЛСР
     # сохраняем: это реальные самостоятельные позиции.

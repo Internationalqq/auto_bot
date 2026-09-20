@@ -141,7 +141,8 @@
     </button>
     <div data-workspace-panel="positions" id="workspacePositions" aria-labelledby="workspaceTabPositions">
     <section class="market-coverage" aria-label="Полнота проверки цен">
-      <dl><div><dt>Распознано в смете</dt><dd>{{ tender.estimate_total_fmt }}</dd></div><div><dt>Позиций с подтверждённой ценой</dt><dd>{{ tender.counts.verified }} <small>из {{ tender.total_positions }}</small></dd></div><div><dt>Проверено по сумме</dt><dd>{{ tender.coverage_cost_fmt }}</dd></div></dl>
+      <div><dl><div><dt>Распознано в смете</dt><dd>{{ tender.estimate_total_fmt }}</dd></div><div><dt>Позиций с подтверждённой ценой</dt><dd>{{ tender.counts.verified }} <small>из {{ tender.price_coverage.priceable }}</small></dd></div><div><dt>Проверено по сумме</dt><dd>{{ tender.coverage_cost_fmt }}</dd></div></dl>
+      {% if tender.price_coverage.excluded %}<p class="muted">Всего строк: {{ tender.total_positions }}. Для {{ tender.price_coverage.excluded }} расчётных строк и вычетов отдельная цена не требуется.</p>{% endif %}</div>
       <button class="text-button" type="button" data-feature-open="estimateModal">{{ icon('info') }} Сверить полноту сметы</button>
     </section>
     <section class="metrics" aria-label="Сводка по позициям">
@@ -205,7 +206,7 @@
               </td>
               <td class="quantity-cell" data-label="Объём"><b>{{ p.quantity_fmt if p.quantity is not none else "—" }}</b><small>{{ p.unit }}</small></td>
               <td class="money col-estimate" data-label="Цена сметы"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% else %}Нет подтверждённой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}</td>
+              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% elif p.price_state == 'excluded' %}Отдельная цена не требуется{% elif p.price_state == 'pending' %}Поиск ещё не выполнен{% elif p.price_state == 'candidate' %}Предложения требуют уточнения{% else %}Нет сопоставимой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}</td>
               <td class="money col-difference difference-{{ p.difference_tone }}" data-label="Смета − рынок"><b>{{ p.difference_fmt }}</b><small>{{ p.difference_percent_fmt if p.market_unit is not none else "Ждём цену рынка" }}</small></td>
               <td class="sources" data-label="Проверка цены">
                 {% if p.verified_count %}<span class="source-count verified">{{ icon("check") }} {{ p.verified_count }} подтверждено</span>{% endif %}

@@ -256,6 +256,8 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
             return value[:500]
         if bucket == 'materials' and re.search(r'достав\w*\s+по\s+(?:всей\s+)?россии', folded):
             return value[:500]
+        if bucket == 'materials' and re.search(r'достав\w*(?:\s+(?:товара|оборудования|заказа|заказов))?\s+(?:во\s+все|в)\s+регионы\s+россии', folded):
+            return value[:500]
     if bucket == 'materials':
         for node in soup.select('h2,h3,h4,h5,h6,div,span'):
             value = _clean(node.get_text(' ', strip=True))
@@ -722,6 +724,10 @@ def inspect_source_page(
     terms_reason = price_terms_reason({'url': url, 'evidence': best.evidence})
     if terms_reason:
         return PageInspection(False, "conditional-price", adapter, best.price, best.unit, best.scope, best.title, best.evidence, terms_reason, best.extractor, len(facts))
+    from autobot.market_evidence_policy import price_origin_reason
+    origin_reason = price_origin_reason({'extractor': best.extractor, 'evidence': best.evidence})
+    if origin_reason:
+        return PageInspection(False, 'unconfirmed-origin', adapter, best.price, best.unit, best.scope, best.title, best.evidence, origin_reason, best.extractor, len(facts))
     target = normalize_unit(target_unit)
     if target and not units_compatible(best.unit, target):
         return PageInspection(False, "unit-mismatch", adapter, best.price, best.unit, best.scope, best.title, best.evidence, "Единица цены не совпала со сметой", best.extractor, len(facts))

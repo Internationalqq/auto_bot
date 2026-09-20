@@ -13,7 +13,8 @@ def test_every_row_has_one_explained_outcome_without_inventing_cost():
     ]
     coverage = annotate_coverage(rows)
     assert coverage['total'] == 7
-    assert all(coverage[key] == 1 for key in coverage if key != 'total')
+    assert coverage['priceable'] == 6
+    assert all(coverage[key] == 1 for key in coverage if key not in {'total', 'priceable'})
     assert all(row['price_reason'] for row in rows)
     assert 'Единица неизвестна' == rows[1]['price_reason']
     assert rows[2]['market_unit'] == 15.7

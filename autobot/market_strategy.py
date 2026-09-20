@@ -27,7 +27,7 @@ _SUMMARY_KEYS = (
     "сводный сметный расчет", "глава ", "благоустройство территории",
 )
 _TECHNICAL_NORM_KEYS = (
-    "при изменении", "на каждые последующие", "добавлять или уменьшать",
+    "при изменении", "на каждые последующие", "за каждые последующие", "добавлять или уменьшать",
     "добавлять (уменьшать)", "коэффициент к норм", "поправка к норм", "доплата к расценке",
 )
 _SERVICE_KEYS = (
@@ -353,6 +353,9 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
 
     if not title:
         return PositionClass("other", "Не определено", "other", "Требуют разбора", 0.0, "Нет названия", True)
+    if _fold(unit)=='%' or ('ненормируемые материальные ресурсы' in title):
+        return PositionClass('aggregate','Расчётное начисление','other','Требуют разбора',1.0,
+                             'Процентное начисление сметы, а не отдельный товар',True)
     if any(key in title for key in _SUMMARY_KEYS) and no_unit:
         return PositionClass("aggregate", "Укрупнённая строка", "other", "Требуют разбора", 0.98, "Сводная строка без единицы измерения", True)
     if any(key in title for key in _TECHNICAL_NORM_KEYS):
@@ -366,10 +369,10 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
     # type. Respect explicit price-code classifications above, then the noun
     # being purchased before descriptive words later in the title.
     material_head = re.match(r'^(?:земл[яи]\s+раститель\w*|раститель\w*\s+грунт\w*|грунт\s+раститель\w*|'
-                             r'георешет\w*|геополот\w*|геотекст\w*|пен[аы]\s+монтаж\w*|'
+                             r'бордюр\w*|камень\s+бортов\w*|георешет\w*|геополот\w*|геотекст\w*|пен[аы]\s+монтаж\w*|'
                              r'штукатурк[аи]\s+(?:гипсов\w*|цемент\w*|декоратив\w*)|'
                              r'шпаклев\w*|смес[ьи]\s+сух\w*)\b', title)
-    product_head = re.match(r'^(?:кабел\w*|труб[аы]\w*|щит\w*|шкаф\w*|светильник\w*|'
+    product_head = re.match(r'^(?:монтажн\w*\s+коробк\w*|кабел\w*|труб[аы]\w*|щит\w*|шкаф\w*|светильник\w*|'
                             r'насос\w*|крепеж\w*|болт\w*|саморез\w*|краск\w*|цемент\w*|'
                             r'кирпич\w*|бетон\w*|щебен\w*|песок)\b', title)
     if material_head:
@@ -798,7 +801,13 @@ def check_offer(
             return OfferCheck("candidate", 0.43, "Источник не подтверждает ту же марку сигнальной ленты", "", observed_at)
         if required_length and not re.search(rf"\b{re.escape(required_length.group(1))}\s*м", evidence_folded):
             return OfferCheck("candidate", 0.43, "Источник не подтверждает ту же длину рулона", "", observed_at)
+    from autobot.market_requirements import technical_specs
+    requested_models = {s['value'] for s in technical_specs(name) if s['kind'] == 'hardware_model'}
+    offered_models = {s['value'] for s in technical_specs(evidence_text) if s['kind'] == 'hardware_model'}
+    exact_product_model = position.bucket == 'materials' and bool(requested_models) and requested_models.issubset(offered_models)
     semantic_identity_match = (
+        exact_product_model
+        or
         dense_rock_crushed_stone
         or fine_natural_sand
         or geotextile_identity_match

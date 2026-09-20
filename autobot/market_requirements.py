@@ -48,7 +48,7 @@ def technical_specs(name: object) -> list[dict[str, str]]:
     folded = original.casefold().replace('ё', 'е')
     number = r'\d{1,5}(?:[.,]\d{1,3})?'
     patterns = [
-        ('dimensions', 'Размеры / сечение', rf'\b{number}\s*[xх×]\s*{number}(?:\s*[xх×]\s*{number})?(?=\b|(?:ок|мк|мс|ож|мн)\b)'),
+        ('dimensions', 'Размеры / сечение', rf'\b{number}\s*[xх×]\s*{number}(?:\s*[xх×]\s*{number})?(?=\b|(?:ок|ос|мк|мс|ож|мн)\b)'),
         ('curb_model', 'Марка бордюра', r'\b(?:бр|бв)\s*\d{1,4}(?:[.,]\d{1,3}){2}\b'),
         ('protection', 'Степень защиты', r'\bip\s*\d{2}\b'),
         ('dimension_label', 'Указанный размер', rf'\b(?:диаметр\w*|толщин\w*|высот\w*|ширин\w*|длин\w*)\s*[:=]?\s*{number}\s*мм\b'),
@@ -56,14 +56,25 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         ('density', 'Поверхностная плотность', rf'\b{number}\s*г(?:р(?:амм(?:а|ов)?)?)?\.?\s*/?\s*м[2²]\b'),
         ('brand', 'Производитель', r'\b(?:кнауф|knauf|церезит|ceresit|технониколь|isover|изовер|роквул|rockwool)\b'),
         ('product_line', 'Продукт', r'\b(?:ротбанд|rotband|гольдбанд|goldband|фуген|fugen)\b'),
+        ('hardware_model', 'Модель / артикул', r'(?<!\w)(?:[a-z]{2,}[a-z\d]*-[a-z\d./+-]*\d[a-z\d./+-]*|[a-z]{2,}\d{2,}[a-z\d]*)(?!\w)'),
+        ('hardware_model', 'Модель / артикул', r'\b(?:wago\s+\d{3}-\d{3}|(?:ва|ис|щмп|щрн|огц|лсэ)\s*-?\s*\d{1,3}(?:-\d{1,3})*)\b'),
+        ('hardware_model', 'Модель / артикул', r'\b[1-9]п[квнт][а-я]*(?:\([а-я]\))?-\d{1,2}-\d{1,3}/\d{1,3}(?:\([а-я]\))?'),
     ]
     if 'щеб' in folded:
         patterns.append(('fraction', 'Фракция щебня', r'\b\d{1,3}\s*[-–—]\s*\d{1,3}\b'))
+        patterns.append(('stone_grade', 'Прочность щебня', r'\b[мm]\s*\d{2,4}\b'))
+    if 'бордюр' in folded or 'бортов' in folded:
+        patterns.append(('curb_model', 'Марка бордюра', r'\b\d{2,4}(?:[.,]\d{1,3}){2}\b'))
+    if 'песок' in folded or 'песка' in folded:
+        patterns.append(('sand_class', 'Класс песка', r'\b(?:[iI]{1,2}|[12])\s*класс\w*\b'))
+        patterns.append(('sand_grain', 'Крупность песка', r'\b(?:мелк\w*|средн\w*|крупн(?!ост)\w*)\b'))
     if 'бетон' in folded:
         patterns.extend([
             ('concrete_grade', 'Марка бетона', r'\b[мm]\s*\d{2,3}\b'),
             ('concrete_class', 'Класс бетона', r'\b[вb]\s*\d{1,2}(?:[.,]\d+)?\b'),
             ('concrete_aggregate', 'Заполнитель бетона', r'\b(?:грави[яйи]\w*|гранит\w*|известняк\w*)\b'),
+            ('concrete_frost', 'Морозостойкость бетона', r'\bf\s*(?:\([12]\)\s*)?\d{2,4}\b'),
+            ('concrete_water', 'Водонепроницаемость бетона', r'\bw\s*\d{1,2}\b'),
         ])
     if any(marker in folded for marker in ('кабел', 'провод', 'ввг', 'nym', 'пвс', 'шввп')):
         patterns.append(('cable_model', 'Марка кабеля',
@@ -88,6 +99,10 @@ def technical_specs(name: object) -> list[dict[str, str]]:
                 value = re.sub(r'гр(?:амм(?:а|ов)?)?\.?', 'г', value).replace('/', '')
             if kind == 'concrete_aggregate':
                 value = 'гравий' if value.startswith('грави') else 'гранит' if value.startswith('гранит') else 'известняк'
+            if kind == 'sand_class':
+                value = '2' if value.startswith(('ii','2')) else '1'
+            if kind == 'sand_grain':
+                value = 'мелкий' if value.startswith('мелк') else 'средний' if value.startswith('средн') else 'крупный'
             value = {'кнауф': 'knauf', 'церезит': 'ceresit', 'изовер': 'isover', 'роквул': 'rockwool',
                      'ротбанд': 'rotband', 'гольдбанд': 'goldband', 'фуген': 'fugen'}.get(value, value)
             identity = kind, value
@@ -149,12 +164,20 @@ sizes are retained for discovery; their comparison needs category-specific units
     if incomplete:
         return incomplete
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:
             continue
         right = {s['value'] for s in found if s['kind'] == kind}
+        if kind == 'sand_grain' and left == {'мелкий'} and not right:
+            # Preserve the existing category check: an explicitly bounded
+            # fineness module is evidence of the grain group, not its class.
+            ranges = re.findall(r'(?:модул\w*\s+крупност\w*|\bмкр?\b)[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)', _clean(evidence), re.I)
+            if ranges and all(1.5 <= float(lo.replace(',', '.')) <= float(hi.replace(',', '.')) <= 2.0 for lo, hi in ranges):
+                right = {'мелкий'}
+            elif ranges:
+                return 'Указанный модуль крупности не соответствует группе «мелкий песок»'
         label = next(s['label'].lower() for s in wanted if s['kind'] == kind)
         if not right:
             if not require_all:

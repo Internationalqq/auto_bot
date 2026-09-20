@@ -237,7 +237,7 @@ class MarketStrategyTests(unittest.TestCase):
 
         self.assertEqual(earth.status, "verified")
         self.assertEqual(generic_tape.status, "candidate")
-        self.assertIn("марку", generic_tape.reason)
+        self.assertIn("модель / артикул", generic_tape.reason)
         self.assertEqual(exact_tape.status, "verified")
         self.assertEqual(steel_strip.status, "verified")
 

@@ -13,8 +13,10 @@ from autobot.supplier_evidence import outdated_price_notice
 
 def clean_soup(body):
     soup=BeautifulSoup(body,'html.parser')
-    for node in soup.select('script,style,form,.related,.upsells,.recommendations,.analogs'):
+    for node in soup.select('script,style,input,button,select,textarea,.related,.upsells,.recommendations,.analogs'):
         node.decompose()
+    for node in soup.select('form'):
+        node.unwrap()  # Price tables may sit inside a filter form; no submission.
     return soup
 
 
@@ -24,6 +26,14 @@ def navigate(body,url,config):
     start=urlparse(config['url'])
     adapter=catalog.get('adapter')
     result={}
+    seeds=list(catalog.get('seed_urls') or [])
+    if adapter=='yamck' and '/api/site/nerud' in body:
+        seeds.append('/api/site/nerud')
+    for candidate in seeds[:100]:
+        link=urljoin(url,str(candidate))
+        parsed=urlparse(link)
+        if parsed.scheme in {'http','https'} and parsed.hostname==start.hostname and not parsed.username and not parsed.port and link!=url:
+            result[link]={'url':link,'kind':'product','label':''}
     for a in soup.select('a[href]'):
         link=urljoin(url,str(a.get('href','')).strip())
         parsed=urlparse(link)
@@ -32,7 +42,9 @@ def navigate(body,url,config):
         link=parsed._replace(fragment='').geturl()
         label=store.clean(a.get_text(' ',strip=True))
         kind=''
-        if parsed.path==start.path and parsed.query:
+        if adapter=='svetelektro' and re.fullmatch(re.escape(start.path.rstrip('/'))+r'(?:/\d{1,5})?/?',parsed.path) and not parsed.query:
+            kind='catalog'
+        elif parsed.path==start.path and parsed.query:
             query=parse_qs(parsed.query)
             if set(query)<={'page'} and all(v.isdigit() and 1<=int(v)<=100 for v in query.get('page',[])):
                 kind='catalog'
@@ -50,20 +62,22 @@ def navigate(body,url,config):
 def table_records(body,url,bucket):
     soup=clean_soup(body)
     result=[]
+    price_notice=outdated_price_notice(body)
     notices=' '.join(str(p) for p in soup.select('p,small') if len(p.get_text())<700 and
         (price_terms_reason({'evidence':p.get_text(' ',strip=True)}) or 'без стоимости материал' in p.get_text().casefold()))
     for table_no,table in enumerate(soup.select('table')):
-        layouts=[]; parents={}
+        layouts=[]; parents={}; headers=[]
         for row in table.select('tr'):
             cells=row.find_all(['td','th'],recursive=False)
             values=[store.clean(c.get_text(' ',strip=True)) for c in cells]
             if len(values)<2: continue
             price_cols=[i for i,v in enumerate(values) if re.search(r'\bцен[аы]\b|стоимость',v,re.I) and not parse_ruble_values(v)]
             if price_cols:
+                headers=values
                 layouts=[]
                 for p in price_cols:
                     start=max([j+1 for j in price_cols if j<p],default=0)
-                    unit_cols=[j for j in range(start,p) if re.search(r'ед\.?\s*изм',values[j],re.I)]
+                    unit_cols=[j for j in (range(len(values)) if len(price_cols)==1 else range(start,p)) if re.search(r'ед\.?\s*изм',values[j],re.I)]
                     names=[j for j in range(start,p) if j not in unit_cols and values[j] and not re.fullmatch(r'№|п/?п|номер',values[j],re.I)]
                     if names: layouts.append((names[-1],p,unit_cols[-1] if unit_cols else None,values[p],values[names[-1]]))
                 continue
@@ -94,7 +108,7 @@ def table_records(body,url,bucket):
                     amounts=[float(price_text.replace(' ','').replace(',','.'))]
                 amount=amounts[0] if amounts else None
                 evidence=name+' | '+price_text+' | '+unit+' · '+heading
-                reason=price_terms_reason({'evidence':evidence}) or outdated_price_notice(body)
+                reason=price_terms_reason({'evidence':evidence}) or price_notice
                 if lot and float(lot[1].replace(',','.'))!=1:
                     reason=reason or 'Цена указана за '+raw_unit+'; пересчёт требует проверки условий'
                 if not unit: reason=reason or 'В прайсе не указана единица цены'
@@ -107,11 +121,17 @@ def table_records(body,url,bucket):
                 if inspection.price is not None and amount is not None and abs(inspection.price-amount)>0.001:
                     reason=reason or 'Не удалось однозначно связать сумму со строкой прайса'
                 item_bucket='equipment' if re.search(r'^аренда\b',name,re.I) else bucket
+                published=''
+                date_columns=[j for j,v in enumerate(headers) if re.search(r'актуаль|дата',v,re.I)]
+                if len(date_columns)==1 and len(values)>date_columns[0]:
+                    for pattern in ('%d.%m.%y','%d.%m.%Y'):
+                        try: published=datetime.strptime(values[date_columns[0]],pattern).replace(tzinfo=timezone.utc).isoformat(); break
+                        except ValueError: pass
                 result.append({'name':name,'url':url,'unit':unit,'bucket':item_bucket,'price':amount,
                     'item_key':f'table:{table_no}|{store.folded(name)}|{unit}',
                     'price_kind':'on_request' if amount is None else 'conditional' if reason else 'published',
                     'reason':reason,'evidence':evidence,
-                    'details':{'price_scope':inspection.price_scope,'quantity_terms':list(inspection.quantity_terms),
+                    'details':{'price_scope':inspection.price_scope,'quantity_terms':list(inspection.quantity_terms),'published_at':published,
                         'price_prefix':'от' if re.search(r'\bот\s*\d',price_text,re.I) else '', 'extractor':'supplier-table'}})
     return result
 
@@ -132,10 +152,12 @@ def product_records(body,url,label,adapter,bucket):
                 # This site puts a rounded area price in microdata while its
                 # visible purchase price is for a whole roll. Store the latter.
                 reason=price_terms_reason({'evidence':price_text}) or outdated_price_notice(body)
+                areas=re.findall(r'Площадь\s+покрытия\s*:\s*(\d+(?:[.,]\d+)?)\s*м[2²]',selling_terms,re.I)
+                package={'amount':float(areas[0].replace(',','.')),'unit':'м2','evidence':selling_terms} if len(set(areas))==1 else {}
                 return [{'name':name,'url':url,'unit':'рулон','bucket':bucket,'price':amounts[0],
                     'item_key':url,'price_kind':'conditional' if reason else 'published','reason':reason,
                     'evidence':name+' · '+price_text+' · '+selling_terms,
-                    'details':{'price_scope':'product','extractor':'geo76-visible-roll','selling_terms':selling_terms}}]
+                    'details':{'price_scope':'product','extractor':'geo76-visible-roll','selling_terms':selling_terms,'package':package}}]
     if adapter=='ekc':
         result=[]
         table=soup.select_one('table.offerTable')
@@ -197,8 +219,16 @@ def extract(body,url,kind,label,config):
     if any(s in folded for s in ('servicepipe.tech','checking your browser','подтвердите, что вы не робот')):
         raise ValueError('Сайт ограничил доступ; импорт остановлен для этой страницы')
     if kind=='context': return []
+    if adapter=='yamck':
+        if urlparse(url).path=='/api/site/nerud':
+            from autobot.supplier_catalog_sites import yamck_records
+            return yamck_records(body,config['url'])
+        return []
+    if adapter=='tinko':
+        from autobot.supplier_catalog_sites import tinko_records
+        return tinko_records(body,url)
     if kind=='product': return product_records(body,url,label,adapter,bucket)
-    if adapter=='table':
+    if adapter in {'table','svetelektro'}:
         records=table_records(body,url,bucket)
         if not records: raise ValueError('Не удалось разобрать строки прайса; прежние данные сохранены')
         return records

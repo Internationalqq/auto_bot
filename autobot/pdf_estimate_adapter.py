@@ -302,6 +302,12 @@ class PdfEstimateAdapter:
         resource rows begin farther to the right, which makes them separable.
         """
         raw = source if isinstance(source, bytes) else Path(source).read_bytes()
+        from autobot.pdf_native_lsr import read_native_lsr
+        native = read_native_lsr(raw)
+        if native is not None:
+            if progress_cb is not None:
+                progress_cb(100, "Текстовый слой PDF прочитан", f"Найдено позиций: {len(native)}")
+            return native
         try:
             import cv2
             import fitz
