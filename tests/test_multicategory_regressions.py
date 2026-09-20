@@ -40,6 +40,15 @@ def test_quantity_tier_is_not_mistaken_for_lower_bound_price():
     assert not price_terms_reason({'evidence':'Цена от 20 м3: Песок 900 руб/м3'})
 
 
+@pytest.mark.parametrize('condition',['минимальная стоимость поставки','стоимость ориентировочная'])
+def test_global_minimum_cost_notice_applies_to_table_and_reload(condition):
+    note='В таблице ниже указана '+condition+'. Расчёт по телефону.'
+    html='<h1>Бетон М200 В15</h1><p>'+note+'</p><table><tr><th>Наименование</th><th>Цена 1 м3</th></tr><tr><td>Бетон М200 В15</td><td>3050 р.</td></tr></table>'
+    result=inspect_source_page(html,'https://supplier.example/beton',name='Бетон М200 В15',target_unit='м3',position_bucket='materials')
+    assert not result.accepted and result.price==3050
+    assert price_terms_reason({'evidence':result.evidence})
+
+
 def test_completed_blocked_search_keeps_explainable_state():
     row={'can_auto_price':True,'market_processed':True,'market_status':search_result_reason('HTTP 429')}
     assert annotate_coverage([row])['blocked']==1
