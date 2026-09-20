@@ -206,6 +206,42 @@ def test_search_backends_contribute_results_independently(search, monkeypatch):
     assert len(offers) == 2 and not error
 
 
+def test_ddgs_parallel_client_wait_respects_deadline_and_releases_after_error(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    class Client:
+        def __init__(self, **kwargs):
+            calls.append('client')
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def text(self, query, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            raise RuntimeError('provider failed')
+    monkeypatch.setattr(market, '_DDGS_CLIENT_LOCK', threading.Lock())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(market._ddgs_text, Client, 'first', timeout=2)
+        assert entered.wait(2)
+        token = market._SEARCH_DEADLINE.set(time.monotonic() + .05)
+        try:
+            with pytest.raises(market.SearchBudgetExceeded, match='занят'):
+                market._ddgs_text(Client, 'second', timeout=2)
+            assert calls == ['client']
+        finally:
+            market._SEARCH_DEADLINE.reset(token)
+            release.set()
+        with pytest.raises(RuntimeError, match='provider failed'):
+            future.result(timeout=2)
+    # A failed provider does not lock out subsequent positions.
+    with pytest.raises(RuntimeError, match='provider failed'):
+        market._ddgs_text(Client, 'next', timeout=1)
+    assert calls == ['client', 'client']
+
+
 def test_natural_query_keeps_grade_and_region_without_changing_verification_name():
     plan = market.build_search_plan('Бетон тяжелый М300', 'м3', region='Ярославль')
     assert plan.queries[0] == 'Бетон М300 Ярославль цена за м3'

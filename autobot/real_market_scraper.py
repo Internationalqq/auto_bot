@@ -114,6 +114,7 @@ _AVITO_LAST_REQUEST_AT = 0.0
 _AVITO_STATE_LOCK = threading.Lock()
 _DDG_BLOCKED_UNTIL = 0.0
 _DDGS_BLOCKED_UNTIL = 0.0
+_DDGS_CLIENT_LOCK = threading.Lock()
 _MARKET_CACHE_DIR = REPO_ROOT / "data" / "market_cache"
 _SOURCE_PAGE_CACHE_DIR = _MARKET_CACHE_DIR / "source_pages"
 _SOURCE_PAGE_CACHE_VERSION = "2"
@@ -1908,6 +1909,19 @@ def search_avito(
     )
 
 
+def _ddgs_text(client_class, query, *, timeout, **kwargs):
+    # Concurrent primp clients can deadlock in native logger initialization.
+    # Serialize this provider, including lazy result consumption, within the
+    # position's existing time budget. Other providers remain independent.
+    if not _DDGS_CLIENT_LOCK.acquire(timeout=_remaining_timeout(timeout)):
+        raise SearchBudgetExceeded('Резервный поиск занят; лимит ожидания исчерпан')
+    try:
+        with client_class(timeout=_remaining_timeout(timeout)) as client:
+            return list(client.text(query, **kwargs))
+    finally:
+        _DDGS_CLIENT_LOCK.release()
+
+
 def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer], str]:
     global _DDGS_BLOCKED_UNTIL
     if time.monotonic() < _DDGS_BLOCKED_UNTIL:
@@ -1938,13 +1952,8 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
     for backend in backends[:backend_limit]:
         for region in configured_regions[:2]:
             try:
-                with DDGS(timeout=_remaining_timeout(ddgs_timeout)) as ddgs:
-                    items = ddgs.text(
-                        query,
-                        region=region,
-                        max_results=max(10, min(max_results, 20)),
-                        backend=backend,
-                    )
+                items = _ddgs_text(DDGS, query, timeout=ddgs_timeout, region=region,
+                                   max_results=max(10, min(max_results, 20)), backend=backend)
                 for item in items:
                     title = _clean_text(str(item.get("title") or ""))[:220]
                     snippet = _clean_text(str(item.get("body") or item.get("snippet") or ""))[:700]
