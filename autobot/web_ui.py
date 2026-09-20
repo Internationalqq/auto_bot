@@ -7020,8 +7020,8 @@ def tender_svodka_download_xlsx(tender_id: str):
     tid = (tender_id or "").strip()
     if not tid or "/" in tid or ".." in tid:
         abort(404)
-    from autobot.merge_estimate_market import OUT_PREFIX, _normalize_market_columns
-    from autobot.market_contract import merge_market_frames, sanitize_market_frame
+    from autobot.merge_estimate_market import OUT_PREFIX, _normalize_market_columns, build_market_comparison
+    from autobot.market_contract import sanitize_market_frame
 
     path = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
     raw_path = _price_output_path_for_tender(tid)
@@ -7033,9 +7033,7 @@ def tender_svodka_download_xlsx(tender_id: str):
     meta = load_tender_metadata().get(tid) or {}
     if estimate_path.is_file():
         estimate = pd.read_excel(estimate_path)
-        if meta.get('region'):
-            estimate['Регион поиска'] = str(meta['region'])
-        frame = merge_market_frames(estimate, market)
+        frame = build_market_comparison(estimate, market, region=meta.get('region'))
     else:
         frame = sanitize_market_frame(market)
     buf = io.BytesIO()

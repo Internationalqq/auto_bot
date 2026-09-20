@@ -143,7 +143,6 @@ def merge_estimate_and_market(tender_id: str) -> Path | None:
 
 
 def _consistent_merge_estimate_and_market(tender_id: str) -> Path | None:
-    from autobot.market_contract import merge_market_frames
     from autobot.atomic_output import write_excel
 
     tid = (tender_id or "").strip()
@@ -153,26 +152,34 @@ def _consistent_merge_estimate_and_market(tender_id: str) -> Path | None:
     market_path = _market_or_market_path(est_path.stem)
     if not est_path.is_file() or not market_path.is_file():
         return None
-    from autobot.estimate_scope import expand_resources, financial_scope, PARENT
-    est = expand_resources(pd.read_excel(est_path))
+    est = pd.read_excel(est_path)
     region = (load_tender_metadata().get(tid) or {}).get('region')
-    if region:
-        est['Регион поиска'] = str(region)
     market = _normalize_market_columns(pd.read_excel(market_path))
     if COL_NAME not in est.columns or COL_NAME not in market.columns:
         return None
+    merged = build_market_comparison(est, market, region=region)
+    out_path = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
+    write_excel(merged, out_path)
+    return out_path
+
+
+def build_market_comparison(est: pd.DataFrame, market: pd.DataFrame, *, region: str | None = None) -> pd.DataFrame:
+    """Use the same resource scope and summable budget in saved and downloaded reports."""
+    from autobot.market_contract import merge_market_frames, position_identity
+    from autobot.estimate_scope import expand_resources, financial_scope, PARENT
+
+    est = expand_resources(est)
+    if region:
+        est['Регион поиска'] = str(region)
     merged = merge_market_frames(est, market)
     if PARENT in merged.columns:
-        from autobot.market_contract import position_identity
         def budget_key(row):
             return position_identity(dict(row, **{COL_SUM:None,COL_UNIT_PRICE:None}))
         budget={budget_key(row):row[COL_SUM] for _,row in financial_scope(merged).iterrows()}
         merged['Бюджет без повторного учёта ресурсов, руб']=[budget.get(budget_key(row),0) for _,row in merged.iterrows()]
         merged['Состав позиции']=['Ресурс, включённый в позицию '+str(row.get('parent_item_no') or '')
                                 if row.get(PARENT) else 'Полная позиция сметы' for _,row in merged.iterrows()]
-    out_path = REPORTS_DIR / f"{OUT_PREFIX}{tid}.xlsx"
-    write_excel(merged, out_path)
-    return out_path
+    return merged
 
 
 def main() -> None:

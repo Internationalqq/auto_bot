@@ -57,13 +57,25 @@ def test_source_resource_scope_cannot_be_overwritten_by_saved_market_fields():
     assert merged.iloc[1][PARENT]=='pdf:native:1:10'
 
 
-def test_summary_export_keeps_resources_and_a_budget_that_can_be_summed(tmp_path,monkeypatch):
+@pytest.mark.parametrize('download', [False, True])
+def test_summary_export_keeps_resources_and_a_budget_that_can_be_summed(tmp_path,monkeypatch,download):
     from autobot import merge_estimate_market as merge
     monkeypatch.setattr(merge,'REPORTS_DIR',tmp_path)
-    monkeypatch.setattr(merge,'load_tender_metadata',lambda:{})
     tid='12345678';name=f'ОТЧЕТ_ПО_СМЕТАМ_{tid}'
+    metadata=lambda:{tid:{'region':'Ярославская область'}}
+    monkeypatch.setattr(merge,'load_tender_metadata',metadata)
     original=pd.DataFrame([primary()]);original.to_excel(tmp_path/(name+'.xlsx'),index=False)
     expand_resources(original).to_excel(tmp_path/('РЫНОК_ИСТОЧНИКИ_'+name+'.xlsx'),index=False)
-    result=pd.read_excel(merge.merge_estimate_and_market(tid))
+    if download:
+        import io
+        from autobot import web_ui
+        monkeypatch.setattr(web_ui,'REPORTS_DIR',tmp_path)
+        monkeypatch.setattr(web_ui,'load_tender_metadata',metadata)
+        response=web_ui.app.test_client().get(f'/tenders/{tid}/svodka.xlsx')
+        assert response.status_code==200
+        result=pd.read_excel(io.BytesIO(response.data))
+    else:
+        result=pd.read_excel(merge.merge_estimate_and_market(tid))
     assert len(result)==2 and result.iloc[0][COL_SUM]==90000
+    assert set(result['Регион поиска'])=={'Ярославская область'}
     assert result['Бюджет без повторного учёта ресурсов, руб'].sum()==90000
