@@ -725,7 +725,7 @@ def inspect_source_page(
     if terms_reason:
         return PageInspection(False, "conditional-price", adapter, best.price, best.unit, best.scope, best.title, best.evidence, terms_reason, best.extractor, len(facts))
     from autobot.market_evidence_policy import price_origin_reason
-    origin_reason = price_origin_reason({'extractor': best.extractor, 'evidence': best.evidence})
+    origin_reason = price_origin_reason({'url': url, 'extractor': best.extractor, 'evidence': best.evidence})
     if origin_reason:
         return PageInspection(False, 'unconfirmed-origin', adapter, best.price, best.unit, best.scope, best.title, best.evidence, origin_reason, best.extractor, len(facts))
     target = normalize_unit(target_unit)

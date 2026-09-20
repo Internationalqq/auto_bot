@@ -157,6 +157,10 @@ def specification_reason(name: object, evidence: object) -> str:
 
 
 def price_origin_reason(offer: dict) -> str:
+    if _source_host(text(offer.get('url'))) == 'agroserver.ru':
+        # Listing pages combine unrelated sellers' contacts and delivery terms;
+        # legacy captures do not retain a verifiable seller-scoped boundary.
+        return 'Для этой площадки не подтверждена привязка цены и доставки к одному продавцу'
     if offer.get('index_hit') and not text(offer.get('extractor')) and not text(offer.get('catalog_item_id')):
         return 'В старом индексе не сохранено место извлечения цены; нужна повторная проверка страницы'
     if text(offer.get('extractor')) == 'metadata':

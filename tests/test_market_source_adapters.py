@@ -6,6 +6,15 @@ from autobot.market_source_adapters import inspect_source_page, detect_price_uni
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_marketplace_price_does_not_borrow_another_sellers_delivery(self):
+        page = '''<h1>Семена, рассада и газон</h1><article><h2>Семена газонной травы Универсальная</h2>
+        <p>320 руб / кг</p><p>Продавец А, Екатеринбург</p></article>
+        <article>Продавец Б. Доставка по всей России.</article>'''
+        result = inspect_source_page(page, 'https://agroserver.ru/b/item-123.htm',
+            name='Семена газонной травы Универсальная', target_unit='кг', position_bucket='materials')
+        self.assertFalse(result.accepted)
+        self.assertIn('продавцу', result.reason)
+
     def test_minimum_order_value_is_not_the_product_unit_price(self):
         page = '<h1>Кабель ВВГнг(А)-LS 3х2,5</h1><p>Сумма всего заказа не менее 5000 руб за м</p>'
         result = inspect_source_page(page, 'https://supplier.example/cable',

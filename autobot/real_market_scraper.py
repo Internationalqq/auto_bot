@@ -3345,12 +3345,18 @@ def _verified_market_keys(prev: pd.DataFrame, *, region: str | None = None) -> s
     return _processed_keys(prev, region=region)
 
 
-def _saved_offers_for_key(prev: pd.DataFrame, key: str) -> list[MarketOffer]:
+def _saved_offers_for_key(prev: pd.DataFrame, key: str, *, source_row=None) -> list[MarketOffer]:
     """Restore saved evidence so an Avito-only pass cannot erase other sites."""
     if prev.empty or COL_NAME not in prev.columns or not key:
         return []
-    from autobot.market_contract import position_identity
-    matches = prev[[position_identity(row) == key for _, row in prev.iterrows()]]
+    from autobot.market_contract import position_identity, match_market_rows
+    if source_row is not None:
+        # XLSX rounds computed resource rates at its floating-point boundary.
+        # Use the same unique, version-aware match as the displayed comparison.
+        matched = match_market_rows(pd.DataFrame([source_row]), prev)[0]
+        matches = pd.DataFrame([matched]) if matched is not None else pd.DataFrame()
+    else:
+        matches = prev[[position_identity(row) == key for _, row in prev.iterrows()]]
     if matches.empty:
         # Compatibility for explicit callers of the old helper: only a single
         # unambiguous saved row may be addressed by its title.
@@ -3831,7 +3837,7 @@ def prepare_agent_market_result(tender_id, position_payload, result):
         )
     output_path = output_path_for_tender(tid)
     previous = _read_previous(output_path)
-    saved = _saved_offers_for_key(previous, key)
+    saved = _saved_offers_for_key(previous, key, source_row=source_row)
     imported = _verify_offers(
         source_row,
         imported,
@@ -3889,7 +3895,7 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
     from autobot.market_contract import position_identity
     output_path = output_path_for_tender(tid)
     previous = _read_previous(output_path)
-    saved = _saved_offers_for_key(previous, key)
+    saved = _saved_offers_for_key(previous, key, source_row=source_row)
     offers = _latest_offers_for_row(source_row, saved, imported)
     retained = {id(offer) for offer in offers}
     imported = [offer for offer in imported if id(offer) in retained]
@@ -3930,7 +3936,7 @@ def _publish_prepared_agent_result(tender_id, position_payload, prepared):
             source_row['Регион поиска'],
         )
         from dataclasses import replace
-        equivalent_offers = _latest_offers_for_row(equivalent_row, _saved_offers_for_key(previous, equivalent_key),
+        equivalent_offers = _latest_offers_for_row(equivalent_row, _saved_offers_for_key(previous, equivalent_key, source_row=equivalent_row),
                                                    [replace(offer) for offer in imported])
         output_rows.append(_build_output_row(equivalent_row, offers=equivalent_offers, query=query,
                                             err=search_note if not equivalent_offers else '', plan=equivalent_plan))
@@ -4111,7 +4117,7 @@ def run_tender(
             if avito_collect_only:
                 previous_non_avito = [
                     offer
-                    for offer in _saved_offers_for_key(prev, key)
+                    for offer in _saved_offers_for_key(prev, key, source_row=row)
                     if "avito.ru" not in urlparse(offer.url or "").netloc.casefold()
                     and str(offer.source or "").strip().casefold() != "авито"
                 ]
@@ -4130,7 +4136,7 @@ def run_tender(
                         region_key(current_region) != region_key(region)):
                     raise ValueError('Смета или регион изменились во время поиска; нужен новый запуск')
                 latest = _read_previous(out_path)
-                offers = _latest_offers_for_row(row, _saved_offers_for_key(latest, key), offers)
+                offers = _latest_offers_for_row(row, _saved_offers_for_key(latest, key, source_row=row), offers)
                 if not dry_run:
                     indexed_stored += _store_verified_offers_in_index(tid, row, offers, region=region)
                 new_rows.append(_build_output_row(row, offers=offers, query=query, err=err, plan=plan))

@@ -473,6 +473,20 @@ def test_avito_only_pass_can_restore_non_avito_evidence() -> None:
     assert non_avito[0].url == "https://supplier.example/scheben"
 
 
+def test_saved_quote_survives_excel_resource_rate_rounding():
+    from autobot.market_contract import position_identity
+    row={market.COL_NAME:'Эмульсия битумно-дорожная','Ед. изм.':'т',market.COL_QTY:0.7163975,
+         market.COL_UNIT_PRICE:19516.944154606903,market.COL_SUM:13981.89,'position_id':'pdf:native:10:26.1','Файл ЛСР':'a.pdf'}
+    saved=dict(row,**{market.COL_UNIT_PRICE:19516.9441546069,'Цена-сайт-телефон (json)':json.dumps([
+        {'source':'Интернет','title':row[market.COL_NAME],'price':33000,'url':'https://supplier.example/emulsion','verification':'candidate'}])})
+    key=position_identity(row)
+    assert key!=position_identity(saved)
+    frame=pd.DataFrame([saved])
+    assert market._saved_offers_for_key(frame,key,source_row=row)[0].price==33000
+    assert not market._saved_offers_for_key(pd.DataFrame([saved,saved]),key,source_row=row)
+    assert not market._saved_offers_for_key(frame,key,source_row=dict(row,estimate_version='correction:new'))
+
+
 def test_avito_safe_mode_only_stops_on_access_failure() -> None:
     assert market._avito_safe_error_is_fatal("Авито ограничил доступ по IP/VPN") is True
     assert market._avito_safe_error_is_fatal("Авито Playwright: TimeoutError") is True

@@ -41,6 +41,7 @@ def test_title_ruble_numbers_and_candidate_bundle_do_not_become_market_prices():
     {'index_hit':True, 'evidence':'Щебень гранитный 5-20 2500 руб/м3'},
     {'extractor':'metadata', 'evidence':'Щебень гранитный 5-20 2500 руб/м3'},
     {'extractor':'price-block', 'evidence':'Похожие товары. Щебень гранитный 5-20 2500 руб/м3'},
+    {'url':'https://agroserver.ru/b/item-123.htm','extractor':'price-block','evidence':'Щебень гранитный 5-20 2500 руб/м3'},
 ])
 def test_old_metadata_and_recommendation_prices_are_rechecked(details):
     assert not confirmed_prices(offer(position(), **details))

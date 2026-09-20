@@ -294,7 +294,7 @@ def publish(tender_id,payload,prepared):
         # previous result which the next position silently overwrites.
         previous = pd.read_excel(raw_path) if raw_path.is_file() else pd.DataFrame()
         incoming = [scraper.MarketOffer(**offer) for offer in prepared.get('offers',[])]
-        offers = scraper._latest_offers_for_row(row,scraper._saved_offers_for_key(previous,key),incoming)
+        offers = scraper._latest_offers_for_row(row,scraper._saved_offers_for_key(previous,key,source_row=row),incoming)
         output = scraper._build_output_row(row,offers=offers,query=' | '.join(plan.queries),
             err='' if offers else 'Подтверждённых цен не найдено',plan=plan)
         combined = scraper._merge_rows(previous,[output])
