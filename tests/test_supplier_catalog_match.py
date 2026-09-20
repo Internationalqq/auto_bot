@@ -22,6 +22,21 @@ def test_finished_concrete_kerb_is_not_ready_mix(catalog):
     assert lookup(name='Бетон В22.5 М300 на гравии',unit='м3',region='Ярославская область',quantity=10,path=path)
 
 
+def test_mass_conversion_is_reused_from_catalogue_with_original_quantity_terms(catalog):
+    path,src,_,body=catalog
+    record={'name':'Стеклошарики 100-600 мкм','price':125,'unit':'кг','url':src['url'],
+        'evidence':'Стеклошарики 100-600 мкм · 125 руб/кг',
+        'details':{'price_scope':'product','quantity_terms':[{'minimum':100,'unit':'кг','evidence':'Минимум 100 кг'}]}}
+    store.save_page(src['id'],src['url'],body,time.time(),[record],path=path)
+    args=dict(name=record['name'],unit='т',region='Ярославская область',path=path)
+    offers=lookup(**args,quantity=.1)
+    assert len(offers)==1 and offers[0]['price']==125000 and offers[0]['unit']=='т'
+    assert '125 руб/кг' in offers[0]['evidence']
+    assert offers[0]['quantity_terms']==record['details']['quantity_terms']
+    assert not lookup(**args,quantity=.01)
+    assert not lookup(name=record['name'],unit='м3',region='Ярославская область',quantity=100,path=path)
+
+
 def test_exact_article_is_not_discarded_for_missing_generic_product_words(catalog):
     path,src,_,body=catalog
     model='DH-IPC-HDBW3441FP-AS-0280B-S2'
@@ -32,6 +47,17 @@ def test_exact_article_is_not_discarded_for_missing_generic_product_words(catalo
     store.save_page(src['id'],src['url'],body,time.time(),[record,*decoys],path=path)
     result=lookup(name='IP-камера Dahua '+model,unit='шт',region='Ярославская область',quantity=2,path=path)
     assert len(result)==1 and result[0]['price']==22021.8
+
+
+def test_cyrillic_panel_article_finds_short_supplier_name_without_other_panels(catalog):
+    path,src,_,body=catalog
+    record={'name':'КП-АВ-9005','price':2091,'unit':'шт','url':src['url'],
+            'evidence':'КП-АВ-9005 · Розничная цена 2091 руб/шт · Панель с DIN-рейкой',
+            'details':{'price_scope':'product'}}
+    store.save_page(src['id'],src['url'],body,time.time(),[record],path=path)
+    args=dict(unit='шт',region='Ярославская область',quantity=1,path=path)
+    assert lookup(name='Панель с DIN-рейкой КП-АВ-9005',**args)[0]['price']==2091
+    assert not lookup(name='Панель с DIN-рейкой КП-АВ-7035',**args)
 
 
 def test_wrong_grade_region_and_missing_spec_are_rejected(catalog):

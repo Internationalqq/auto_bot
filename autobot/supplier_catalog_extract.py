@@ -13,6 +13,8 @@ from autobot.supplier_evidence import outdated_price_notice
 
 def clean_soup(body):
     soup=BeautifulSoup(body,'html.parser')
+    for icon in soup.select('i.fa-rub, i.fa-ruble-sign, i.fa-ruble'):
+        icon.replace_with(' руб. ' + icon.get_text(' ', strip=True))
     for node in soup.select('script,style,input,button,select,textarea,.related,.upsells,.recommendations,.analogs'):
         node.decompose()
     for node in soup.select('form'):
@@ -141,6 +143,23 @@ def product_records(body,url,label,adapter,bucket):
     h1=soup.find('h1')
     name=store.clean(h1.get_text(' ',strip=True) if h1 else label)
     if not name: return []
+    if adapter=='elektro':
+        variants=[]
+        for node in soup.select('.active_price_st'):
+            text=store.clean(node.get_text(' ',strip=True))
+            amounts=parse_ruble_values(text)
+            pack=re.search(r'за\s+(\d+(?:[.,]\d+)?)\s+(м|кг|шт)\.?$',text,re.I)
+            if len(amounts)==1 and pack:
+                size=float(pack[1].replace(',','.'))
+                if size>0: variants.append((amounts[0],size,normalize_unit(pack[2]),text))
+        if len({v[:3] for v in variants})!=1:
+            raise ValueError('Не удалось связать цену ЭКС с явно указанным объёмом упаковки')
+        price,size,unit,text=variants[0]
+        reason=price_terms_reason({'evidence':text}) or outdated_price_notice(body)
+        package={'amount':size,'unit':unit,'evidence':text} if size!=1 else {}
+        return [{'name':name,'url':url,'unit':'упак' if package else unit,'bucket':bucket,'price':price,
+            'item_key':url,'price_kind':'conditional' if reason else 'published','reason':reason,
+            'evidence':name+' · '+text,'details':{'price_scope':'product','extractor':'elektro-visible-package','package':package}}]
     if adapter=='geo76':
         price_nodes=[n for n in soup.select('h3') if re.match(r'^Цена\s*:',n.get_text(' ',strip=True),re.I)]
         description=soup.select_one('.product-desc_short')
@@ -204,6 +223,8 @@ def product_records(body,url,label,adapter,bucket):
     if details['specification_evidence']:
         evidence += ' · '+details['specification_evidence']
     selling_unit=check.unit
+    if not selling_unit:
+        reason=reason or 'В карточке не указана единица цены'
     if adapter=='geo76':
         selling_unit=''
         reason='Не удалось связать цену с единицей продажи в карточке поставщика'
@@ -219,6 +240,9 @@ def extract(body,url,kind,label,config):
     if any(s in folded for s in ('servicepipe.tech','checking your browser','подтвердите, что вы не робот')):
         raise ValueError('Сайт ограничил доступ; импорт остановлен для этой страницы')
     if kind=='context': return []
+    if adapter=='esg':
+        from autobot.supplier_catalog_sites import esg_records
+        return esg_records(body,url)
     if adapter=='yamck':
         if urlparse(url).path=='/api/site/nerud':
             from autobot.supplier_catalog_sites import yamck_records
@@ -227,7 +251,7 @@ def extract(body,url,kind,label,config):
     if adapter=='tinko':
         from autobot.supplier_catalog_sites import tinko_records
         return tinko_records(body,url)
-    if kind=='product': return product_records(body,url,label,adapter,bucket)
+    if kind=='product' or adapter in {'product','elektro'}: return product_records(body,url,label,adapter,bucket)
     if adapter in {'table','svetelektro'}:
         records=table_records(body,url,bucket)
         if not records: raise ValueError('Не удалось разобрать строки прайса; прежние данные сохранены')

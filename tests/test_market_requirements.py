@@ -98,6 +98,17 @@ def test_different_required_sizes_have_different_reusable_price_identity():
 def test_electronic_models_cannot_match_another_device_in_same_catalogue():
     assert technical_conflict('Коммутатор TFortis SWU-16T','Коммутатор TFortis SWU-8T')
     assert not technical_conflict('Коммутатор TFortis SWU-16T','TFortis SWU-16T, 104100 руб/шт')
+
+
+def test_article_discovery_is_short_but_original_requirements_stay_binding():
+    name='Монтажная коробка Dahua DH-PFA136, размеры 110х34 мм'
+    plan=build_search_plan(name,'шт',region='Ярославская область')
+    assert plan.queries[0]=='"DH-PFA136" купить цена в рублях'
+    assert 'Ярославская область' in plan.queries[1]
+    assert any(s['value']=='110х34' for s in plan.requirements['specifications'])
+    assert technical_conflict(name,'Dahua DH-PFA136, размеры 100х30 мм')
+    lamp=build_search_plan('А777164 Светильник Spot-05-AF-54Вт, длинное описание AF0100003205','шт')
+    assert lamp.queries[0]=='"AF0100003205" купить цена в рублях'
     assert technical_conflict('Клеммник WAGO 222-413','Клеммник WAGO 222-412')
     assert technical_conflict('Труба EKF tpndg-50','Труба EKF tpndg-25')
     assert technical_conflict('Камера Dahua DH-IPC-HDBW3441FP-AS-0280B-S2','Dahua DH-IPC-HDBW3441FP-AS-0360B-S2')

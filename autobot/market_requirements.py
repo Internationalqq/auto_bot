@@ -58,6 +58,8 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         ('product_line', 'Продукт', r'\b(?:ротбанд|rotband|гольдбанд|goldband|фуген|fugen)\b'),
         ('hardware_model', 'Модель / артикул', r'(?<!\w)(?:[a-z]{2,}[a-z\d]*-[a-z\d./+-]*\d[a-z\d./+-]*|[a-z]{2,}\d{2,}[a-z\d]*)(?!\w)'),
         ('hardware_model', 'Модель / артикул', r'\b(?:wago\s+\d{3}-\d{3}|(?:ва|ис|щмп|щрн|огц|лсэ)\s*-?\s*\d{1,3}(?:-\d{1,3})*)\b'),
+        ('hardware_model', 'Модель / артикул', r'\b(?:шрн-э-\d{1,2}\.\d{3}(?:\.\d)?|кп-ав-\d{4}|бон-\d{2}-\d-\d{2}-[а-я]|рбд-\d+[аa])\b'),
+        ('hardware_model', 'Модель / артикул', r'\bduostation\s+\d{4}r\s+(?:af|anyip)\b'),
         ('hardware_model', 'Модель / артикул', r'\b[1-9]п[квнт][а-я]*(?:\([а-я]\))?-\d{1,2}-\d{1,3}/\d{1,3}(?:\([а-я]\))?'),
     ]
     if 'щеб' in folded:
@@ -68,6 +70,8 @@ def technical_specs(name: object) -> list[dict[str, str]]:
     if 'песок' in folded or 'песка' in folded:
         patterns.append(('sand_class', 'Класс песка', r'\b(?:[iI]{1,2}|[12])\s*класс\w*\b'))
         patterns.append(('sand_grain', 'Крупность песка', r'\b(?:мелк\w*|средн\w*|крупн(?!ост)\w*)\b'))
+    if 'газон' in folded or 'травосмес' in folded:
+        patterns.append(('grass_variety', 'Вид травосмеси', r'(?:газон|травосмесь)\s*[«"]([^»"]{2,60})[»"]'))
     if 'бетон' in folded:
         patterns.extend([
             ('concrete_grade', 'Марка бетона', r'\b[мm]\s*\d{2,3}\b'),
@@ -89,6 +93,9 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         for match in re.finditer(pattern, original, re.I):
             evidence = match.group(0)
             value = _canonical(evidence)
+            if kind == 'grass_variety':
+                value=_canonical(match.group(1))
+                if re.fullmatch(r'универсальн(?:ый|ая|ое|ые)',value):value='универсальная'
             if kind == 'cable_model':
                 value = value.replace('а', 'a')
             if kind == 'cable_voltage':
@@ -164,7 +171,7 @@ sizes are retained for discovery; their comparison needs category-specific units
     if incomplete:
         return incomplete
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:

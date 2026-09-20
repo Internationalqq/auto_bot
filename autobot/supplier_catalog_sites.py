@@ -6,6 +6,34 @@ from autobot.supplier_catalog_store import clean
 from autobot.market_strategy import normalize_unit
 
 
+def esg_records(body, url):
+    """Retail grass prices with the bag size from the same product column."""
+    from decimal import Decimal
+    soup=BeautifulSoup(body,'html.parser')
+    records=[]
+    for card in soup.select('.product_items > .wpb_column > .vc_column-inner'):
+        headings=card.select('h2')
+        if len(headings)!=1: continue
+        title=clean(headings[0].get_text(' ',strip=True))
+        text=clean(card.get_text(' ',strip=True))
+        prices=re.findall(r'Цена\s+розница:\s*(\d[\d\s]*[.,]\d{2})\s*руб\.?\s*/\s*кг\.?',text,re.I)
+        packs=re.findall(r'Мешки\s+по\s*(\d+(?:[.,]\d+)?)\s*кг',text,re.I)
+        if len(prices)!=1 or len(packs)!=1: continue
+        price=Decimal(prices[0].replace(' ','').replace(',','.'))
+        size=Decimal(packs[0].replace(',','.'))
+        if price<=0 or size<=0: continue
+        descriptions=[clean(p.get_text(' ',strip=True)) for p in card.select('p')]
+        description=next((v for v in descriptions if 'цена' not in v.casefold() and re.search(r'травосмесь|смесь семян|семена газон',v,re.I)),'')
+        evidence=f'{title} · Розничная цена: {price} руб/кг · Мешки по {size} кг'
+        if description: evidence+=' · '+description[:650]
+        records.append({'name':title,'url':url,'unit':'упак','price':float(price*size),'bucket':'materials',
+            'item_key':url+'|'+title.casefold(),'price_kind':'published','reason':'','evidence':evidence,
+            'details':{'price_scope':'product','extractor':'esg-retail-bag',
+                'package':{'amount':float(size),'unit':'кг','evidence':f'Розница {price} руб/кг. Мешки по {size} кг; стоимость мешка {price*size} руб'}}})
+    if not records: raise ValueError('Не найдены розничные цены с размером мешка в карточках производителя')
+    return records
+
+
 def yamck_records(body, page_url):
     data=json.loads(body)
     if data.get('success') is not True or not isinstance(data.get('data'),list):

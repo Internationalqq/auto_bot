@@ -81,7 +81,7 @@ def outdated_price_notice(page_html: str) -> str:
 
 def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
     """Read-only validation is repeated after reload as well as on capture."""
-    from autobot.market_strategy import normalize_unit, estimate_unit_multiplier
+    from autobot.market_strategy import price_unit_factor, estimate_unit_multiplier
     if not isinstance(terms, list) or not terms:
         return ''
     try:
@@ -93,8 +93,10 @@ def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
     for condition in terms:
         if not isinstance(condition, dict):
             return 'Не удалось прочитать условия объёма поставщика'
-        if normalize_unit(condition.get('unit')) != normalize_unit(unit):
+        factor = price_unit_factor(condition.get('unit'), unit)
+        if factor is None:
             return 'Условия объёма поставщика указаны в другой единице; требуется уточнение'
+        source_amount = amount * factor
         try:
             quote_from = float(condition['quote_from']) if condition.get('quote_from') is not None else None
             lot = float(condition['lot']) if condition.get('lot') is not None else None
@@ -103,10 +105,10 @@ def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
                 return 'Не удалось прочитать условия объёма поставщика'
         except (ValueError, TypeError):
             return 'Не удалось прочитать условия объёма поставщика'
-        if quote_from is not None and amount >= quote_from:
+        if quote_from is not None and source_amount >= quote_from:
             return 'На объём сметы поставщик просит расчёт: ' + str(condition.get('evidence') or '')
-        if minimum is not None and amount < minimum:
+        if minimum is not None and source_amount < minimum:
             return 'Объём сметы меньше минимального заказа: ' + str(condition.get('evidence') or '')
-        if lot is not None and abs(amount - lot) > 1e-6:
+        if lot is not None and abs(source_amount - lot) > 1e-6:
             return 'Опубликованная цена относится к другой партии: ' + str(condition.get('evidence') or '')
     return ''

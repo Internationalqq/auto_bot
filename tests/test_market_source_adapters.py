@@ -6,6 +6,72 @@ from autobot.market_source_adapters import inspect_source_page, detect_price_uni
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_product_card_keeps_own_price_and_explicit_unit_with_recommendations(self):
+        page = '''<div itemscope itemtype="https://schema.org/Product"><h1>Коробка Dahua DH-PFA136</h1>
+        <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+        <meta itemprop="price" content="740"><meta itemprop="priceCurrency" content="RUB">
+        <span>Цена за 1 шт.</span></div><div class="product-item"><h2>Коробка Dahua DH-PFA136</h2><p>100 руб/шт</p></div></div>
+        <div class="product-item">Коробка Dahua DH-PFA136 50 руб/шт</div>'''
+        args = dict(name='Коробка Dahua DH-PFA136', target_unit='шт', position_bucket='materials')
+        result = inspect_source_page(page, 'https://supplier.example/product/1', **args)
+        self.assertTrue(result.accepted, result.reason)
+        self.assertEqual(result.price, 740)
+        missing = page.replace('<meta itemprop="price" content="740">', '')
+        self.assertFalse(inspect_source_page(missing, 'https://supplier.example/product/1', **args).accepted)
+
+    def test_product_unit_does_not_borrow_shipping_time_weight_or_other_product(self):
+        page = '''<div itemscope itemtype="https://schema.org/Product"><h1>Коммутатор Dahua DH-CS4220-16GT-190</h1>
+        <div itemprop="offers" itemscope itemtype="https://schema.org/Offer"><meta itemprop="price" content="35690">
+        <meta itemprop="priceCurrency" content="RUB"><div itemprop="shippingDetails" itemscope itemtype="https://schema.org/QuantitativeValue">
+        <meta itemprop="unitCode" content="DAY"></div></div><div>Вес 3.53 кг</div>UNIT</div>'''
+        args = dict(name='Коммутатор Dahua DH-CS4220-16GT-190', target_unit='шт', position_bucket='materials')
+        result = inspect_source_page(page.replace('UNIT', '<div>Единица измерения <span>шт</span></div>'), 'https://supplier.example/product/2', **args)
+        self.assertTrue(result.accepted, result.reason)
+        self.assertEqual(result.unit, 'шт')
+        self.assertFalse(inspect_source_page(page.replace('UNIT',''), 'https://supplier.example/product/2', **args).accepted)
+
+    def test_nested_brand_name_does_not_replace_product_heading(self):
+        page='''<div itemscope itemtype="https://schema.org/Product"><h1>Dahua Монтажная коробка DH-PFA136</h1>
+        <div itemprop="brand" itemscope itemtype="https://schema.org/Brand"><span itemprop="name">Dahua</span></div>
+        <div itemprop="offers" itemscope itemtype="https://schema.org/Offer"><meta itemprop="price" content="740">
+        <meta itemprop="priceCurrency" content="RUB"><span>Цена за 1 шт.</span></div></div>'''
+        result=inspect_source_page(page,'https://supplier.example/box',name='Монтажная коробка Dahua DH-PFA136',target_unit='шт',position_bucket='materials')
+        self.assertTrue(result.accepted,result.reason)
+        self.assertIn('DH-PFA136',result.title)
+
+    def test_tinko_live_search_uses_retail_block_and_never_modal_price(self):
+        page='''<h1>КП-АВ-9005</h1><div class="product-detail__description">Панель с DIN-рейкой КП-АВ-9005</div>
+        <div class="product-detail__prices"><div class="product-detail__price-wrapper">
+        <span class="product-detail__price-value">2 091,00</span><i class="fa-rub">/шт</i>
+        <div class="product-detail__price-info">Розничная цена</div></div></div>
+        <p>Панель с DIN-рейкой КП-АВ-9005 50 руб/шт</p>'''
+        args=dict(name='Панель с DIN-рейкой КП-АВ-9005',target_unit='шт',position_bucket='materials')
+        url='https://www.tinko.ru/catalog/product/267752/'
+        result=inspect_source_page(page,url,**args)
+        self.assertTrue(result.accepted,result.reason)
+        self.assertEqual(result.price,2091)
+        self.assertFalse(inspect_source_page(page.replace('2 091,00','По запросу'),url,**args).accepted)
+
+    def test_explicit_delivery_variants_keep_negation_and_works_guard(self):
+        for text in ('Доставка в Регионы РФ ТК: 1–3 дня', 'Доставка в любой город России'):
+            page = '<div>' + text + '</div>'
+            self.assertTrue(source_region_evidence(page, 'Ярославская область', 'materials'))
+            self.assertFalse(source_region_evidence(page, 'Ярославская область', 'works'))
+            self.assertFalse(source_region_evidence('<div>Не доставляем, кроме Москвы. ' + text + '</div>', 'Ярославская область', 'materials'))
+
+    def test_mass_conversion_preserves_original_price_and_volume_limits(self):
+        page = '<h1>Стеклошарики 100-600 мкм</h1><table><tr><th>Товар</th><th>Цена</th></tr><tr><td>Стеклошарики 100-600 мкм</td><td>125 руб/кг</td></tr></table>'
+        result = inspect_source_page(page, 'https://supplier.example/glass', name='Стеклошарики 100-600 мкм', target_unit='т', position_bucket='materials', quantity=.1)
+        self.assertTrue(result.accepted, result.reason)
+        self.assertEqual(result.price, 125000)
+        self.assertEqual(result.unit, 'т')
+        self.assertIn('125 руб/кг', result.evidence)
+        from autobot.supplier_evidence import quantity_terms_reason
+        terms = [{'minimum': 1000, 'unit':'кг', 'evidence':'Минимум 1000 кг'}]
+        self.assertTrue(quantity_terms_reason(terms,.5,'т'))
+        self.assertFalse(quantity_terms_reason(terms,1,'т'))
+        self.assertTrue(quantity_terms_reason(terms,1,'м3'))
+
     def test_marketplace_price_does_not_borrow_another_sellers_delivery(self):
         page = '''<h1>Семена, рассада и газон</h1><article><h2>Семена газонной травы Универсальная</h2>
         <p>320 руб / кг</p><p>Продавец А, Екатеринбург</p></article>

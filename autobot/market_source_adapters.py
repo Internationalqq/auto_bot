@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from autobot.market_strategy import normalize_unit, units_compatible, normalize_grade_notation
+from autobot.market_strategy import normalize_unit, units_compatible, normalize_grade_notation, price_unit_factor
 
 
 _ANTIBOT_HARD_MARKERS = ("servicepipe.tech", "checking your browser", "cf-chl-", "id_spinner")
@@ -245,25 +245,25 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
     soup = BeautifulSoup(page_html, 'html.parser')
     for node in soup.select('title, h1, address, [itemprop="addressLocality"], [itemprop="addressRegion"], tr'):
         value = _clean(node.get_text(' ', strip=True))
-        if len(value) <= 900 and not re.search(r'\b(?:не достав|не работа|кроме|исключ)', _fold(value)) and region_matches_label(region, value):
+        if len(value) <= 900 and not re.search(r'\b(?:не\s+(?:достав|постав|работа)|кроме|исключ)', _fold(value)) and region_matches_label(region, value):
             return value[:500]
     for node in soup.select('p, li, meta[name="description"]'):
         value = _clean(node.get('content') or node.get_text(' ', strip=True))
         folded = _fold(value)
-        if len(value) > 900 or re.search(r'\b(?:не достав|не работа|кроме|исключ)', folded):
+        if len(value) > 900 or re.search(r'\b(?:не\s+(?:достав|постав|работа)|кроме|исключ)', folded):
             continue
         if region_matches_label(region, value) and re.search(r'достав|работаем|оказыва\w* услуг|выполня\w* работ', folded):
             return value[:500]
         if bucket == 'materials' and re.search(r'достав\w*\s+по\s+(?:всей\s+)?россии', folded):
             return value[:500]
-        if bucket == 'materials' and re.search(r'достав\w*(?:\s+(?:товара|оборудования|заказа|заказов))?\s+(?:во\s+все|в)\s+регионы\s+россии', folded):
+        if bucket == 'materials' and _national_delivery(folded):
             return value[:500]
     if bucket == 'materials':
         for node in soup.select('h2,h3,h4,h5,h6,div,span'):
             value = _clean(node.get_text(' ', strip=True))
-            if (len(value) <= 250 and not re.search(r'\b(?:не достав|кроме|исключ)', _fold(value))
-                    and re.search(r'достав\w*\s+(?:по\s+всей\s+(?:россии|рф)|во\s+все\s+регионы\s+россии)\b', value, re.I)):
-                return value
+            if (len(value) <= 900 and not re.search(r'\b(?:не\s+(?:достав|постав)|кроме|исключ)', _fold(value))
+                    and _national_delivery(_fold(value))):
+                return value[:500]
     # Membership is explicit, not a substring guess (Ярославский район in
     # Moscow is not Ярославль). This proves a local supplier, not delivery.
     # Municipality list: https://smo.yarregion.ru/index.php/munitsipalnye-obrazovaniya
@@ -277,6 +277,35 @@ def source_region_evidence(page_html: str, region: str, bucket: str) -> str:
                         and re.search(r'адрес|улиц|ул\.|просп|набережн|г\.', value, re.I)):
                     return f'Поставщик в регионе ({city}): {value}'[:500]
     return ''
+
+
+def _national_delivery(value: str) -> bool:
+    # Explicit geography, including common shop wording. A list of cities or
+    # a transport-company logo alone is not a delivery commitment.
+    return bool(re.search(
+        r'(?:достав\w*|поставляем)(?:\s+(?:товара|товаров|оборудования|заказа|заказов))?\s+'
+        r'(?:по\s+(?:всей\s+)?(?:россии|рф)|(?:во\s+все|в)\s+регионы\s+(?:россии|рф)|'
+        r'в\s+любой\s+город\s+(?:россии|рф))\b', value) or re.search(
+        r'достав\w*[^.!?;]{0,100}\bв\s+любой\s+город\s+(?:россии|рф)\b', value))
+
+
+def _product_unit(product) -> str:
+    """Read an explicit selling unit, never product weight or shipping time."""
+    if product is None:
+        return ''
+    units = set()
+    for tag in product.select('[itemprop="unitText"], [itemprop="unitCode"]'):
+        if tag.find_parent(attrs={'itemscope': True}) is product:
+            units.add(normalize_unit(tag.get('content') or tag.get_text(' ', strip=True)))
+    for tag in product.select('div,span,p,td,li'):
+        value = _clean(tag.get_text(' ', strip=True))
+        if len(value) > 100:
+            continue
+        match = re.fullmatch(r'(?:единица\s+измерения|ед\.?\s*изм\.?|цена\s+за\s+1)\s*[:—-]?\s*(шт\.?|кг|т|м[²³23]?|пог\.?\s*м|л|рулон)\.?', value, re.I)
+        if match:
+            units.add(normalize_unit(match.group(1)))
+    units.discard('')
+    return next(iter(units)) if len(units) == 1 else ''
 
 
 def _scope(text: object, page_text: object = "") -> str:
@@ -379,20 +408,28 @@ def _microdata_facts(soup: BeautifulSoup, name: str) -> list[_PriceFact]:
             currency = _clean(currency_tag.get("content") or currency_tag.get_text(" ", strip=True))
         if not _is_ruble_currency(currency):
             continue
-        name_tag = container.select_one("[itemprop='name']") if container else None
+        product = price_tag.find_parent(attrs={'itemtype': re.compile(r'(?:/|:)Product$', re.I)})
+        name_tag = next((tag for tag in container.select("[itemprop='name']")
+                         if tag.find_parent(attrs={'itemscope': True}) is container), None) if container else None
         if name_tag is None:
-            product = price_tag.find_parent(attrs={'itemtype': re.compile(r'(?:/|:)Product$', re.I)})
-            name_tag = product.select_one("[itemprop='name']") if product else None
+            name_tag = product.find('h1') if product else None
+        if name_tag is None and product:
+            name_tag = next((tag for tag in product.select("[itemprop='name']")
+                             if tag.find_parent(attrs={'itemscope': True}) is product), None)
         if name_tag is None:
             name_tag = soup.find('h1') or soup.title
         title = _clean(
             (name_tag.get("content") if name_tag and name_tag.get("content") else name_tag.get_text(" ", strip=True) if name_tag else "")
         )
-        unit_tag = container.select_one("[itemprop='unitText'], [itemprop='unitCode']") if container else None
+        # Descendants in shippingDetails/handlingTime use DAY. They describe
+        # delivery, not the denominator of this price.
+        unit_tag = next((tag for tag in container.select("[itemprop='unitText'], [itemprop='unitCode']")
+                         if tag.find_parent(attrs={'itemscope': True}) is container), None) if container else None
         unit_text = _clean(
             unit_tag.get("content") or unit_tag.get_text(" ", strip=True)
             if unit_tag is not None else ""
         )
+        unit_text = unit_text or _product_unit(product)
         evidence = _clean(f"{title} {price} руб. {unit_text}")
         key = (price, evidence)
         if key in seen:
@@ -592,7 +629,7 @@ def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, 
     from autobot.market_requirements import technical_conflict
 
     def rank(fact: _PriceFact) -> tuple[float, float, float, float]:
-        unit_score = 1.0 if target and fact.unit == target else 0.0
+        unit_score = 1.0 if fact.unit and (not target or price_unit_factor(fact.unit, target) is not None) else 0.0
         scope_score = 1.0 if position_bucket != "works" or fact.scope == "work_only" else 0.0
         extractor_score = {
             "json-ld": 1.0,
@@ -614,7 +651,7 @@ def _best_fact(facts: list[_PriceFact], target_unit: str, position_bucket: str, 
                  and technical_conflict(name, fact.title))
     ]
     if target:
-        same_unit = [fact for fact in suitable if units_compatible(fact.unit, target)]
+        same_unit = [fact for fact in suitable if price_unit_factor(fact.unit, target) is not None]
         if same_unit:
             suitable = same_unit
     from autobot.market_evidence_policy import price_terms_reason
@@ -648,18 +685,32 @@ def inspect_source_page(
         adapter = "avito" if "avito.ru" in host else "catalog"
         return PageInspection(False, "blocked", adapter, reason="Источник показал антибот-защиту")
     soup = BeautifulSoup(page_html, "lxml")
+    for icon in soup.select('i.fa-rub, i.fa-ruble-sign, i.fa-ruble'):
+        icon.replace_with(' руб. ' + icon.get_text(' ', strip=True))
     # Recommendations belong to other product URLs. Never borrow their price
     # when the current card has no quote (a common WooCommerce layout).
     for node in soup.select('.related, .upsells, .up-sells, .cross-sells, '
                             '.recommended-products, .recommendations, .recently-viewed, '
                             '[data-recommendations], .analogs'):
         node.decompose()
-    page_text = _clean(soup.get_text(" ", strip=True))[:180_000]
+    fact_soup = soup
     product_cards = soup.select('.catalog_item, .product-item, .products > .product, '
-                                '[itemtype$="/Product"]', limit=3)
+                                '[itemtype$="/Product"]')
     if position_bucket == 'materials' and len(product_cards) > 1:
-        return PageInspection(False, 'listing', 'material-catalog',
-                              reason='Несколько товаров на странице: нужна прямая карточка выбранного товара')
+        h1 = soup.find('h1')
+        main = h1.find_parent(attrs={'itemtype': re.compile(r'(?:/|:)Product$', re.I)}) if h1 else None
+        if main is None:
+            return PageInspection(False, 'listing', 'material-catalog',
+                                  reason='Несколько товаров на странице: нужна прямая карточка выбранного товара')
+        # A real product may contain suggested cards. Keep only the product
+        # owning the page heading, including when its own price is absent.
+        for card in product_cards:
+            if card is not main and main not in card.parents:
+                continue
+            if card is not main and h1 not in card.descendants:
+                card.decompose()
+        fact_soup = BeautifulSoup(str(main), 'lxml')
+    page_text = _clean(fact_soup.get_text(" ", strip=True))[:180_000]
     listing_path = (
         any(marker in path for marker in _LISTING_PATH_MARKERS)
         or path.rstrip("/").endswith("/catalog")
@@ -673,16 +724,52 @@ def inspect_source_page(
         return PageInspection(False, "listing", "material-catalog", reason="Найдена категория, а не карточка конкретного товара")
 
     adapter = "avito" if "avito.ru" in host else "work-price-list" if position_bucket == "works" else "material-product"
-    facts = _jsonld_facts(soup, name)
-    facts.extend(_microdata_facts(soup, name))
-    facts.extend(_meta_fact(soup, name, position_bucket))
-    facts.extend(_table_row_facts(soup, name, position_bucket))
-    facts.extend(_block_facts(soup, name, page_text, position_bucket))
-    facts.extend(_inline_price_facts(page_text, name, position_bucket))
+    specialised = position_bucket == 'materials' and (
+        host.removeprefix('www.') == 'gazony-esg.ru' and path == '/'
+        or host.removeprefix('www.') == 'tinko.ru' and path.startswith('/catalog/product/')
+        or host.removeprefix('www.') == 'elektro.ru' and path.startswith('/product/'))
+    if specialised:
+        # Use the same authoritative selling block for catalogue and live
+        # searches. Generic text may contain a wholesale price or a modal.
+        try:
+            if host.removeprefix('www.') == 'gazony-esg.ru':
+                from autobot.supplier_catalog_sites import esg_records
+                records = esg_records(page_html, url)
+            elif host.removeprefix('www.') == 'tinko.ru':
+                from autobot.supplier_catalog_sites import tinko_records
+                records = tinko_records(page_html, url)
+            else:
+                from autobot.supplier_catalog_extract import product_records
+                records = product_records(page_html, url, '', 'elektro', 'materials')
+            facts = []
+            for record in records:
+                if record.get('price') is None or record.get('price_kind') != 'published':
+                    continue
+                price, unit, evidence, terms = record['price'], record['unit'], record['evidence'], []
+                if record.get('details', {}).get('package') and target_unit:
+                    from autobot.supplier_catalog_match import purchase_price
+                    from decimal import Decimal
+                    purchase = purchase_price(dict(record, price_kopecks=int(Decimal(str(price))*100)), record['details'], target_unit, quantity)
+                    if purchase is None:
+                        continue
+                    price, unit, evidence, terms = purchase
+                facts.append(_PriceFact(record['name'], price, unit, 'product', evidence,
+                                        'supplier-retail', _overlap(name, evidence), tuple(terms)))
+            if not facts:
+                return PageInspection(False, 'no-match', adapter, reason='Поставщик не опубликовал подходящую розничную цену с единицей продажи')
+        except ValueError as error:
+            return PageInspection(False, 'no-match', adapter, reason=str(error))
+    else:
+        facts = _jsonld_facts(fact_soup, name)
+        facts.extend(_microdata_facts(fact_soup, name))
+        facts.extend(_meta_fact(fact_soup, name, position_bucket))
+        facts.extend(_table_row_facts(fact_soup, name, position_bucket))
+        facts.extend(_block_facts(fact_soup, name, page_text, position_bucket))
+        facts.extend(_inline_price_facts(page_text, name, position_bucket))
     # Once a matching table row exists, flattened text cannot discard its
     # volume restrictions or pick a different column.
     table_facts=[f for f in facts if f.extractor=='table-row' and f.overlap>=0.28
-                 and _specification_compatible(name,f.title) and units_compatible(f.unit,target_unit)]
+                 and _specification_compatible(name,f.title) and price_unit_factor(f.unit,target_unit) is not None]
     from autobot.supplier_evidence import quantity_terms_reason
     eligible=[f for f in table_facts if not quantity_terms_reason(list(f.quantity_terms),quantity,target_unit)]
     best = _best_fact(eligible or table_facts or facts, target_unit, position_bucket, name)
@@ -729,6 +816,12 @@ def inspect_source_page(
     if origin_reason:
         return PageInspection(False, 'unconfirmed-origin', adapter, best.price, best.unit, best.scope, best.title, best.evidence, origin_reason, best.extractor, len(facts))
     target = normalize_unit(target_unit)
+    factor = price_unit_factor(best.unit, target)
+    if factor is not None and factor != 1:
+        from decimal import Decimal
+        converted = float(Decimal(str(best.price)) * Decimal(str(factor)))
+        note = f'Пересчёт единицы: {best.price:g} руб/{best.unit} × {factor:g} = {converted:g} руб/{target}; 1 т = 1000 кг'
+        best = replace(best, price=converted, unit=target, evidence=best.evidence + ' · ' + note)
     if target and not units_compatible(best.unit, target):
         return PageInspection(False, "unit-mismatch", adapter, best.price, best.unit, best.scope, best.title, best.evidence, "Единица цены не совпала со сметой", best.extractor, len(facts))
     if position_bucket == "works" and best.scope != "work_only":

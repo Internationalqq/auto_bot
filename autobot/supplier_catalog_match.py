@@ -7,7 +7,7 @@ import time
 from decimal import Decimal,ROUND_CEILING,InvalidOperation
 
 from autobot import supplier_catalog_store as store
-from autobot.market_strategy import check_offer,normalize_unit,market_query_name,estimate_unit_multiplier
+from autobot.market_strategy import check_offer,normalize_unit,market_query_name,estimate_unit_multiplier,price_unit_factor
 from autobot.market_evidence_policy import freshness_reason,specification_reason,price_terms_reason,observed_timestamp,evidence_ttl_days
 from autobot.market_source_adapters import source_region_evidence
 from autobot.supplier_evidence import supplier_identity,quantity_terms_reason,delivery_terms,outdated_price_notice
@@ -49,9 +49,14 @@ def purchase_price(row,details,unit,quantity):
     """Return a price for this exact need, paying for whole proven packages."""
     evidence=row['evidence'];price=row['price_kopecks']/100
     terms=list(details.get('quantity_terms') or [])
-    if row['unit']==normalize_unit(unit): return price,row['unit'],evidence,terms
+    factor=price_unit_factor(row['unit'],unit)
+    if factor is not None:
+        if factor==1: return price,normalize_unit(unit),evidence,terms
+        converted=float(Decimal(str(price))*Decimal(str(factor)))
+        note=f'Пересчёт единицы: {price:g} руб/{row["unit"]} × {factor:g} = {converted:g} руб/{normalize_unit(unit)}; 1 т = 1000 кг'
+        return converted,normalize_unit(unit),evidence+' · '+note,terms
     package=details.get('package') or {}
-    if row['unit']!='рулон' or package.get('unit')!=normalize_unit(unit) or not package.get('evidence'): return None
+    if row['unit'] not in {'рулон','упак'} or package.get('unit')!=normalize_unit(unit) or not package.get('evidence'): return None
     try:
         size=Decimal(str(package['amount']))
         required=Decimal(str(quantity))*Decimal(str(estimate_unit_multiplier('',unit)))
@@ -60,7 +65,8 @@ def purchase_price(row,details,unit,quantity):
         cost=Decimal(row['price_kopecks'])*count/100
         effective=cost/required
     except (KeyError,TypeError,ValueError,InvalidOperation): return None
-    note=f'Расчёт закупки: {count} рулонов по {size} {package["unit"]}, всего {cost} руб; потребность {required} {package["unit"]}; {effective:.8f} руб / {package["unit"]} с учётом целых рулонов'
+    package_label='рулонов' if row['unit']=='рулон' else 'упаковок'
+    note=f'Расчёт закупки: {count} {package_label} по {size} {package["unit"]}, всего {cost} руб; потребность {required} {package["unit"]}; {effective:.8f} руб / {package["unit"]} с учётом целых {package_label}'
     terms.append({'lot':float(required),'unit':package['unit'],'evidence':note})
     return float(effective),package['unit'],evidence+' · '+note,terms
 
@@ -75,15 +81,18 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
     if not tokens: return []
     from autobot.market_requirements import technical_specs
     models={spec['value'] for spec in technical_specs(name) if spec['kind']=='hardware_model'}
+    tokens=list(dict.fromkeys([*sorted(models),*tokens]))
     score=' + '.join(f"CASE WHEN i.search_text LIKE ? THEN {8 if token.replace(' ','') in models else 1} ELSE 0 END" for token in tokens)
     with store.connect(path) as con:
         rows=con.execute('''SELECT i.*,s.name AS supplier_name,s.supplier_id,'''+score+''' AS relevance
             FROM supplier_catalog_items i JOIN supplier_catalog_sources s ON s.id=i.source_id
-            WHERE i.bucket=? AND (i.unit=? OR (i.unit='рулон' AND json_extract(i.details_json,'$.package.unit')=?))
+            WHERE i.bucket=? AND (i.unit IN (?,?) OR (i.unit IN ('рулон','упак') AND json_extract(i.details_json,'$.package.unit')=?))
             AND i.price_kind IN ('published','conditional') AND i.price_kopecks>0
             AND (? OR (i.price_kind='published' AND i.expires_at>?))
             ORDER BY relevance DESC,i.expires_at DESC LIMIT 60''',
-            [*['%'+word+'%' for word in tokens],identity.bucket,identity.unit,identity.unit,include_candidates,time.time()]).fetchall()
+            [*['%'+word+'%' for word in tokens],identity.bucket,identity.unit,
+             {'кг':'т','т':'кг','м':'пог.м','пог.м':'м'}.get(identity.unit,identity.unit),
+             identity.unit,include_candidates,time.time()]).fetchall()
     contexts={}; accepted=[]
     path=str(store.db_path(path).resolve())
     for row in rows:

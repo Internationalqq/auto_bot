@@ -345,6 +345,14 @@ def units_compatible(left: object, right: object) -> bool:
     return {left_norm, right_norm} == {"м", "пог.м"}
 
 
+def price_unit_factor(source: object, target: object) -> float | None:
+    """Source units in one target unit; never infer density or package size."""
+    if units_compatible(source, target):
+        return 1.0
+    return {('кг', 'т'): 1000.0, ('т', 'кг'): 0.001}.get(
+        (normalize_unit(source), normalize_unit(target)))
+
+
 def classify_position(name: object, unit: object = "", basis_code: object = "", section: object = "") -> PositionClass:
     title = _fold(name)
     text = f"{title} {_fold(unit)} {_fold(section)}"
@@ -574,6 +582,16 @@ def build_search_plan(
             f"{exact_title} цена прайс {price_marker}{place}".strip(),
             f"{title} купить поставщик цена {broad_unit}{place}".strip(),
         )
+        # Long estimate descriptions are poor discovery queries for devices.
+        # Try the printed article first, then retain full regional queries;
+        # validation still uses every requirement in the original passport.
+        articles=[spec['evidence'] for spec in passport['specifications']
+                  if spec['kind']=='hardware_model' and len(spec['value'])>=6
+                  and not re.fullmatch(r'ip\d{2}',spec['value'])]
+        factory=[value for value in articles if re.fullmatch(r'AF\d{8,}',value,re.I)]
+        if factory or len(articles)==1:
+            article=(factory or articles)[0].replace('"','').strip()
+            queries=(f'"{article}" купить цена в рублях',queries[0],queries[2])
         return MarketSearchPlan(
             position, queries, "Товар: точная модель/характеристики и цена за единицу",
             "Каталоги поставщиков; объявления — только как резерв", unit_norm,
