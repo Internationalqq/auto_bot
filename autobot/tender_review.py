@@ -10,6 +10,7 @@ from autobot import crm_actor, tender_corrections as corrections
 from autobot.document_preview_worker import PreviewRejected, run_reader
 from autobot.estimate_parse_worker import EstimateParseRejected, validate_snapshot
 from autobot.estimate_publication_recovery import consistent_report
+from autobot.market_contract import clean
 from autobot.upload_admission import AdmissionError
 from autobot.uploaded_review import position, source_page
 
@@ -58,13 +59,17 @@ def _tender(tid):
 
 def _original(value, row, out_paths, tid):
     raw = str(row.get('source_file') or '')
-    source = Path(raw)
-    roots = [(Path(out_paths[key])/tid).resolve() for key in ('downloads','extracted')]
-    expected = {Path(item['path']).resolve() for item in value['manifest']['parse_sources']}
-    if (not source.is_absolute() or source.is_symlink() or not source.is_file() or source.stat().st_size > 128*1024*1024
-            or source.resolve() not in expected or not any(source.resolve().is_relative_to(root) for root in roots)):
+    # Display rows normalize whitespace; archive paths may contain NBSP or
+    # repeated spaces. Resolve only a unique, hash-checked manifest entry.
+    matches = [item for item in value['manifest']['parse_sources'] if clean(item['path']) == clean(raw)]
+    if len(matches) != 1:
         return None
-    validate_snapshot([item for item in value['manifest']['parse_sources'] if Path(item['path']).resolve()==source.resolve()])
+    source = Path(matches[0]['path'])
+    roots = [(Path(out_paths[key])/tid).resolve() for key in ('downloads','extracted')]
+    if (not source.is_absolute() or source.is_symlink() or not source.is_file() or source.stat().st_size > 128*1024*1024
+            or not any(source.resolve().is_relative_to(root) for root in roots)):
+        return None
+    validate_snapshot(matches)
     return source
 
 

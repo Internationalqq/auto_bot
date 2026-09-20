@@ -125,9 +125,10 @@ def test_old_accepted_market_delivery_cannot_overwrite_correction(context,browse
     assert not market.output_path_for_tender(TID).exists()
 
 
-def test_extracted_source_and_pdf_navigation_keep_position(context,browser,monkeypatch):
+@pytest.mark.parametrize('folder', ['archive', 'ПСД\u00a0архив  смет'])
+def test_extracted_source_and_pdf_navigation_keep_position(context,browser,monkeypatch,folder):
     paths, source, tender = context
-    extracted = paths['extracted']/TID/'archive'/'ЛСР.xlsx'
+    extracted = paths['extracted']/TID/folder/'ЛСР.xlsx'
     extracted.parent.mkdir(parents=True);extracted.write_bytes(source.read_bytes())
     publication.parse_and_publish(tender,[extracted],[],[source],paths)
     body = data(context)
@@ -136,6 +137,8 @@ def test_extracted_source_and_pdf_navigation_keep_position(context,browser,monke
     response = browser.get(soup.select_one('.review-source a')['href'])
     assert response.data==extracted.read_bytes();response.close()
     save(context)
+    again = browser.get(soup.select_one('.review-source a')['href'])
+    assert again.status_code==200 and again.data==extracted.read_bytes();again.close()
     # Render the shared PDF navigation without an OCR dependency; the real PDF child is checked separately.
     from flask import render_template
     with web.app.test_request_context('/'):
@@ -146,3 +149,16 @@ def test_extracted_source_and_pdf_navigation_keep_position(context,browser,monke
     assert soup.select_one('input[name="position_id"]')['value']=='pdf:2:3'
     for link in soup.select('.review-pdf-nav a'):
         assert parse_qs(urlparse(link['href']).query)['position_id']==['pdf:2:3']
+
+
+def test_source_whitespace_lookup_rejects_ambiguous_manifest_paths(tmp_path):
+    import hashlib
+    paths = {'downloads': tmp_path/'downloads', 'extracted': tmp_path/'extracted'}
+    files = [paths['extracted']/TID/folder/'ЛСР.xlsx' for folder in ('ПСД архив', 'ПСД\u00a0архив')]
+    for path in files:
+        path.parent.mkdir(parents=True);path.write_bytes(b'original')
+    records = [{'path':str(path),'size':8,'sha256':hashlib.sha256(b'original').hexdigest()} for path in files]
+    row = {'source_file':str(files[0])}
+    assert review._original({'manifest':{'parse_sources':records}},row,paths,TID) is None
+    assert review._original({'manifest':{'parse_sources':records[1:]}},row,paths,TID)==files[1]
+    assert review._original({'manifest':{'parse_sources':records[1:]}},{'source_file':str(tmp_path/'outside')},paths,TID) is None
