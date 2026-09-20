@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from autobot.market_strategy import classify_position, market_query_name, normalize_unit, units_compatible
 from autobot.paths import REPO_ROOT
-from autobot.market_evidence_policy import evidence_ttl_days, observed_timestamp, region_key, specification_reason, freshness_reason, price_terms_reason
+from autobot.market_evidence_policy import evidence_ttl_days, observed_timestamp, region_key, specification_reason, freshness_reason, price_terms_reason, price_origin_reason
 from autobot.market_source_adapters import region_matches_label
 
 
@@ -351,7 +351,7 @@ def record_verified_offers(
             if not url or not math.isfinite(price) or price < 0:
                 continue
             if not candidate and (price <= 0 or not _clean(offer.get('matched_unit')) or
-                                  not units_compatible(normalize_unit(unit), normalize_unit(offer.get('matched_unit'))) or price_terms_reason(offer)):
+                                  not units_compatible(normalize_unit(unit), normalize_unit(offer.get('matched_unit'))) or price_terms_reason(offer) or price_origin_reason(offer)):
                 continue
             observed = _iso_timestamp(offer.get("observed_at"))
             if observed is None or observed > now + 900:
@@ -395,6 +395,7 @@ def record_verified_offers(
                     "location": _clean(offer.get('location')),
                     "published_at": _clean(offer.get('published_at')),
                     "price_scope": _clean(offer.get('price_scope')),
+                    "extractor": _clean(offer.get('extractor')),
                     "seller_id": _clean(offer.get('seller_id')),
                     "region_evidence": geo_evidence,
                     "supplier_evidence": _clean(offer.get('supplier_evidence')),
@@ -506,10 +507,12 @@ def lookup_verified_offers(
             continue
         if identity.search_region and not _clean(evidence.get('region_evidence')):
             continue
+        if price_origin_reason(dict(evidence, index_hit=True)):
+            continue
         if not _clean(evidence.get('matched_unit')) or not units_compatible(normalize_unit(unit), normalize_unit(evidence.get('matched_unit'))) or price_terms_reason(evidence) or specification_reason(name, evidence.get('evidence') or evidence.get('title')):
             continue
         payload = dict(row)
-        for field in ('search_region', 'matched_unit', 'evidence', 'location', 'published_at', 'price_scope', 'seller_id', 'region_evidence', 'supplier_evidence', 'region_source_url', 'delivery_terms'):
+        for field in ('search_region', 'matched_unit', 'evidence', 'location', 'published_at', 'price_scope', 'extractor', 'seller_id', 'region_evidence', 'supplier_evidence', 'region_source_url', 'delivery_terms'):
             payload[field] = _clean(evidence.get(field))
         payload['quantity_terms'] = evidence.get('quantity_terms') or []
         payload["match_score"] = round(similarity, 4)

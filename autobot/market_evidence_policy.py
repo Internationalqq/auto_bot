@@ -157,6 +157,8 @@ def specification_reason(name: object, evidence: object) -> str:
 
 
 def price_origin_reason(offer: dict) -> str:
+    if offer.get('index_hit') and not text(offer.get('extractor')) and not text(offer.get('catalog_item_id')):
+        return 'В старом индексе не сохранено место извлечения цены; нужна повторная проверка страницы'
     if text(offer.get('extractor')) == 'metadata':
         return 'Цена найдена только в заголовке страницы; нужна цена в карточке товара'
     if re.search(r'похожие\s+товары|рекомендуемые\s+товары|с\s+этим\s+товаром\s+покупают', text(offer.get('evidence')), re.I):

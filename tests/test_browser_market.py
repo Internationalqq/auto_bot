@@ -6,6 +6,24 @@ from autobot import real_market_scraper as market
 from autobot.browser_search_results import google_result_links
 
 
+def test_browser_launch_retry_reuses_driver_and_always_stops_it(monkeypatch):
+    from types import SimpleNamespace
+    import playwright.sync_api
+    calls=[]
+    def launch(**kwargs):
+        calls.append('launch')
+        raise RuntimeError('Chromium unavailable')
+    driver=SimpleNamespace(chromium=SimpleNamespace(launch=launch),stop=lambda:calls.append('stop'))
+    def start():
+        calls.append('start')
+        return driver
+    monkeypatch.setattr(playwright.sync_api,'sync_playwright',lambda:SimpleNamespace(start=start))
+    with market.WebBrowserFetcher() as browser:
+        for _ in range(2):
+            with pytest.raises(RuntimeError,match='Chromium unavailable'):browser._ensure_page()
+    assert calls==['start','launch','launch','stop']
+
+
 GOOGLE = '''<html><body><main>
 <div><a href="https://supplier.example/m300/"><h3>Бетон М300 в Ярославле</h3></a>
 <span>Бетон М300 — 6 700 руб/м3, доставка отдельно.</span></div>

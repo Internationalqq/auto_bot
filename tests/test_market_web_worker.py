@@ -17,7 +17,7 @@ def quote(*, price=2500, ago=0, verification='verified', url='https://supplier.e
     return market.MarketOffer(
         'Интернет', 'Щебень гранитный 20-40', price, url, verification=verification,
         matched_unit='м3', search_region='Ярославль', region_evidence='Доставка по Ярославлю',
-        evidence=f'Щебень гранитный 20-40 — {price} руб/м3', page_checked=True,
+        evidence=f'Щебень гранитный 20-40 — {price} руб/м3', page_checked=True, extractor='price-block',
         observed_at=(datetime.now(timezone.utc) - timedelta(seconds=ago)).isoformat(),
     )
 

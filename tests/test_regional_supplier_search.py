@@ -135,7 +135,7 @@ def test_local_index_keeps_volume_terms_and_rechecks_other_tender(monkeypatch,tm
     inspection=inspect()
     offer={'verification':'verified','price':5900,'url':'https://supplier.example/m200',
         'matched_unit':'м3','observed_at':market.datetime.now(market.timezone.utc).isoformat(),
-        'evidence':inspection.evidence,'quantity_terms':list(inspection.quantity_terms),
+        'evidence':inspection.evidence,'quantity_terms':list(inspection.quantity_terms),'extractor':inspection.extractor,
         'supplier_evidence':'РБУ Рыбинск · телефон +79301142303',
         'delivery_terms':'Цена без доставки','region_source_url':'https://supplier.example/contacts'}
     assert index.record_verified_offers(tender_id='copy',name='Бетон М200 В15',unit='м3',offers=[offer])==1

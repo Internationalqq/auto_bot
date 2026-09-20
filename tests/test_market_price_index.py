@@ -31,6 +31,7 @@ class MarketPriceIndexTests(unittest.TestCase):
                 {
                     "verification": "verified",
                     "source": "Поставщик",
+                    "extractor": "price-block",
                     "title": "Щебень строительный 20-40 — 2 800 руб/м3",
                     "price": 2800,
                     "url": "https://supplier.example/catalog/crushed-stone-20-40",
@@ -84,7 +85,7 @@ class MarketPriceIndexTests(unittest.TestCase):
     def test_regional_cache_keeps_distinct_quotes_and_source_conditions(self) -> None:
         for region, price in [('Ярославль', 900), ('Миасс', 1200)]:
             stored = index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3', region=region,
-                offers=[{'verification': 'verified', 'source': 'Поставщик', 'title': 'Песок строительный',
+                offers=[{'verification': 'verified', 'source': 'Поставщик', 'title': 'Песок строительный', 'extractor':'price-block',
                          'price': price, 'url': 'https://supplier.example/sand', 'matched_unit': 'м3',
                          'observed_at': datetime.now(timezone.utc).isoformat(), 'location': region, 'search_region': region,
                          'evidence': f'Песок строительный — {price} руб/м3', 'price_scope': 'без доставки'}])
@@ -105,7 +106,7 @@ class MarketPriceIndexTests(unittest.TestCase):
 
     def test_replayed_old_observation_cannot_replace_newer_index_price(self) -> None:
         now = time.time()
-        offer = {'verification':'verified', 'price':1000, 'url':'https://supplier.example/sand',
+        offer = {'verification':'verified', 'price':1000, 'url':'https://supplier.example/sand', 'extractor':'price-block',
                  'matched_unit':'м3', 'observed_at':now, 'evidence':'Песок строительный 1000 руб/м3'}
         self.assertEqual(index.record_verified_offers(tender_id='123', name='Песок строительный', unit='м3', offers=[offer]), 1)
         old = dict(offer, price=900, observed_at=now-600, evidence='Песок строительный 900 руб/м3')
@@ -115,6 +116,20 @@ class MarketPriceIndexTests(unittest.TestCase):
     def test_weighted_median_prefers_trusted_cluster(self) -> None:
         value = index.weighted_median([(800, 0.9), (820, 0.8), (250, 0.1)])
         self.assertEqual(value, 800)
+
+    def test_origin_survives_index_reuse_and_legacy_origin_requires_recheck(self) -> None:
+        import json
+        offer={'verification':'verified','price':1000,'url':'https://supplier.example/sand','matched_unit':'м3',
+               'observed_at':time.time(),'evidence':'Песок строительный 1000 руб/м3','extractor':'price-block'}
+        args=dict(tender_id='123',name='Песок строительный',unit='м3')
+        self.assertEqual(index.record_verified_offers(**args,offers=[dict(offer,extractor='metadata')]),0)
+        self.assertEqual(index.record_verified_offers(**args,offers=[offer]),1)
+        saved=index.lookup_verified_offers(name=args['name'],unit=args['unit'])[0]
+        self.assertEqual(saved['extractor'],'price-block')
+        audit=index.REPO_ROOT/saved['audit_record_path']
+        legacy=json.loads(audit.read_text(encoding='utf-8'));legacy.pop('extractor')
+        audit.write_text(json.dumps(legacy,ensure_ascii=False),encoding='utf-8')
+        self.assertEqual(index.lookup_verified_offers(name=args['name'],unit=args['unit']),[])
 
     def test_parser_degradation_is_detected_against_previous_run(self) -> None:
         index.record_parser_run(

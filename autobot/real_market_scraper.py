@@ -693,7 +693,10 @@ class AvitoBrowserFetcher:
             return self._page
         from playwright.sync_api import sync_playwright
 
-        self._playwright = sync_playwright().start()
+        # A failed Chromium launch leaves a running Playwright driver. Reuse
+        # it on retry; starting another sync driver in that loop is invalid.
+        if self._playwright is None:
+            self._playwright = sync_playwright().start()
         launch_kwargs = {"headless": self.headless}
         if self.proxy:
             launch_kwargs["proxy"] = {"server": self.proxy}
@@ -3443,6 +3446,7 @@ def _offers_from_local_index(src_row: pd.Series, *, max_results: int, region: st
             position_type=str(item.get("position_type") or ""),
             page_checked=True,
             evidence=str(item.get('evidence') or ''),
+            extractor=str(item.get('extractor') or ''),
             location=str(item.get('location') or ''),
             published_at=str(item.get('published_at') or ''),
             price_scope=str(item.get('price_scope') or ''),
