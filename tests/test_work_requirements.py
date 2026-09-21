@@ -30,6 +30,16 @@ def test_product_or_other_operation_is_not_the_requested_work(name, source):
     assert work_match_reason(name, source)
 
 
+@pytest.mark.parametrize('source', ['Монтажная распаечная коробка 500 руб/шт',
+                                   'Демонтаж распаечной коробки 500 руб/шт'])
+def test_installation_adjective_or_dismantling_is_not_installation(source):
+    assert work_match_reason('Монтаж распаечной коробки', source)
+
+
+def test_inflected_operation_name_in_price_heading_is_supported():
+    assert not work_match_reason('Монтаж распаечной коробки', 'Стоимость монтажа распаечной коробки 500 руб/шт')
+
+
 def test_service_alias_matches_without_losing_manual_method():
     name='Посев газонов обыкновенных вручную'
     assert work_match_reason(name, 'Посев газона вручную 100 руб/м2') == ''

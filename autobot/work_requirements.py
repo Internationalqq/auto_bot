@@ -68,7 +68,10 @@ _INSTALLATION_NAMES = (
 def operation(name):
     value = _text(name)
     for family, title, pattern in _OPERATIONS:
-        if re.search(pattern, value):
+        # "Монтажная коробка" is a product, not the operation "монтаж коробки".
+        # A word boundary also keeps dismantling out of installation aliases.
+        action_pattern = pattern.replace('монтаж', r'\bмонтаж(?:а|у|ом|е)?\b')
+        if re.search(action_pattern, value):
             return family, title
     return '', ''
 
