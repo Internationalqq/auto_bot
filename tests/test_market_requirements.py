@@ -114,6 +114,23 @@ def test_article_discovery_is_short_but_original_requirements_stay_binding():
     assert technical_conflict('Камера Dahua DH-IPC-HDBW3441FP-AS-0280B-S2','Dahua DH-IPC-HDBW3441FP-AS-0360B-S2')
 
 
+@pytest.mark.parametrize('name,unit,discovery', [
+    ('Перевозка грузов I класса автомобилями-самосвалами грузоподъемностью до 15 т по дорогам с усовершенствованным покрытием на расстояние 10 км', '1т груза', 'перевозка грузов самосвалом 10 км'),
+    ('Засыпка траншей и котлованов с перемещением грунта до 5 м бульдозерами мощностью 59 кВт - песком', '1000 м3', 'обратная засыпка траншей песком бульдозером'),
+    ('Измерение сопротивления изоляции мегаомметром кабельных и других линий напряжением до 1 кВ', 'шт', 'измерение сопротивления изоляции кабеля до 1 кВ'),
+    ('Шкаф (пульт) управления навесной, высота, ширина и глубина: до 600х600х350 мм', 'шт', 'монтаж навесного электрического шкафа'),
+])
+def test_long_work_uses_commercial_discovery_but_keeps_full_passport(name, unit, discovery):
+    plan = build_search_plan(name, unit, basis_code='ГЭСНм08', region='Ярославская область')
+    assert plan.queries[0] == discovery + ' Ярославская область прайс цена за ' + plan.normalized_unit
+    assert plan.requirements['original_name'] == name
+    assert market_query_name(name, plan.position.slug) in plan.queries[1]
+    assert len(plan.queries) == 3
+    if '600х600х350' in name:
+        assert any(s['value'] == '600х600х350' for s in plan.requirements['specifications'])
+        assert technical_conflict(name, 'Шкаф 400х400х200 мм')
+
+
 def test_exact_model_does_not_require_generic_product_words():
     result = check_offer(name='IP-камера Dahua DH-IPC-HDBW3441FP-AS-0280B-S2', unit='шт',
                          title='Dahua DH-IPC-HDBW3441FP-AS-0280B-S2', snippet='22021,80 руб/шт',
@@ -150,6 +167,21 @@ def test_explicit_concrete_durability_is_part_of_the_requested_variant():
     assert technical_conflict('Щебень М1200 20-40 мм','Щебень 20-40 мм')
     assert technical_conflict('Песок I класс мелкий','Песок карьерный')
     assert not technical_conflict('Песок I класс мелкий','Песок мелкозернистый 1 класса')
+
+
+def test_glass_bead_fraction_cannot_come_from_the_requested_name():
+    wanted='Стеклошарики для дорожной разметки фракция 100-600 мкм'
+    assert technical_conflict(wanted,'Стеклошарики для дорожной разметки 72 руб/кг')
+    assert technical_conflict(wanted,'Стеклошарики 150-710 мкм 92 руб/кг')
+    assert not technical_conflict(wanted,'Стеклошарики фракция 100–600 мкм 120 руб/кг')
+
+
+def test_white_acrylic_paint_does_not_match_a_cheaper_different_colour_or_base():
+    wanted='Краска для дорожной разметки на акриловом сополимере, цвет белый'
+    assert technical_conflict(wanted,'Краска дорожная акриловая черная')
+    assert technical_conflict(wanted,'Краска дорожная белая алкидная')
+    assert technical_conflict(wanted,'Краска дорожная белая')
+    assert not technical_conflict(wanted,'Краска дорожная белая на основе акриловых полимеров')
 
 
 def test_stored_wrong_variant_is_rechecked_when_report_is_opened():

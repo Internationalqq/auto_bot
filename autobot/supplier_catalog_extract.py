@@ -240,6 +240,12 @@ def extract(body,url,kind,label,config):
     if any(s in folded for s in ('servicepipe.tech','checking your browser','подтвердите, что вы не робот')):
         raise ValueError('Сайт ограничил доступ; импорт остановлен для этой страницы')
     if kind=='context': return []
+    if adapter=='ak511':
+        from autobot.supplier_catalog_sites import ak511_records
+        return ak511_records(body,url)
+    if adapter=='anbik':
+        from autobot.supplier_catalog_sites import anbik_records
+        return anbik_records(body,url)
     if adapter=='esg':
         from autobot.supplier_catalog_sites import esg_records
         return esg_records(body,url)

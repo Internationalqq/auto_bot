@@ -79,6 +79,11 @@ def price_terms_reason(offer: dict) -> str:
     # Supplier notes can qualify an otherwise exact-looking table amount.
     # Older captures sometimes stored the note with delivery terms.
     conditions = evidence + ' ' + text(offer.get('delivery_terms')).casefold()
+    if re.search(r'\bцена\s+(?:крупный\s+)?опт\b|\bоптовая\s+цена\b',evidence):
+        tiers=offer.get('quantity_terms') or []
+        if not any(isinstance(t,dict) and t.get('minimum') is not None and
+                   'опт' in text(t.get('evidence')).casefold() for t in tiers):
+            return 'Оптовая цена: источник не подтвердил условия партии для этой расценки'
     if (text(offer.get('matched_unit')).replace('²','2') == 'м2'
             and re.search(r'рул', evidence)
             and not re.search(r'(?:руб\.?|₽|р\.)\s*(?:/|за)\s*м[2²]|'

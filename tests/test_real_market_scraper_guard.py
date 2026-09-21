@@ -6,6 +6,12 @@ from pathlib import Path
 
 import autobot.real_market_scraper as market
 import pandas as pd
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_report_publication(tmp_path,monkeypatch):
+    monkeypatch.setattr(market,'REPORTS_DIR',tmp_path)
 
 
 def _offer(url: str = "https://supplier.example/item") -> market.MarketOffer:
@@ -506,6 +512,36 @@ def test_source_page_cache_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert cached[0] == "<html>Цена 1200 руб.</html>"
     assert cached[1] == ""
     assert cached[2] == "playwright"
+
+
+def test_concurrent_source_cache_writers_publish_complete_independent_files(tmp_path,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    monkeypatch.setattr(market,'_SOURCE_PAGE_CACHE_DIR',tmp_path)
+    barrier=threading.Barrier(2);replace=Path.replace;temporary=[]
+    def synchronized_replace(self,destination):
+        if self not in temporary:
+            temporary.append(self)
+            barrier.wait(timeout=5)
+        return replace(self,destination)
+    monkeypatch.setattr(Path,'replace',synchronized_replace)
+    url='https://supplier.example/same-product'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures=[pool.submit(market._save_source_page_cache,url,page_html=value) for value in ('first','second')]
+        for future in futures:future.result(timeout=10)
+    assert len(set(temporary))==2
+    assert market._load_source_page_cache(url)[0] in {'first','second'}
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_failed_cache_publication_keeps_previous_file_and_cleans_temporary(tmp_path,monkeypatch):
+    import pytest
+    target=tmp_path/'cache.json';target.write_text('{"old":true}')
+    def fail(*args):raise PermissionError('blocked replacement')
+    monkeypatch.setattr(Path,'replace',fail)
+    with pytest.raises(PermissionError):market._write_json(target,{'new':True})
+    assert target.read_text()=='{"old":true}'
+    assert not list(tmp_path.glob('*.tmp'))
 
 
 def test_source_page_uses_limited_browser_after_http_error(tmp_path: Path, monkeypatch) -> None:

@@ -24,6 +24,18 @@ def test_resources_are_searchable_but_budget_is_counted_once():
     assert frame.iloc[0][COL_SUM]==90000
 
 
+def test_scope_distinguishes_normative_auxiliaries_without_approving_the_parent():
+    from autobot.estimate_scope import resource_scope
+    row=primary();row['has_resources']=True
+    assert resource_scope(row)['kind']=='resources'
+    row[RESOURCES]=json.dumps([{'name':'Вспомогательные ненормируемые материальные ресурсы','unit':'%','qty':2}])
+    assert resource_scope(row)['kind']=='auxiliary_only'
+    frame=pd.DataFrame([row]);frame['parent_position_id']=''
+    assert resource_scope(dict(row,has_resources=False))['kind']=='none'
+    assert resource_scope(dict(row,**{RESOURCES:'broken'}))['kind']=='unknown'
+    assert frame.iloc[0][COL_SUM]==90000
+
+
 def test_incomplete_resource_amount_never_creates_partial_budget():
     row=primary();resources=json.loads(row[RESOURCES]);resources[0]['total']=None
     row[RESOURCES]=json.dumps(resources)

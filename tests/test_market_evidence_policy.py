@@ -57,6 +57,17 @@ def test_lower_bounds_and_price_ranges_are_not_exact_quotes(evidence):
     assert price_terms_reason({'evidence': evidence})
 
 
+def test_unqualified_wholesale_rate_cannot_be_used_for_a_small_order():
+    offer={'evidence':'Стеклошарики 100-600 мкм. Цена крупный опт: 72 руб / кг', 'quantity_terms':[]}
+    assert 'партии' in price_terms_reason(offer)
+    offer['quantity_terms']=[{'lot':25,'unit':'кг','evidence':'Мешок 25 кг'}]
+    assert price_terms_reason(offer)
+    offer['quantity_terms']=[{'minimum':1000,'unit':'кг','evidence':'Крупный опт 72 руб/кг от 1000 кг'}]
+    assert not price_terms_reason(offer)
+    from autobot.supplier_evidence import quantity_terms_reason
+    assert quantity_terms_reason(offer['quantity_terms'],25,'кг')
+
+
 @pytest.mark.parametrize('evidence', [
     'Бетон М300 — 6000 руб/м3',
     'Щебень фракция 20-40 — 2650 руб/м3',

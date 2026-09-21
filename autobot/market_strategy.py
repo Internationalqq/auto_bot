@@ -533,6 +533,53 @@ def market_query_name(name: object, position_type: str = "") -> str:
     return preserve_query_specs(name, _query_name(name, position_type=position_type))
 
 
+def _work_discovery_title(name: object) -> str:
+    """Short commercial wording for discovery only, never a verification name.
+
+    Equipment capacity and GESN phrasing often hide the operation from search
+    engines. Keep these requirements in the passport and in the other queries.
+    Unknown operations keep the existing exact search.
+    """
+    value = _text(name).casefold().replace('ё', 'е')
+    if 'перевоз' in value and 'самосвал' in value:
+        distance = re.search(r'на расстояние\s+(\d+(?:[.,]\d+)?)\s*км', value)
+        return 'перевозка грузов самосвалом' + (f' {distance[1]} км' if distance else '')
+    if 'засыпк' in value and ('транше' in value or 'котлован' in value):
+        fill = 'песком' if 'песком' in value else 'щебнем' if 'щебнем' in value else 'грунтом'
+        return f'обратная засыпка траншей {fill}' + (' бульдозером' if 'бульдозер' in value else '')
+    if 'разработ' in value and 'транше' in value and 'экскават' in value:
+        return 'копка траншей экскаватором' + (' с погрузкой' if 'погрузк' in value else '')
+    if 'планировк' in value and 'площад' in value:
+        method = 'вручную' if 'ручным' in value else 'механизированная'
+        return f'планировка участка {method}'
+    if 'сопротивлен' in value and 'изоляц' in value and 'измерен' in value:
+        return 'измерение сопротивления изоляции кабеля до 1 кВ' if 'до 1 кв' in value else 'измерение сопротивления изоляции кабеля'
+    if 'сопротивлен' in value and 'грунта' in value:
+        return 'измерение удельного сопротивления грунта'
+    if 'металлосвяз' in value:
+        return 'проверка металлосвязи'
+    if 'прокладк' in value and ('волоконно' in value or 'оптическ' in value):
+        return 'прокладка оптоволоконного кабеля' + (' в канализации' if 'канализац' in value else '')
+    if 'измерен' in value and ('волоконно' in value or 'оптическ' in value):
+        return 'измерение оптического кабеля' + (' на двух длинах волн' if 'двух длинах' in value else '')
+    if 'настройк' in value and 'коммутатор' in value:
+        return 'настройка сетевого коммутатора'
+    if 'шкаф' in value and ('навесной' in value or 'пульт' in value):
+        return 'монтаж навесного электрического шкафа' if 'навесной' in value else 'монтаж электрического шкафа'
+    if 'пульт управления напольный' in value:
+        return 'монтаж напольного электрического шкафа'
+    if 'аппаратура телевизионная' in value and 'видеокамер' in value:
+        return 'монтаж камеры видеонаблюдения'
+    if 'разъемов штепсельных' in value and 'коннектор' in value:
+        return 'монтаж коннектора кабеля'
+    if 'съемные и выдвижные блоки' in value:
+        if 'жесткий диск' in value:
+            return 'установка жесткого диска в видеорегистратор'
+        if 'квм' in value:
+            return 'установка KVM консоли'
+    return ''
+
+
 def search_unit_marker(unit: object) -> str:
     """Human search marker shared by all web discovery queries."""
 
@@ -605,6 +652,9 @@ def build_search_plan(
             f"{exact_title} стоимость работ прайс {price_marker}{place}".strip(),
             f"{title} подрядчик стоимость работы {broad_unit}{place}".strip(),
         )
+        discovery = _work_discovery_title(name)
+        if discovery and len(_text(name).split()) >= 7:
+            queries = (f'{discovery}{place} прайс цена {broad_unit}', queries[0], queries[1])
         return MarketSearchPlan(
             position, queries, "Работа: цена выполнения без стоимости материалов",
             "Прайсы подрядчиков и объявления услуг", unit_norm,

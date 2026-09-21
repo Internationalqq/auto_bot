@@ -6,6 +6,63 @@ from autobot.supplier_catalog_store import clean
 from autobot.market_strategy import normalize_unit
 
 
+def ak511_records(body, url):
+    """Keep each colour's retail price with its own paint-section packaging."""
+    from decimal import Decimal
+    soup=BeautifulSoup(body,'html.parser')
+    records=[]
+    composition=re.search(r'Производится краска для дорог АК[^.!?]{0,180}на основе акриловых[^.!?]{0,100}',
+                          clean(soup.get_text(' ',strip=True)),re.I)
+    for section in soup.select('.section-cell'):
+        sizes=re.findall(r'Фасовка:\s*ведро\s+(\d+(?:[.,]\d+)?)\s*кг', section.get_text(' ',strip=True), re.I)
+        if len(sizes)!=1: continue
+        size=Decimal(sizes[0].replace(',','.'))
+        if size<=0: continue
+        for card in section.select('.blk-data'):
+            value=clean(card.get_text(' ',strip=True)).replace('\u200b','')
+            match=re.fullmatch(r'(Краска дорожная АК\s+"Колор-М",\s*[а-яё]+)\s+'
+                r'опт от \d+ тонн:\s*\d+(?:[.,]\d+)?\s*руб/кг\s+'
+                r'розница:\s*(\d+(?:[.,]\d+)?)\s*руб/кг',value,re.I)
+            if not match: continue
+            name=match[1];rate=Decimal(match[2].replace(',','.'))
+            if rate<=0: continue
+            proof=f'Розница: {rate} руб/кг; фасовка: ведро {size} кг; стоимость ведра {rate*size} руб'
+            records.append({'name':name,'url':url,'unit':'упак','price':float(rate*size),'bucket':'materials',
+                'item_key':url+'|'+name.casefold(),'price_kind':'published','reason':'',
+                'evidence':name+' · '+proof+(' · '+composition[0] if composition else ''),
+                'details':{'price_scope':'product','extractor':'ak511-retail-bucket',
+                    'package':{'amount':float(size),'unit':'кг','evidence':proof}}})
+    if not records: raise ValueError('Не найдены розничные цены краски с фасовкой в том же разделе')
+    return records
+
+
+def anbik_records(body,url):
+    """The visible retail column, never the hidden wholesale microdata price."""
+    from autobot.market_source_adapters import parse_ruble_values
+    soup=BeautifulSoup(body,'html.parser')
+    heading=soup.select_one('h1.cart_caption')
+    if not heading: return []
+    name=clean(heading.get_text(' ',strip=True));records=[]
+    for label in soup.select('.item_detail_row p.item_price'):
+        if clean(label.get_text(' ',strip=True))!='Цена:': continue
+        column=label.parent
+        price_node=column.select_one('.main_price');unit_node=column.select_one('sup')
+        if price_node is None or unit_node is None: continue
+        price_text=clean(price_node.get_text(' ',strip=True))
+        prices=parse_ruble_values(price_text)
+        unit=normalize_unit(clean(unit_node.get_text(' ',strip=True)).lstrip('/ '))
+        if len(prices)!=1 or prices[0]<=0 or unit not in {'шт','м','упак','компл'}: continue
+        availability=soup.select_one('[itemprop="availability"]')
+        available=availability and str(availability.get('href') or '').endswith('/InStock')
+        records.append({'name':name,'unit':unit,'url':url,'price':prices[0],'bucket':'materials',
+            'price_kind':'published' if available else 'conditional',
+            'reason':'' if available else 'Наличие товара не подтверждено',
+            'evidence':name+' · Цена: '+price_text+' / '+unit,
+            'details':{'price_scope':'product','extractor':'anbik-retail'}})
+    if len(records)!=1: raise ValueError('Не найдена однозначная розничная цена Анбик с единицей')
+    return records
+
+
 def esg_records(body, url):
     """Retail grass prices with the bag size from the same product column."""
     from decimal import Decimal
@@ -90,7 +147,7 @@ def tinko_records(body,url):
     price,unit=variants[0]
     # Related cards, wholesale tiers and the hidden large-order modal do not
     # belong to this retail offer. Characteristics stay attached to this item.
-    summary=soup.select_one('.product-detail__description')
+    summary=soup.select_one('.product-detail__short-description, .product-detail__description')
     evidence=f'{name} · Розничная цена: {price:.2f} руб / {unit}'
     if summary:
         evidence+=' · '+clean(summary.get_text(' ',strip=True))[:1800]

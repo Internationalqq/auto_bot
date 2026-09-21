@@ -379,6 +379,8 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         row_total = _number(row.get(COL_SUM))
         parent_id = _clean(row.get(PARENT))
         has_resources = row.get('has_resources') is True
+        from autobot.estimate_scope import resource_scope
+        composition = resource_scope(row)
         if row_total is not None and not parent_id:
             estimate_total += row_total
         market_row = row if row.get("Рынок обработано") == "Да" else None
@@ -425,12 +427,14 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
                 "review_id": review_position_identity(row, parent_id or None),
                 "is_resource": bool(parent_id),
                 "has_resources": has_resources,
+                "resource_scope": composition,
                 "index": index,
                 "item_no": _clean(row.get("№ п/п", "")) or str(section_position_index),
                 "name": name,
                 "section": section,
                 "section_note": ("Ресурс позиции " + _clean(row.get('parent_item_no')) + "; уже включён в её сумму"
-                                 if parent_id else "Включает отдельные ресурсы ниже; цена работы не закрывает весь состав" if has_resources else ""),
+                                 if parent_id else "Включает вспомогательные расходники; нужна цена услуги с их учётом"
+                                 if composition['kind']=='auxiliary_only' else "Включает отдельные ресурсы ниже; цена работы не закрывает весь состав" if has_resources else ""),
                 "section_title": _section_title(section),
                 "section_group": section_group,
                 "source_file": source_file,
@@ -483,7 +487,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
             }
         )
 
-    from autobot.market_coverage import annotate_coverage, reconcile_search_history
+    from autobot.market_coverage import annotate_coverage, reconcile_search_history, coverage_plan
     from autobot import agent_market_queue
     if agent_market_queue.DEFAULT_DB_PATH.is_file():
         reconcile_search_history(positions, agent_market_queue.latest_position_jobs(tender_id, mode='web'),
@@ -633,6 +637,7 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
         "market_health": market_health,
         "positions": positions,
         "price_coverage": price_coverage,
+        "coverage_plan": coverage_plan(positions),
         "counts": counts,
         "total_positions": total_positions,
         "coverage": coverage,

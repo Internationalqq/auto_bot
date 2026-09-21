@@ -1,5 +1,8 @@
 """Explain every estimate row without treating missing evidence as a zero cost."""
 from collections import Counter
+import hashlib
+import json
+import math
 
 
 def search_result_reason(notes: object) -> str:
@@ -58,3 +61,44 @@ def annotate_coverage(positions: list[dict]) -> dict:
         counts[state] += 1
     return {'total': len(positions), 'priceable': len(positions) - counts['excluded'], **{key: counts[key] for key in (
         'verified', 'candidate', 'needs_details', 'blocked', 'no_quote', 'pending', 'excluded')}}
+
+
+def coverage_plan(positions: list[dict], *, target_percent: int = 90) -> dict:
+    """Plan discovery for every unmet need, without promoting its candidates.
+
+    Group identical discovery requirements but retain all row identities and
+    quantities: a price for one pack/lot cannot be copied to another volume.
+    """
+    if not isinstance(target_percent,int) or not 1<=target_percent<=100:
+        raise ValueError('Target must be between 1 and 100 percent')
+    counts=Counter();groups={}
+    for position in positions:
+        state,_=position_outcome(position)
+        counts[state]+=1
+        if state in {'excluded','verified'}: continue
+        scope=position.get('resource_scope') or {'kind':'unknown' if position.get('has_resources') else 'none'}
+        passport=position.get('requirements') or {}
+        component_types=[{'name':c['name'],'unit':c['unit'],'kind':c['kind']} for c in scope.get('components',[])]
+        signature=json.dumps([position.get('name'),passport.get('original_unit') or position.get('unit'),
+            position.get('bucket'),scope['kind'],component_types],ensure_ascii=False,separators=(',',':'))
+        key=hashlib.sha256(signature.encode()).hexdigest()[:24]
+        need=groups.setdefault(key,{'id':key,'name':position.get('name',''),
+            'unit':passport.get('original_unit') or position.get('unit',''),
+            'bucket':position.get('bucket',''),'requirements':passport,
+            'resource_scope':{'kind':scope['kind'],'components':component_types},
+            'queries':list(position.get('queries') or []),'positions':[],'reasons':[],
+            'next_step':('clarify_requirements' if state=='needs_details' else
+                'service_with_consumables' if scope['kind']=='auxiliary_only' else
+                'complete_composition' if scope['kind']!='none' else 'supplier_catalogue')})
+        need['positions'].append({'position_key':position.get('position_key',''),
+            'quantity':position.get('quantity'),'state':state,'resource_scope':scope})
+        for source in position.get('sources') or []:
+            reason=source.get('reason') or ''
+            if reason and reason not in need['reasons']:need['reasons'].append(reason)
+    priceable=len(positions)-counts['excluded']
+    required=math.ceil(priceable*target_percent/100)
+    needs=sorted(groups.values(),key=lambda g:(-len(g['positions']),g['bucket'],g['name']))
+    return {'target_percent':target_percent,'priceable':priceable,'verified':counts['verified'],
+        'required_verified':required,'missing_to_target':max(0,required-counts['verified']),
+        'target_reached':bool(priceable and counts['verified']>=required),
+        'uncovered_rows':priceable-counts['verified'],'unique_needs':len(needs),'needs':needs}

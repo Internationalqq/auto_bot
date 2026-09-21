@@ -115,13 +115,15 @@ _AVITO_STATE_LOCK = threading.Lock()
 _DDG_BLOCKED_UNTIL = 0.0
 _DDGS_BLOCKED_UNTIL = 0.0
 _DDGS_CLIENT_LOCK = threading.Lock()
+_SEARCH_PROVIDER_LOCK = threading.Lock()
+_SEARCH_PROVIDER_FAILURES: dict[str, tuple[int, float]] = {}
 _MARKET_CACHE_DIR = REPO_ROOT / "data" / "market_cache"
 _SOURCE_PAGE_CACHE_DIR = _MARKET_CACHE_DIR / "source_pages"
 _SOURCE_PAGE_CACHE_VERSION = "2"
 _AVITO_GUARD_PATH = _MARKET_CACHE_DIR / "avito_guard.json"
 _AVITO_LOG_PATH = REPO_ROOT / "data" / "logs" / "avito_playwright.jsonl"
 _MARKET_SEARCH_LOG_PATH = REPO_ROOT / "data" / "logs" / "market_search_candidates.jsonl"
-_SEARCH_CACHE_VERSIONS = {"web": "11", "web_browser": "2", "avito": "2", "avito_index": "1"}
+_SEARCH_CACHE_VERSIONS = {"web": "12", "web_browser": "2", "avito": "2", "avito_index": "1"}
 _WEB_BROWSER_BLOCKED_UNTIL = 0.0
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _DOMAIN_RATE_LOCK = threading.Lock()
@@ -131,6 +133,33 @@ _SEARCH_CANCELLED = ContextVar('market_search_cancelled', default=None)
 
 class SearchBudgetExceeded(TimeoutError):
     pass
+
+
+def _search_provider_get(provider: str, url: str, *, timeout: float) -> str:
+    """Back off an unavailable search engine across positions in this worker.
+
+    An expired position budget or cancellation says nothing about the engine.
+    Empty, successful search pages also must not trip this circuit.
+    """
+    _remaining_timeout(timeout)
+    with _SEARCH_PROVIDER_LOCK:
+        failures, until = _SEARCH_PROVIDER_FAILURES.get(provider, (0, 0.0))
+        if time.monotonic() < until:
+            raise RuntimeError(f'{provider}: пауза после ошибок провайдера')
+    try:
+        page = _session_get(url, timeout=timeout)
+    except SearchBudgetExceeded:
+        raise
+    except (requests.RequestException, TimeoutError, ConnectionError) as error:
+        status = int(getattr(getattr(error, 'response', None), 'status_code', 0) or 0)
+        with _SEARCH_PROVIDER_LOCK:
+            failures = _SEARCH_PROVIDER_FAILURES.get(provider, (0, 0.0))[0] + 1
+            cooldown = 900 if status in {403, 429} else 300 if failures >= 2 else 0
+            _SEARCH_PROVIDER_FAILURES[provider] = (failures, time.monotonic() + cooldown if cooldown else 0.0)
+        raise
+    with _SEARCH_PROVIDER_LOCK:
+        _SEARCH_PROVIDER_FAILURES.pop(provider, None)
+    return page
 
 
 def _bounded_setting(name: str, default: int, low: int, high: int) -> int:
@@ -251,10 +280,26 @@ def _read_json(path: Path) -> dict[str, object]:
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
+    import tempfile
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    handle, name = tempfile.mkstemp(prefix=path.name+'.', suffix='.tmp', dir=path.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(handle, 'w', encoding='utf-8') as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        for attempt in range(5):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError as error:
+                # Windows briefly denies a replace while another writer or
+                # reader holds the destination. Keep retries short; other errors
+                # propagate immediately.
+                if getattr(error,'winerror',None) not in {5,32,33} or attempt==4:
+                    raise
+                time.sleep(0.01 * (2**attempt))
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _append_avito_log(kind: str, **payload: object) -> None:
@@ -2136,7 +2181,7 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
         {"format": "rss", "q": q, "mkt": "ru-RU", "setlang": "ru", "cc": "RU"}
     )
     try:
-        page = _session_get(bing_rss_url, timeout=6)
+        page = _search_provider_get('Bing RSS', bing_rss_url, timeout=6)
         raw_offers.extend(_tag_search_engine(_parse_bing_rss(page, max_results=max_results * 6), "Bing RSS"))
     except Exception as e:
         errors.append(f"Bing RSS: {type(e).__name__}: {e}")
@@ -2155,7 +2200,7 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
     yahoo_url = "https://search.yahoo.com/search?" + urlencode({"p": q})
     yahoo_offers: list[MarketOffer] = []
     try:
-        page = _session_get(yahoo_url, timeout=6)
+        page = _search_provider_get('Yahoo', yahoo_url, timeout=6)
         yahoo_offers = _parse_yahoo_html(page, max_results=max_results * 6)
         raw_offers.extend(yahoo_offers)
     except Exception as e:
@@ -2182,7 +2227,7 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
             {"format": "rss", "q": preferred_query, "mkt": "ru-RU", "setlang": "ru", "cc": "RU"}
         )
         try:
-            page = _session_get(preferred_url, timeout=18)
+            page = _search_provider_get('Bing RSS', preferred_url, timeout=6)
             preferred_offers = _parse_bing_rss(page, max_results=max_results * 8)
             raw_offers.extend(_tag_search_engine(preferred_offers, "Bing RSS/поставщики"))
         except Exception as e:
@@ -2213,7 +2258,7 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
             {"q": q, "mkt": "ru-RU", "setlang": "ru", "cc": "RU"}
         )
         try:
-            page = _session_get(bing_url)
+            page = _search_provider_get('Bing HTML', bing_url, timeout=6)
             raw_offers.extend(_tag_search_engine(_parse_bing_html(page, max_results=max_results * 5), "Bing HTML"))
         except Exception as e:
             errors.append(f"Bing HTML: {type(e).__name__}: {e}")

@@ -65,6 +65,11 @@ def technical_specs(name: object) -> list[dict[str, str]]:
     if 'щеб' in folded:
         patterns.append(('fraction', 'Фракция щебня', r'\b\d{1,3}\s*[-–—]\s*\d{1,3}\b'))
         patterns.append(('stone_grade', 'Прочность щебня', r'\b[мm]\s*\d{2,4}\b'))
+    if 'стеклошар' in folded:
+        patterns.append(('glass_fraction','Фракция стеклошариков',r'\b\d{1,4}\s*[-–—]\s*\d{1,4}\s*мкм\b'))
+    if any(word in folded for word in ('краск','эмаль')):
+        patterns.append(('paint_color','Цвет краски',r'\b(?:бел(?:ый|ая)|черн(?:ый|ая)|желт(?:ый|ая)|красн(?:ый|ая)|сер(?:ый|ая)|зелен(?:ый|ая)|оранжев(?:ый|ая)|син(?:ий|яя))\b'))
+        patterns.append(('paint_base','Основа краски',r'\b(?:акрилов|алкидн)\w*\b'))
     if 'бордюр' in folded or 'бортов' in folded:
         patterns.append(('curb_model', 'Марка бордюра', r'\b\d{2,4}(?:[.,]\d{1,3}){2}\b'))
     if 'песок' in folded or 'песка' in folded:
@@ -110,6 +115,10 @@ def technical_specs(name: object) -> list[dict[str, str]]:
                 value = '2' if value.startswith(('ii','2')) else '1'
             if kind == 'sand_grain':
                 value = 'мелкий' if value.startswith('мелк') else 'средний' if value.startswith('средн') else 'крупный'
+            if kind == 'paint_color':
+                value=next(stem for stem in ('бел','черн','желт','красн','сер','зелен','оранжев','син') if value.startswith(stem))
+            if kind == 'paint_base':
+                value='акрил' if value.startswith('акрил') else 'алкид'
             value = {'кнауф': 'knauf', 'церезит': 'ceresit', 'изовер': 'isover', 'роквул': 'rockwool',
                      'ротбанд': 'rotband', 'гольдбанд': 'goldband', 'фуген': 'fugen'}.get(value, value)
             identity = kind, value
@@ -171,7 +180,7 @@ sizes are retained for discovery; their comparison needs category-specific units
     if incomplete:
         return incomplete
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:

@@ -22,6 +22,19 @@ def test_finished_concrete_kerb_is_not_ready_mix(catalog):
     assert lookup(name='Бетон В22.5 М300 на гравии',unit='м3',region='Ярославская область',quantity=10,path=path)
 
 
+def test_terminal_is_not_discarded_as_cable_and_spaced_model_survives_large_catalogue(catalog):
+    path,src,_,body=catalog
+    record={'name':'WAGO 222-413 клемма 3-проводная','price':41.09,'unit':'шт','url':src['url'],
+        'evidence':'WAGO 222-413 клемма 3-проводная · 41.09 руб/шт','details':{'price_scope':'product'}}
+    decoys=[dict(record,name='Клеммник WAGO другой '+str(n),item_key=str(n),
+                 evidence='Клеммник WAGO другой 42 руб/шт') for n in range(80)]
+    store.save_page(src['id'],src['url'],body,time.time(),[record,*decoys],path=path)
+    assert product_family(record['name'])=='terminal'
+    offers=lookup(name='Клеммник WAGO 222-413',unit='шт',quantity=368,region='Ярославская область',path=path)
+    assert len(offers)==1 and offers[0]['price']==41.09
+    assert product_family('Лента 300мм х 100м "Осторожно! Кабель!" (PR08.3855)')=='signal-tape'
+
+
 def test_mass_conversion_is_reused_from_catalogue_with_original_quantity_terms(catalog):
     path,src,_,body=catalog
     record={'name':'Стеклошарики 100-600 мкм','price':125,'unit':'кг','url':src['url'],
@@ -124,6 +137,23 @@ def test_whole_roll_purchase_is_quantity_specific_and_survives_revalidation(cata
     assert purchase_price(row,{},'м2',250) is None
     assert purchase_price(row,details,'м2',None) is None
     assert purchase_price(row,details,'м2',0) is None
+
+
+def test_fractional_piece_requires_purchasing_the_whole_item():
+    from autobot.supplier_catalog_match import purchase_price
+    from autobot.supplier_evidence import quantity_terms_reason
+    row={'price_kopecks':385611,'unit':'шт','evidence':'Лента ЛСЭ-300, 100 м; 3856.11 руб/шт'}
+    price,unit,evidence,terms=purchase_price(row,{},'шт',0.15)
+    assert round(price*0.15,2)==3856.11
+    assert '1 шт' in evidence
+    assert not quantity_terms_reason(terms,0.15,'шт')
+    assert quantity_terms_reason(terms,10.4,'шт')
+    price,_,_,terms=purchase_price(row,{},'шт',10.4)
+    assert round(price*10.4,2)==42417.21
+    assert not quantity_terms_reason(terms,10.4,'шт')
+    assert purchase_price(row,{},'шт',2)[0]==3856.11
+    # A measured metre or kilogram remains divisible.
+    assert purchase_price(dict(row,unit='м'),{},'м',0.15)[0]==3856.11
 
 
 def test_conditional_supplier_price_is_a_candidate_not_a_confirmed_price(catalog):

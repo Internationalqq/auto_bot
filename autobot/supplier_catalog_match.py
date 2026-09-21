@@ -17,6 +17,8 @@ def product_family(name):
     """A grade describes a product; it does not turn a kerb into ready-mix."""
     value=store.folded(name)
     for family,pattern in (
+        ('terminal',r'\bклемм(?:а|ы|ник|ная|ные)\w*'),
+        ('signal-tape',r'\bлент\w*.*(?:сигнальн|лсэ|осторожно.*кабел)|\bлсэ-?\d+'),
         ('kerb',r'бордюр|бортов\w*\s+(?:кам|бетон)|камн\w*\s+бортов'),
         ('paving',r'брусчат|плитк\w*\s+тротуар|тротуар\w*\s+плитк'),
         ('mortar',r'раствор'),('concrete',r'бетон|\bбс[гтл]\b'),
@@ -51,7 +53,21 @@ def purchase_price(row,details,unit,quantity):
     terms=list(details.get('quantity_terms') or [])
     factor=price_unit_factor(row['unit'],unit)
     if factor is not None:
-        if factor==1: return price,normalize_unit(unit),evidence,terms
+        if factor==1:
+            if row['unit']=='шт':
+                try:
+                    required=Decimal(str(quantity))*Decimal(str(estimate_unit_multiplier('',unit)))
+                    if required.is_finite() and required>0:
+                        count=required.to_integral_value(rounding=ROUND_CEILING)
+                        if count!=required:
+                            cost=Decimal(row['price_kopecks'])*count/100
+                            effective=cost/required
+                            note=f'Расчёт закупки: {count} шт, всего {cost} руб; потребность {required} шт; {effective:.8f} руб/шт с учётом целых изделий'
+                            terms.append({'lot':float(required),'unit':'шт','evidence':note})
+                            return float(effective),'шт',evidence+' · '+note,terms
+                except (TypeError,ValueError,InvalidOperation):
+                    pass
+            return price,normalize_unit(unit),evidence,terms
         converted=float(Decimal(str(price))*Decimal(str(factor)))
         note=f'Пересчёт единицы: {price:g} руб/{row["unit"]} × {factor:g} = {converted:g} руб/{normalize_unit(unit)}; 1 т = 1000 кг'
         return converted,normalize_unit(unit),evidence+' · '+note,terms
@@ -82,7 +98,9 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
     from autobot.market_requirements import technical_specs
     models={spec['value'] for spec in technical_specs(name) if spec['kind']=='hardware_model'}
     tokens=list(dict.fromkeys([*sorted(models),*tokens]))
-    score=' + '.join(f"CASE WHEN i.search_text LIKE ? THEN {8 if token.replace(' ','') in models else 1} ELSE 0 END" for token in tokens)
+    scored_columns=[("replace(i.search_text,' ','')",8) if token.replace(' ','') in models
+                    else ('i.search_text',1) for token in tokens]
+    score=' + '.join(f'CASE WHEN {column} LIKE ? THEN {weight} ELSE 0 END' for column,weight in scored_columns)
     with store.connect(path) as con:
         rows=con.execute('''SELECT i.*,s.name AS supplier_name,s.supplier_id,'''+score+''' AS relevance
             FROM supplier_catalog_items i JOIN supplier_catalog_sources s ON s.id=i.source_id
@@ -100,6 +118,8 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
         if row['relevance']<min(2,len(tokens)) and not exact_model: continue
         if identity.bucket=='materials':
             wanted_family,found_family=product_family(name),product_family(row['name'])
+            if wanted_family=='signal-tape' and not found_family:
+                found_family=product_family(row['evidence'])
             if wanted_family!=found_family:
                 continue
         if identity.bucket=='works' and not work_surfaces(name).issubset(work_surfaces(row['name'])):

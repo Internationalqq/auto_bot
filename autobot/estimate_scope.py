@@ -15,6 +15,29 @@ RESOURCES = 'Ресурсы позиции (json)'
 PARENT = 'parent_position_id'
 
 
+def resource_scope(row):
+    """Explain the authoritative composition; this does not approve a price."""
+    if clean(row.get('has_resources')).casefold() != 'true':
+        return {'kind':'none','components':[]}
+    try:
+        children=json.loads(clean(row.get(RESOURCES)))
+    except (TypeError, ValueError):
+        children=[]
+    if not isinstance(children,list) or not children or len(children)>1000:
+        return {'kind':'unknown','components':[]}
+    components=[]
+    for child in children:
+        if not isinstance(child,dict):
+            return {'kind':'unknown','components':[]}
+        name=clean(child.get('name'));unit=clean(child.get('unit'))
+        auxiliary=(unit=='%' and name.casefold()=='вспомогательные ненормируемые материальные ресурсы')
+        quantity=decimal_number(child.get('qty'))
+        components.append({'name':name,'unit':unit,'quantity':float(quantity) if quantity is not None else None,
+            'kind':'auxiliary' if auxiliary else 'resource'})
+    kind='auxiliary_only' if all(c['kind']=='auxiliary' for c in components) else 'resources'
+    return {'kind':kind,'components':components}
+
+
 def expand_resources(frame):
     if RESOURCES not in frame.columns or PARENT in frame.columns:
         return frame.copy()

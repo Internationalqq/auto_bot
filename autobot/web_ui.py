@@ -173,7 +173,7 @@ def reject_cross_site_mutation():
 def protect_report_publication():
     from flask import g
     from autobot.estimate_publication_recovery import consistent_report, PublicationRecoveryRequired
-    consumers = {'tender_detail_page', 'tender_economics_source',
+    consumers = {'tender_detail_page', 'tender_economics_source', 'tender_coverage_plan',
                  'tender_estimate_download_xlsx', 'tender_market_sources_download_xlsx',
                  'tender_svodka_download_xlsx', 'merge_report_site'}
     tid = None
@@ -4667,6 +4667,21 @@ def tender_economics_source(tender_id: str):
     except (OSError, ValueError):
         return jsonify({'error': 'source_unavailable'}), 503
     response = jsonify(payload)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.get('/api/tenders/<tender_id>/coverage-plan')
+def tender_coverage_plan(tender_id: str):
+    if not re.fullmatch(r'[0-9]{8,25}', tender_id):
+        abort(404)
+    metadata = dict(load_tender_metadata().get(tender_id) or {})
+    if not metadata and not (REPORTS_DIR / f'ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx').is_file():
+        abort(404)
+    from autobot.market_coverage import coverage_plan
+    detail = build_tender_detail(tender_id, metadata, {})
+    response = jsonify({'tender_id': tender_id, 'region': detail.get('region', ''),
+                        **coverage_plan(detail.get('positions') or [])})
     response.headers['Cache-Control'] = 'no-store'
     return response
 
