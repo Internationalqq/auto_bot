@@ -112,14 +112,38 @@ def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypa
     assert [position["verified_count"] for position in detail["positions"]] == [1, 0]
 
 
-def test_verified_price_metric_is_an_actual_filter_button():
-    template_path = Path(tender_detail.__file__).parent / "templates" / "tender_detail.html"
-    template = template_path.read_text(encoding="utf-8")
+def test_found_price_filter_requires_a_positive_offer_on_a_priceable_row(tmp_path, monkeypatch):
+    from bs4 import BeautifulSoup
+    from autobot import web_ui
+    from autobot.market_contract import BUNDLE_COLUMN
 
-    assert 'data-bucket-filter="processed"' in template
-    assert 'data-bucket-filter="verified"' in template
-    assert 'data-market-verified="{{ \'1\' if p.verified_count else \'0\' }}"' in template
-    assert 'activeBucket === "verified" && row.dataset.marketVerified === "1"' in template
+    tid = '991234567890'
+    monkeypatch.setattr(tender_detail, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(tender_detail, 'latest_parser_health', lambda _: {})
+    rows = []
+    market = []
+    for index, (price, quantity) in enumerate([(90, 1), (None, 1), (0, 1), (90, -1)]):
+        name = f'Кабель ВВГнг 3х{index + 1}'
+        rows.append({COL_NAME: name, COL_UNIT: 'м', COL_QTY: quantity,
+                     COL_UNIT_PRICE: 100, COL_SUM: 100 * quantity})
+        market.append({COL_NAME: name, COL_UNIT: 'м', BUNDLE_COLUMN: json.dumps([{
+            'source': 'Поставщик', 'title': name, 'url': 'https://supplier.example/cable',
+            'price': price, 'verification': 'candidate', 'matched_unit': 'м',
+            'verification_reason': 'Нужно проверить условия', 'observed_at': time.time(),
+        }], ensure_ascii=False)})
+    pd.DataFrame(rows).to_excel(tmp_path / f'ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx', index=False)
+    pd.DataFrame(market).to_excel(tmp_path / f'РЫНОК_ИСТОЧНИКИ_ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx', index=False)
+    detail = tender_detail.build_tender_detail(tid, {}, {})
+    assert [p['has_found_price'] for p in detail['positions']] == [True, False, False, False]
+    assert detail['counts']['found'] == 1
+    assert detail['price_coverage']['verified'] == 0
+    detail.update(active_tab='overview', documents={'count': 0, 'files': []})
+    with web_ui.app.test_request_context():
+        page = BeautifulSoup(web_ui.render_template('tender_detail.html', tender=detail), 'html.parser')
+    assert page.select_one('[data-price-filter="found"] b').text == '1'
+    assert page.select_one('[data-price-filter="verified"] b').text == '0'
+    assert [r['data-market-found'] for r in page.select('[data-position-row]')] == ['1', '0', '0', '0']
+    assert page.select_one('[data-bucket-filter="processed"]')
 
 
 def test_position_table_omits_search_strategy_and_sources_stay_in_their_column():

@@ -494,6 +494,11 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
                                  region=metadata.get('region', ''))
         counts['processed'] = sum(bool(row['market_processed']) for row in positions)
     price_coverage = annotate_coverage(positions)
+    for position in positions:
+        position['has_found_price'] = position['price_state'] != 'excluded' and any(
+            (source['price'] or 0) > 0 for source in position['sources']
+        )
+    counts['found'] = sum(position['has_found_price'] for position in positions)
     file_summaries: dict[str, dict[str, Any]] = {}
     section_summaries: dict[str, dict[str, Any]] = {}
     for position in positions:

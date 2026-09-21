@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260919-workspace-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260921-price-filters-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-cashflow-1" />
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
@@ -145,26 +145,18 @@
       {% if tender.price_coverage.excluded %}<p class="muted">Всего строк: {{ tender.total_positions }}. Для {{ tender.price_coverage.excluded }} расчётных строк и вычетов отдельная цена не требуется.</p>{% endif %}</div>
       <button class="text-button" type="button" data-feature-open="estimateModal">{{ icon('info') }} Сверить полноту сметы</button>
     </section>
-    <section class="metrics" aria-label="Сводка по позициям">
-      <button class="metric is-active" type="button" data-bucket-filter="all" aria-pressed="true"><small>Все</small><strong>{{ tender.total_positions }}</strong></button>
-      <button class="metric" type="button" data-bucket-filter="works" aria-pressed="false"><small>Работы</small><strong>{{ tender.counts.works }}</strong></button>
-      <button class="metric" type="button" data-bucket-filter="materials" aria-pressed="false"><small>Материалы</small><strong>{{ tender.counts.materials }}</strong></button>
-      <button class="metric attention" type="button" data-bucket-filter="other" aria-pressed="false"><small>Уточнить тип</small><strong>{{ tender.counts.other }}</strong></button>
-      <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Поиск выполнен</small><strong>{{ tender.counts.processed }}</strong></button>
-      <button class="metric verified" type="button" data-bucket-filter="verified" aria-pressed="false"><small>Цена подтверждена</small><strong>{{ tender.counts.verified }}</strong></button>
-    </section>
-
     <section class="positions-card" id="positions" tabindex="-1">
       <header class="positions-head">
-        <div><h2>Смета и рынок</h2><p><b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
+        <div><h2>Смета и рынок</h2><p role="status">Показано <b id="shownCount">{{ tender.total_positions }}</b> из {{ tender.total_positions }}</p></div>
         <label class="position-search"><span aria-hidden="true"></span><input id="positionSearch" type="search" placeholder="Найти работу, материал или шифр" autocomplete="off" aria-label="Найти позицию сметы" /></label>
         <label class="price-state-filter">Результат поиска
           <select id="priceStateFilter">
             <option value="all">Все строки</option>
+            <option value="found">С найденными ценами</option>
             <option value="verified">С подтверждённой ценой</option>
             <option value="candidate">Проверить предложения</option>
             <option value="needs_details">Уточнить исходные данные</option>
-            <option value="missing">Все строки без цены</option>
+            <option value="missing">Без подтверждённой цены</option>
             <option value="pending">Поиск ещё не выполнялся</option>
             <option value="blocked">Источник ограничил доступ</option>
             <option value="no_quote">Поиск прошёл — цены нет</option>
@@ -173,6 +165,22 @@
         </label>
       </header>
 
+      <div class="price-filters">
+        <div class="price-quick-filters" role="group" aria-label="Показать позиции по цене">
+          <button type="button" class="price-filter is-active" data-price-filter="all" aria-pressed="true">Все позиции <b>{{ tender.total_positions }}</b></button>
+          <button type="button" class="price-filter" data-price-filter="found" aria-pressed="false">{{ icon('search') }} С найденными ценами <b>{{ tender.counts.found }}</b></button>
+          <button type="button" class="price-filter verified" data-price-filter="verified" aria-pressed="false">{{ icon('check') }} Только подтверждённые <b>{{ tender.price_coverage.verified }}</b></button>
+        </div>
+        <p id="priceFilterHint">Найденные цены включают предложения с уточнениями. Подтверждённые уже участвуют в сравнении со сметой.</p>
+      </div>
+      <div class="metrics" role="group" aria-label="Уточнить список позиций">
+        <button class="metric is-active" type="button" data-bucket-filter="all" aria-pressed="true"><small>Все типы</small><strong>{{ tender.total_positions }}</strong></button>
+        <button class="metric" type="button" data-bucket-filter="works" aria-pressed="false"><small>Работы</small><strong>{{ tender.counts.works }}</strong></button>
+        <button class="metric" type="button" data-bucket-filter="materials" aria-pressed="false"><small>Материалы</small><strong>{{ tender.counts.materials }}</strong></button>
+        <button class="metric attention" type="button" data-bucket-filter="other" aria-pressed="false"><small>Уточнить тип</small><strong>{{ tender.counts.other }}</strong></button>
+        <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Поиск выполнен</small><strong>{{ tender.counts.processed }}</strong></button>
+        <button class="text-button reset-position-filters" type="button" data-reset-position-filters hidden>Сбросить фильтры</button>
+      </div>
       <details class="price-guide"><summary>Как читать цены</summary><div class="price-legend"><span class="legend-estimate">{{ icon('file') }} Смета — исходная цена</span><span class="legend-market">{{ icon('chart') }} Рынок — медиана подтверждённых предложений</span><span>Разница за единицу, без расходов и налогов</span></div></details>
       {% if tender.positions %}
       <div class="table-wrap">
@@ -187,15 +195,15 @@
           {% for p in tender.positions %}
             {% if p.file_start %}
             <tr class="estimate-file-row" data-file-row data-file-key="{{ p.file_group }}">
-              <td colspan="8"><div><strong>{{ p.file_title }}</strong><span>Позиций: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
+              <td colspan="8"><div><strong>{{ p.file_title }}</strong><span>Всего в файле: {{ p.file_count }} · {{ p.file_total_fmt }}</span></div></td>
             </tr>
             {% endif %}
             {% if p.section_start %}
             <tr class="estimate-section-row" data-section-row data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}">
-              <td colspan="8"><div><strong>{{ p.section_title }}</strong><span>Позиций: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
+              <td colspan="8"><div><strong>{{ p.section_title }}</strong><span>Всего в разделе: {{ p.section_count }} · {{ p.section_total_fmt }}</span></div></td>
             </tr>
             {% endif %}
-            <tr data-position-row data-position-key="{{ p.position_key }}" data-price-state="{{ p.price_state }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-market-verified="{{ '1' if p.verified_count else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
+            <tr data-position-row data-position-key="{{ p.position_key }}" data-price-state="{{ p.price_state }}" data-market-found="{{ '1' if p.has_found_price else '0' }}" data-file-key="{{ p.file_group }}" data-section-key="{{ p.section_group }}" data-bucket="{{ p.bucket }}" data-market-processed="{{ '1' if p.market_processed else '0' }}" data-search="{{ (p.name ~ ' ' ~ p.basis_code ~ ' ' ~ p.file_title ~ ' ' ~ p.section_title ~ ' ' ~ p.section ~ ' ' ~ p.type_label)|lower }}">
               <td class="select-col" data-label="Выбрать"><input type="checkbox" data-agent-position value="{{ p.position_key }}" aria-label="Добавить позицию {{ p.item_no }} для поиска цены" title="Выбрать позицию для поиска цены" /></td>
               <td class="row-no" data-label="№">{{ p.item_no }}</td>
               <td class="position-name" data-label="Позиция">
@@ -228,7 +236,7 @@
           </tbody>
         </table>
       </div>
-      <div class="no-results" id="noPositionResults" hidden>По этому фильтру позиций нет.</div>
+      <div class="no-results" id="noPositionResults" hidden><p>По этим условиям позиций нет. Измените поиск или сбросьте фильтры.</p><button class="btn ghost" type="button" data-reset-position-filters>Показать все позиции</button></div>
       {% else %}
       <div class="empty-state"><strong>Позиций пока нет</strong><p>Начните с документов в блоке «Следующий шаг».</p><a class="btn ghost" href="#nextAction">К следующему шагу</a></div>
       {% endif %}
@@ -587,9 +595,6 @@
       const modal = document.getElementById(content.dataset.featureContent || "");
       modal?.querySelector("[data-feature-body]")?.appendChild(content);
     });
-    const positionMetrics = document.querySelector(".metrics");
-    const positionsHead = document.querySelector(".positions-head");
-    if (positionMetrics && positionsHead) positionsHead.insertAdjacentElement("afterend", positionMetrics);
     document.querySelectorAll("[data-feature-open]").forEach(function(button) {
       button.addEventListener("click", function() {
         button.closest(".action-more")?.removeAttribute("open");
@@ -612,50 +617,90 @@
       const query = (document.getElementById("positionSearch")?.value || "").trim().toLocaleLowerCase("ru");
       const state = document.getElementById("priceStateFilter")?.value || "all";
       let shown = 0;
+      const visibleSections = new Set();
+      const visibleFiles = new Set();
       document.querySelectorAll("[data-position-row]").forEach(function(row) {
         const bucketOk = activeBucket === "all"
           || (activeBucket === "processed" && row.dataset.marketProcessed === "1")
-          || (activeBucket === "verified" && row.dataset.marketVerified === "1")
           || row.dataset.bucket === activeBucket;
         const queryOk = !query || (row.dataset.search || "").includes(query);
         const stateOk = state === "all" || row.dataset.priceState === state
+          || (state === "found" && row.dataset.marketFound === "1")
           || (state === "missing" && !["verified", "excluded"].includes(row.dataset.priceState));
         row.hidden = !(bucketOk && queryOk && stateOk);
-        if (!row.hidden) shown += 1;
+        if (!row.hidden) {
+          shown += 1;
+          visibleSections.add(row.dataset.sectionKey);
+          visibleFiles.add(row.dataset.fileKey);
+        }
       });
       document.querySelectorAll("[data-section-row]").forEach(function(sectionRow) {
-        const sectionKey = sectionRow.dataset.sectionKey || "";
-        const hasVisibleRows = Array.from(document.querySelectorAll("[data-position-row]")).some(function(row) {
-          return row.dataset.sectionKey === sectionKey && !row.hidden;
-        });
-        sectionRow.hidden = !hasVisibleRows;
+        sectionRow.hidden = !visibleSections.has(sectionRow.dataset.sectionKey);
       });
       document.querySelectorAll("[data-file-row]").forEach(function(fileRow) {
-        const fileKey = fileRow.dataset.fileKey || "";
-        const hasVisibleRows = Array.from(document.querySelectorAll("[data-position-row]")).some(function(row) {
-          return row.dataset.fileKey === fileKey && !row.hidden;
-        });
-        fileRow.hidden = !hasVisibleRows;
+        fileRow.hidden = !visibleFiles.has(fileRow.dataset.fileKey);
       });
       const count = document.getElementById("shownCount");
       if (count) count.textContent = String(shown);
       const empty = document.getElementById("noPositionResults");
       if (empty) empty.hidden = shown !== 0;
+      document.querySelectorAll("[data-price-filter]").forEach(function(button) {
+        const isActive = button.dataset.priceFilter === state;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+      });
+      document.querySelectorAll("[data-bucket-filter]").forEach(function(button) {
+        const isActive = button.dataset.bucketFilter === activeBucket;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+      });
+      const reset = document.querySelector(".reset-position-filters");
+      if (reset) reset.hidden = !query && state === "all" && activeBucket === "all";
+      const hint = document.getElementById("priceFilterHint");
+      if (hint) hint.textContent = state === "verified"
+        ? "Только позиции с подтверждённой ценой. Сравните колонки «Цена сметы» и «Медиана рынка», откройте предложения поставщиков."
+        : state === "found"
+          ? "Позиции с ценой на сайте поставщика. Часть предложений требует уточнений — откройте «Предложения» в строке."
+          : "Найденные цены включают предложения с уточнениями. Подтверждённые уже участвуют в сравнении со сметой.";
     }
 
     document.querySelectorAll("[data-bucket-filter]").forEach(function(button) {
       button.addEventListener("click", function() {
         activeBucket = button.dataset.bucketFilter || "all";
-        document.querySelectorAll("[data-bucket-filter]").forEach(function(item) {
-          const isActive = item === button;
-          item.classList.toggle("is-active", isActive);
-          item.setAttribute("aria-pressed", isActive ? "true" : "false");
-        });
         filterRows();
       });
     });
+    function updatePriceFilter() {
+      filterRows();
+      const url = new URL(window.location.href);
+      const state = document.getElementById("priceStateFilter")?.value || "all";
+      if (state === "all") url.searchParams.delete("prices");
+      else url.searchParams.set("prices", state);
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
+    document.querySelectorAll("[data-price-filter]").forEach(function(button) {
+      button.addEventListener("click", function() {
+        document.getElementById("priceStateFilter").value = button.dataset.priceFilter;
+        updatePriceFilter();
+      });
+    });
+    document.querySelectorAll("[data-reset-position-filters]").forEach(function(button) {
+      button.addEventListener("click", function() {
+        activeBucket = "all";
+        document.getElementById("positionSearch").value = "";
+        document.getElementById("priceStateFilter").value = "all";
+        updatePriceFilter();
+        document.querySelector('[data-price-filter="all"]')?.focus({ preventScroll: true });
+      });
+    });
     document.getElementById("positionSearch")?.addEventListener("input", filterRows);
-    document.getElementById("priceStateFilter")?.addEventListener("change", filterRows);
+    document.getElementById("priceStateFilter")?.addEventListener("change", updatePriceFilter);
+    const initialPriceFilter = new URLSearchParams(window.location.search).get("prices");
+    const priceStateSelect = document.getElementById("priceStateFilter");
+    if (priceStateSelect && Array.from(priceStateSelect.options).some(option => option.value === initialPriceFilter)) {
+      priceStateSelect.value = initialPriceFilter;
+    }
+    filterRows();
 
     function selectedAgentKeys() {
       return Array.from(document.querySelectorAll("[data-agent-position]:checked")).map(function(input) { return input.value; });
