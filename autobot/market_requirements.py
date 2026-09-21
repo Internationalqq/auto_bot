@@ -57,7 +57,8 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         ('brand', 'Производитель', r'\b(?:кнауф|knauf|церезит|ceresit|технониколь|isover|изовер|роквул|rockwool)\b'),
         ('product_line', 'Продукт', r'\b(?:ротбанд|rotband|гольдбанд|goldband|фуген|fugen)\b'),
         ('hardware_model', 'Модель / артикул', r'(?<!\w)(?:[a-z]{2,}[a-z\d]*-[a-z\d./+-]*\d[a-z\d./+-]*|[a-z]{2,}\d{2,}[a-z\d]*)(?!\w)'),
-        ('hardware_model', 'Модель / артикул', r'\b(?:wago\s+\d{3}-\d{3}|(?:ва|ис|щмп|щрн|огц|лсэ)\s*-?\s*\d{1,3}(?:-\d{1,3})*)\b'),
+        ('hardware_model', 'Модель / артикул', r'\b(?:wago\s+\d{3}-\d{3}|(?:ва|ис|щмп|щрн|лсэ)\s*-?\s*\d{1,3}(?:-\d{1,3})*)\b'),
+        ('hardware_model', 'Модель / артикул', r'\bогц-\d+[аa]-\d+(?:[.,]\d+)?'),
         ('hardware_model', 'Модель / артикул', r'\b(?:шрн-э-\d{1,2}\.\d{3}(?:\.\d)?|кп-ав-\d{4}|бон-\d{2}-\d-\d{2}-[а-я]|рбд-\d+[аa])\b'),
         ('hardware_model', 'Модель / артикул', r'\bduostation\s+\d{4}r\s+(?:af|anyip)\b'),
         ('hardware_model', 'Модель / артикул', r'\b[1-9]п[квнт][а-я]*(?:\([а-я]\))?-\d{1,2}-\d{1,3}/\d{1,3}(?:\([а-я]\))?'),
@@ -77,6 +78,13 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         patterns.append(('sand_grain', 'Крупность песка', r'\b(?:мелк\w*|средн\w*|крупн(?!ост)\w*)\b'))
     if 'газон' in folded or 'травосмес' in folded:
         patterns.append(('grass_variety', 'Вид травосмеси', r'(?:газон|травосмесь)\s*[«"]([^»"]{2,60})[»"]'))
+    if re.search(r'\bзнак(?:и|а|ов)?\b',folded):
+        patterns.extend([
+            ('road_sign_model','Номер дорожного знака',r'\b(?:дорожн\w*\s+)?знак(?:и|а)?\s*(?:дорожн\w*\s*)?(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)\b'),
+            ('road_sign_size','Типоразмер знака',r'\b(?:[iv]{1,3}\s+типоразмер|типоразмер\s*[:=]?\s*[iv]{1,3})\b'),
+            ('road_sign_film','Тип плёнки знака',r'\b(?:тип(?:а)?\s+[абв])\b'),
+            ('road_sign_film_class','Исполнение плёнки знака',r'\b(?:коммерческ\w*|инженерн\w*|алмазн\w*|высоко[ -]?интенсивн\w*)\b'),
+        ])
     if 'бетон' in folded:
         patterns.extend([
             ('concrete_grade', 'Марка бетона', r'\b[мm]\s*\d{2,3}\b'),
@@ -89,7 +97,7 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         patterns.append(('cable_model', 'Марка кабеля',
                          r'\b(?:а?(?:ввг|вбб?шв)(?:нг)?(?:\s*\([а-яa-z]+\))?(?:\s*[-–—]\s*[a-z]+)?|nym|пвс|шввп|кг)(?![\w(])'))
         patterns.extend([
-            ('cable_voltage', 'Напряжение кабеля', r'\b(?:0[.,]66\s*кв|660\s*в|1\s*кв|1000\s*в)\b|(?<=-)\s*(?:660|0[.,]66)\b'),
+            ('cable_voltage', 'Напряжение кабеля', r'\b(?:0[.,]660?\s*кв|660\s*в|1\s*кв|1000\s*в)\b|(?<=-)\s*(?:660|0[.,]660?)\b'),
             ('cable_stranding', 'Исполнение жилы', r'(?<![а-яa-z])(?:ок|ож|мк|мс|мн)\b|\b(?:однопроволочн\w*|многопроволочн\w*)'),
         ])
     result = []
@@ -103,6 +111,11 @@ def technical_specs(name: object) -> list[dict[str, str]]:
                 if re.fullmatch(r'универсальн(?:ый|ая|ое|ые)',value):value='универсальная'
             if kind == 'cable_model':
                 value = value.replace('а', 'a')
+            if kind == 'road_sign_model': value=match.group(1)
+            if kind == 'road_sign_size': value=re.search(r'[iv]+',evidence,re.I)[0].lower()
+            if kind == 'road_sign_film': value=evidence[-1].lower()
+            if kind == 'road_sign_film_class':
+                value=next(stem for stem in ('коммерческ','инженерн','алмазн','высоко') if value.startswith(stem))
             if kind == 'cable_voltage':
                 value = '660' if value.startswith(('660', '0.66')) else '1000'
             if kind == 'cable_stranding':
@@ -184,7 +197,7 @@ sizes are retained for discovery; their comparison needs category-specific units
     if incomplete:
         return incomplete
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base', 'road_sign_model', 'road_sign_size', 'road_sign_film', 'road_sign_film_class')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:

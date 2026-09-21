@@ -126,7 +126,8 @@ def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
             quote_from = float(condition['quote_from']) if condition.get('quote_from') is not None else None
             lot = float(condition['lot']) if condition.get('lot') is not None else None
             minimum = float(condition['minimum']) if condition.get('minimum') is not None else None
-            if any(value is not None and (not math.isfinite(value) or value <= 0) for value in (quote_from, lot, minimum)):
+            maximum = float(condition['maximum']) if condition.get('maximum') is not None else None
+            if any(value is not None and (not math.isfinite(value) or value <= 0) for value in (quote_from, lot, minimum, maximum)):
                 return 'Не удалось прочитать условия объёма поставщика'
         except (ValueError, TypeError):
             return 'Не удалось прочитать условия объёма поставщика'
@@ -134,6 +135,8 @@ def quantity_terms_reason(terms: object, quantity: object, unit: str) -> str:
             return 'На объём сметы поставщик просит расчёт: ' + str(condition.get('evidence') or '')
         if minimum is not None and source_amount < minimum:
             return 'Объём сметы меньше минимального заказа: ' + str(condition.get('evidence') or '')
+        if maximum is not None and source_amount > maximum:
+            return 'Объём сметы превышает опубликованный остаток: ' + str(condition.get('evidence') or '')
         if lot is not None and abs(source_amount - lot) > 1e-6:
             return 'Опубликованная цена относится к другой партии: ' + str(condition.get('evidence') or '')
     return ''

@@ -734,6 +734,10 @@ def inspect_source_page(
     specialised = position_bucket == 'materials' and (
         host.removeprefix('www.') == 'gazony-esg.ru' and path == '/'
         or host.removeprefix('www.') == 'tinko.ru' and path.startswith('/catalog/product/')
+        or host.removeprefix('www.') == 'electrical.ru' and path.startswith('/product/')
+        or host.removeprefix('www.') == 'keepmarket.ru' and path.startswith('/catalog/lan-kabel-vitaya-para-f-utp/')
+        or host.removeprefix('www.') == 'tdatm.ru' and path.startswith('/catalog/')
+        or host.removeprefix('www.') == 'pkmegapolis.ru' and path.startswith('/dorozhnye-znaki/')
         or host.removeprefix('www.') == 'elektro.ru' and path.startswith('/product/'))
     if specialised:
         # Use the same authoritative selling block for catalogue and live
@@ -745,6 +749,18 @@ def inspect_source_page(
             elif host.removeprefix('www.') == 'tinko.ru':
                 from autobot.supplier_catalog_sites import tinko_records
                 records = tinko_records(page_html, url)
+            elif host.removeprefix('www.') == 'electrical.ru':
+                from autobot.supplier_catalog_sites import electrical_records
+                records = electrical_records(page_html, url)
+            elif host.removeprefix('www.') == 'keepmarket.ru':
+                from autobot.supplier_catalog_sites import keepmarket_records
+                records = keepmarket_records(page_html, url)
+            elif host.removeprefix('www.') == 'tdatm.ru':
+                from autobot.supplier_catalog_sites import tdatm_records
+                records = tdatm_records(page_html, url)
+            elif host.removeprefix('www.') == 'pkmegapolis.ru':
+                from autobot.supplier_catalog_sites import megapolis_records
+                records = megapolis_records(page_html, url)
             else:
                 from autobot.supplier_catalog_extract import product_records
                 records = product_records(page_html, url, '', 'elektro', 'materials')
@@ -752,7 +768,8 @@ def inspect_source_page(
             for record in records:
                 if record.get('price') is None or record.get('price_kind') != 'published':
                     continue
-                price, unit, evidence, terms = record['price'], record['unit'], record['evidence'], []
+                price, unit, evidence = record['price'], record['unit'], record['evidence']
+                terms = list(record.get('details', {}).get('quantity_terms') or [])
                 if record.get('details', {}).get('package') and target_unit:
                     from autobot.supplier_catalog_match import purchase_price
                     from decimal import Decimal

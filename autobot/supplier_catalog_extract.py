@@ -56,6 +56,8 @@ def navigate(body,url,config):
             kind='product'
         elif adapter=='geo76' and parsed.path.startswith('/p/') and a.find_parent(class_='catalog-item-well'):
             kind='product'
+        elif adapter=='megapolis' and parsed.path.startswith(start.path.rstrip('/')+'/') and not parsed.query:
+            kind='product' if parsed.path.endswith('.html') else 'catalog'
         if kind and link!=url:
             result[link]={'url':link,'kind':kind,'label':label}
     return list(result.values())
@@ -189,6 +191,11 @@ def product_records(body,url,label,adapter,bucket):
                     'details':{'price_scope':'product','extractor':'geo76-visible-roll','selling_terms':selling_terms,'package':package}}]
     if adapter=='ekc':
         result=[]
+        # The supplier explicitly documents the old/new AVBbShv spelling.
+        # Keep that proof only for the unmodified matching cable family.
+        aliases=[store.clean(p.get_text(' ',strip=True)) for p in soup.select('p')
+                 if 'конструкция и характеристики не изменились' in p.get_text(' ',strip=True).casefold()
+                 and 'современная маркировка' in p.get_text(' ',strip=True).casefold()]
         table=soup.select_one('table.offerTable')
         for row in table.select('tr') if table else []:
             title=row.select_one('td.title')
@@ -201,19 +208,36 @@ def product_records(body,url,label,adapter,bucket):
             if not re.search(r'кабель',variant,re.I): variant='Кабель '+variant
             unit=normalize_unit(price_unit.get_text(' ',strip=True)) if price_unit else ''
             amount=price.get('content') if price and currency and currency.get('content')=='RUB' else None
+            price_cell=row.select_one('td.price')
+            price_text=store.clean(price_cell.get_text(' ',strip=True)) if price_cell else ''
+            visible=parse_ruble_values(price_text)
+            if amount is None and len(visible)==1 and (currency is None or currency.get('content')=='RUB'):
+                amount=visible[0]
             date=row.select_one('td.date'); published=''
             if date:
                 try: published=datetime.strptime(date.get_text(strip=True),'%d.%m.%Y').replace(tzinfo=timezone.utc).isoformat()
                 except ValueError: pass
             stock=row.select_one('td.amount'); stock_text=store.clean(stock.get_text(' ',strip=True)) if stock else ''
             evidence=variant+' · Цена: '+str(amount or 'по запросу')+' руб / '+unit
+            from autobot.market_requirements import technical_specs
+            models={s['value'] for s in technical_specs(variant) if s['kind']=='cable_model'}
+            if models=={'aвбшв'} and not re.search('нг',variant,re.I):
+                for alias in aliases:
+                    if len(alias)<800 and 'авббшв' in alias.casefold() and 'авбшв' in alias.casefold():
+                        evidence+=' · '+alias
+            terms=[]
+            stock_amount=re.fullmatch(r'([\d\s]+(?:[.,]\d+)?)\s*м\.?',stock_text)
+            if stock_amount and unit=='м':
+                maximum=float(re.sub(r'\s','',stock_amount[1]).replace(',','.'))
+                if maximum>0: terms.append({'maximum':maximum,'unit':'м','evidence':'Доступно: '+stock_text})
             reason=price_terms_reason({'evidence':evidence}) or outdated_price_notice(body)
+            if stock_amount and unit=='м' and maximum<=0: reason=reason or 'Опубликованный остаток равен нулю'
             if not unit: reason=reason or 'У предложения не указана единица цены'
             result.append({'name':variant,'url':url,'unit':unit,'bucket':bucket,'price':amount,
                 'item_key':url+'|'+store.folded(variant),
                 'price_kind':'on_request' if amount is None else 'conditional' if reason else 'published',
                 'reason':reason,'evidence':evidence,
-                'details':{'price_scope':'product','published_at':published,'stock':stock_text,'extractor':'ekc-offer-row'}})
+                'details':{'price_scope':'product','published_at':published,'stock':stock_text,'quantity_terms':terms,'extractor':'ekc-offer-row'}})
         if result: return result
     # Source adapters establish their own selling unit; physical dimensions do not.
     unit='м' if adapter=='ekc' else 'м2' if adapter=='geo76' else ''
@@ -250,6 +274,9 @@ def extract(body,url,kind,label,config):
     if any(s in folded for s in ('servicepipe.tech','checking your browser','подтвердите, что вы не робот')):
         raise ValueError('Сайт ограничил доступ; импорт остановлен для этой страницы')
     if kind=='context': return []
+    if adapter in {'megapolis','electrical','keepmarket','tdatm'}:
+        from autobot.supplier_catalog_sites import megapolis_records,electrical_records,keepmarket_records,tdatm_records
+        return {'megapolis':megapolis_records,'electrical':electrical_records,'keepmarket':keepmarket_records,'tdatm':tdatm_records}[adapter](body,url)
     if adapter=='ak511':
         from autobot.supplier_catalog_sites import ak511_records
         return ak511_records(body,url)

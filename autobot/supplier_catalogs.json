@@ -1,4 +1,8 @@
 [
+  {"name":"ТД АТМ — оптический кабель ОГЦ", "catalog":{"adapter":"tdatm","region_label":"Санкт-Петербург; доставка уточняется"}, "url":"https://tdatm.ru/catalog/kabelnaya_produktsiya/kabel_peredachi_dannykh/volokonno_opticheskiy_kabel/podvesnoy_samonesushchiy/kabel_opticheskiy_ogts_4a_7_7kn_4_volokna.html", "regions":["*"],"topics":["кабель","ОГЦ-4А-7"],"buckets":["materials"]},
+  {"name":"KeepMarket — медная витая пара F/UTP", "catalog":{"adapter":"keepmarket","region_label":"Москва; доставка по России"}, "url":"https://keepmarket.ru/catalog/lan-kabel-vitaya-para-f-utp/ftp-cat5e-4x2x051-cu-pe-outdoor-premium-01-1010-4", "regions":["*"],"topics":["кабель","витая пара","F/UTP","FTP","SUPRLAN"],"buckets":["materials"]},
+  {"name":"ПК Мегаполис — дорожные знаки и опоры", "catalog":{"adapter":"megapolis","region_label":"Ярославская область"}, "url":"https://pkmegapolis.ru/dorozhnye-znaki/", "regions":["ярослав","рыбинск"],"topics":["дорожный знак","стойка","опора","крепление","пленка"],"buckets":["materials"]},
+  {"name":"Электрика — кабели ВВГнг(А)-LS", "catalog":{"adapter":"electrical","region_label":"Москва; доставка по России"}, "url":"https://electrical.ru/product/529136-kabel-silovoy-vvgnga-ls-3h15okn-pe-0660-odnoprovolochnyy-00-00005326", "regions":["*"],"topics":["кабель","ввгнг"],"buckets":["materials"]},
   {"name":"Анбик — электротехника и связь", "catalog":{"adapter":"anbik","region_label":"Москва; доставка по РФ","seed_pages":["https://anbik.ru/setevye-skafy/item-5549/"]},"url":"https://anbik.ru/","price_page":true,"regions":["*"],"topics":["изолятор","ИС4-30","телекоммуникационное оборудование"],"buckets":["materials"]},
   {"name":"Дорлайн — дорожная краска", "catalog":{"adapter":"ak511","region_label":"Москва; доставка по РФ"},"url":"https://ak511.ru/","price_page":true,"regions":["*"],"topics":["краска дорожная","разметка","Колор-М"],"buckets":["materials"]},
   {"name":"ЭкоСтройГазон — семена газонных трав", "catalog":{"adapter":"esg","region_label":"Екатеринбург; поставки по России"},"url":"https://gazony-esg.ru/","price_page":true,"regions":["*"],"topics":["семена газон","травосмесь","Универсальная","газон"],"buckets":["materials"]},
@@ -74,7 +78,7 @@
   },
   {
     "name": "Электротехническая компания — АВБШв",
-    "catalog": {"adapter": "ekc", "region_label": "Москва"},
+    "catalog": {"adapter": "ekc", "region_label": "Москва", "seed_urls":["/cena/cable-avbbshv-4-150"]},
     "url": "https://e-kc.ru/price/cable-avbshv",
     "regions": ["*"],
     "topics": ["кабель", "авбшв"],
