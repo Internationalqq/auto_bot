@@ -270,3 +270,45 @@ def test_exact_price_row_wins_over_conditional_metadata():
       <tr><td>Бетон М300</td><td>4700 руб/м3</td></tr></table></body></html>'''
     result = inspect_source_page(html, 'https://supplier.example/m300', name='Бетон М300', target_unit='м3', position_bucket='materials')
     assert result.accepted and result.price == 4700
+
+
+def test_slow_native_search_returns_control_and_does_not_spawn_more_clients(monkeypatch):
+    import threading
+    started,release,finished=threading.Event(),threading.Event(),threading.Event()
+    lock=threading.Lock()
+    calls=[]
+    class Client:
+        def __init__(self, **kwargs): calls.append('client')
+        def __enter__(self): return self
+        def __exit__(self, *args): finished.set()
+        def text(self, *args, **kwargs):
+            started.set()
+            assert release.wait(3)
+            return []
+    monkeypatch.setattr(market,'_DDGS_CLIENT_LOCK',lock)
+    try:
+        with pytest.raises(TimeoutError,match='DDGS timeout'):
+            market._ddgs_text(Client,'first',timeout=.05)
+        assert started.is_set() and lock.locked()
+        with pytest.raises(market.SearchProviderBusy):
+            market._ddgs_text(Client,'second',timeout=.05)
+        assert calls==['client']
+    finally:
+        release.set()
+        assert finished.wait(2)
+    # Wait for the worker's finally block, then verify recovery on next request.
+    assert lock.acquire(timeout=2)
+    lock.release()
+    assert market._ddgs_text(Client,'next',timeout=1)==[]
+
+
+def test_one_relevant_link_reaches_verification_before_discovery_deadline(monkeypatch):
+    offer=candidate(1)
+    monkeypatch.setattr(market,'_search_provider_get',lambda *args,**kwargs:'rss')
+    monkeypatch.setattr(market,'_parse_bing_rss',lambda *args,**kwargs:[offer])
+    monkeypatch.setattr(market,'_search_web_ddgs',lambda *args,**kwargs:pytest.fail('A useful link must be verified first'))
+    token = market._SEARCH_DEADLINE.set(time.monotonic() + 3)
+    try:
+        assert market.search_web('Бетон М300', max_results=3) == [offer]
+    finally:
+        market._SEARCH_DEADLINE.reset(token)

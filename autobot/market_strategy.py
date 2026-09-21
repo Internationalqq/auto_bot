@@ -380,7 +380,7 @@ def classify_position(name: object, unit: object = "", basis_code: object = "", 
                              r'бордюр\w*|камень\s+бортов\w*|георешет\w*|геополот\w*|геотекст\w*|пен[аы]\s+монтаж\w*|'
                              r'штукатурк[аи]\s+(?:гипсов\w*|цемент\w*|декоратив\w*)|'
                              r'шпаклев\w*|смес[ьи]\s+сух\w*)\b', title)
-    product_head = re.match(r'^(?:монтажн\w*\s+коробк\w*|кабел\w*|труб[аы]\w*|щит\w*|шкаф\w*|светильник\w*|'
+    product_head = re.match(r'^(?:узип\b|монтажн\w*\s+коробк\w*|кабел\w*|труб[аы]\w*|щит\w*|шкаф\w*|светильник\w*|'
                             r'насос\w*|крепеж\w*|болт\w*|саморез\w*|краск\w*|цемент\w*|'
                             r'кирпич\w*|бетон\w*|щебен\w*|песок)\b', title)
     if material_head:
@@ -411,6 +411,11 @@ def _query_name(name: object, max_words: int = 16, position_type: str = "") -> s
     value = re.sub(r"\s+", " ", value).strip(" ,.;:-")
     folded = value.casefold().replace("ё", "е")
     position_slug = str(position_type or "").strip().casefold()
+    if position_slug in {'work', 'service'}:
+        from autobot.work_requirements import work_passport
+        passport = work_passport(name, declared_work=True)
+        if passport['operation']:
+            return passport['query'] + ''.join(' ' + c['evidence'] for c in passport['constraints'])
     if position_slug not in {'work', 'service'} and 'кабел' in folded:
         from autobot.market_requirements import technical_specs
         specs = technical_specs(value)
@@ -764,7 +769,7 @@ def check_offer(
     host = parsed.netloc.casefold().split(":", 1)[0]
     evidence_text = f"{_text(title)} {_text(snippet)}"
     from autobot.market_evidence_policy import specification_reason
-    conflict = specification_reason(name, evidence_text)
+    conflict = specification_reason(name, evidence_text, position_bucket=position.bucket)
     if conflict:
         return OfferCheck("candidate", 0.30, conflict, "", observed_at)
     wanted = _tokens(name)
@@ -873,7 +878,11 @@ def check_offer(
     requested_models = {s['value'] for s in technical_specs(name) if s['kind'] == 'hardware_model'}
     offered_models = {s['value'] for s in technical_specs(evidence_text) if s['kind'] == 'hardware_model'}
     exact_product_model = position.bucket == 'materials' and bool(requested_models) and requested_models.issubset(offered_models)
+    from autobot.work_requirements import work_match_reason
+    exact_work = position.bucket == 'works' and work_match_reason(name, evidence_text, declared_work=True) == ''
     semantic_identity_match = (
+        exact_work
+        or
         exact_product_model
         or
         dense_rock_crushed_stone

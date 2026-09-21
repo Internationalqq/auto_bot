@@ -153,9 +153,13 @@ def requirement_passport(name: object, unit: object, *, position_type: str,
     incomplete = incomplete_specification_reason(name)
     if incomplete:
         issues.append(incomplete)
-    return {'schema_version': 1, 'original_name': _clean(name), 'original_unit': original_unit,
+    passport = {'schema_version': 1, 'original_name': _clean(name), 'original_unit': original_unit,
             'position_type': position_type, 'normalized_unit': normalized_unit,
             'specifications': technical_specs(name), 'issues': issues, 'can_search': can_search and not incomplete}
+    if position_type in {'work', 'service'}:
+        from autobot.work_requirements import work_passport
+        passport['work'] = work_passport(name, unit, declared_work=True)
+    return passport
 
 
 def incomplete_specification_reason(name: object) -> str:

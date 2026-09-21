@@ -14,6 +14,16 @@ def test_unknown_observation_date_does_not_become_fresh(date):
     assert freshness_reason({'observed_at': date}, 'works', now=NOW)
 
 
+@pytest.mark.parametrize('published', ['2020-03-01T00:00:00+00:00', '2030-01-01T00:00:00+00:00', 'not-a-date'])
+def test_new_capture_cannot_refresh_old_future_or_invalid_price_date(published):
+    assert freshness_reason({'observed_at': NOW, 'published_at': published}, 'works', now=NOW) == 'Дата прайса требует обновления цены'
+
+
+def test_current_published_price_and_undated_live_price_are_allowed():
+    assert not freshness_reason({'observed_at': NOW, 'published_at': NOW - 86400}, 'works', now=NOW)
+    assert not freshness_reason({'observed_at': NOW}, 'works', now=NOW)
+
+
 def test_avito_freshness_is_rechecked_at_read_time(monkeypatch):
     monkeypatch.delenv('MARKET_INDEX_TTL_DAYS', raising=False)
     offer = {'observed_at': NOW - 13 * 86400, 'url': 'https://www.avito.ru/item'}

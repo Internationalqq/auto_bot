@@ -7,8 +7,8 @@ import time
 from decimal import Decimal,ROUND_CEILING,InvalidOperation
 
 from autobot import supplier_catalog_store as store
-from autobot.market_strategy import check_offer,normalize_unit,market_query_name,estimate_unit_multiplier,price_unit_factor
-from autobot.market_evidence_policy import freshness_reason,specification_reason,price_terms_reason,observed_timestamp,evidence_ttl_days
+from autobot.market_strategy import check_offer,normalize_unit,estimate_unit_multiplier,price_unit_factor
+from autobot.market_evidence_policy import freshness_reason,specification_reason,price_terms_reason
 from autobot.market_source_adapters import source_region_evidence
 from autobot.supplier_evidence import supplier_identity,quantity_terms_reason,delivery_terms,outdated_price_notice
 
@@ -94,6 +94,10 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
     if identity.bucket not in {'materials','works'} or not identity.unit:
         return []
     tokens=sorted([store.folded(word) for word in identity.category_tokens if len(word)>=3],key=len,reverse=True)[:12]
+    if identity.bucket=='works':
+        from autobot.work_requirements import work_passport
+        passport=work_passport(name,declared_work=True)
+        tokens=list(dict.fromkeys([*[t for t in passport['query'].split() if len(t)>=3],*tokens]))
     if not tokens: return []
     from autobot.market_requirements import technical_specs
     models={spec['value'] for spec in technical_specs(name) if spec['kind']=='hardware_model'}
@@ -128,7 +132,7 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
         purchase=purchase_price(row,details,str(unit),quantity)
         if purchase is None: continue
         price,selling_unit,evidence,quantity_terms=purchase
-        reason=specification_reason(name,evidence)
+        reason=specification_reason(name,evidence,position_bucket=identity.bucket)
         if reason and (not include_candidates or reason.startswith('Не совпадает')): continue
         page=page_facts(row['document_id'],str(region),identity.bucket,path)
         if not page: continue
@@ -145,7 +149,7 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
                 if region_evidence: region_url=p['url']
         if region and not region_evidence:
             reason=reason or 'Источник не подтверждает доставку или работу в регионе'
-        check=check_offer(name=market_query_name(name),unit=unit,basis_code=basis_code,section=section,
+        check=check_offer(name=name,unit=unit,basis_code=basis_code,section=section,
             title=row['name'],snippet=evidence,url=row['url'],price=price,
             page_checked=True,source_unit=selling_unit,supplier_evidence=supplier)
         if check.status=='rejected' or check.reason=='Слабое совпадение с названием позиции': continue
@@ -162,10 +166,7 @@ def lookup(*,name,unit,basis_code='',section='',region='',quantity=None,limit=5,
             'match_score':check.confidence,'index_hit':True,
             'catalog_item_id':row['id'],'catalog_observation_id':row['observation_id'],
             'catalog_document_id':row['document_id']}
-        published=observed_timestamp(offer['published_at'])
         reason=reason or (row['reason'] if row['price_kind']!='published' else '') or freshness_reason(offer,identity.bucket) or price_terms_reason(offer)
-        if published and (published>time.time()+900 or time.time()-published>evidence_ttl_days(identity.bucket,row['url'])*86400):
-            reason='Дата прайса требует обновления цены'
         reason=reason or quantity_terms_reason(offer['quantity_terms'],quantity,str(unit))
         if reason:
             if not include_candidates: continue

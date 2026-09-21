@@ -356,7 +356,7 @@ def record_verified_offers(
             observed = _iso_timestamp(offer.get("observed_at"))
             if observed is None or observed > now + 900:
                 continue
-            if not candidate and specification_reason(name, offer.get('evidence') or offer.get('snippet') or offer.get('title')):
+            if not candidate and specification_reason(name, offer.get('evidence') or offer.get('snippet') or offer.get('title'), position_bucket=identity.bucket):
                 continue
             geo_evidence = _clean(offer.get('region_evidence'))
             if identity.search_region and region_key(offer.get('search_region')) != identity.search_region:
@@ -509,7 +509,7 @@ def lookup_verified_offers(
             continue
         if price_origin_reason(dict(evidence, index_hit=True)):
             continue
-        if not _clean(evidence.get('matched_unit')) or not units_compatible(normalize_unit(unit), normalize_unit(evidence.get('matched_unit'))) or price_terms_reason(evidence) or specification_reason(name, evidence.get('evidence') or evidence.get('title')):
+        if not _clean(evidence.get('matched_unit')) or not units_compatible(normalize_unit(unit), normalize_unit(evidence.get('matched_unit'))) or price_terms_reason(evidence) or specification_reason(name, evidence.get('evidence') or evidence.get('title'), position_bucket=identity.bucket):
             continue
         payload = dict(row)
         for field in ('search_region', 'matched_unit', 'evidence', 'location', 'published_at', 'price_scope', 'extractor', 'seller_id', 'region_evidence', 'supplier_evidence', 'region_source_url', 'delivery_terms'):

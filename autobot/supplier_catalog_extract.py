@@ -8,7 +8,7 @@ from autobot import supplier_catalog_store as store
 from autobot.market_source_adapters import inspect_source_page, detect_price_unit, parse_ruble_values
 from autobot.market_strategy import normalize_unit
 from autobot.market_evidence_policy import price_terms_reason
-from autobot.supplier_evidence import outdated_price_notice
+from autobot.supplier_evidence import outdated_price_notice, price_list_date
 
 
 def clean_soup(body):
@@ -65,6 +65,7 @@ def table_records(body,url,bucket):
     soup=clean_soup(body)
     result=[]
     price_notice=outdated_price_notice(body)
+    published_date, date_notice = price_list_date(body)
     notices=' '.join(str(p) for p in soup.select('p,small') if len(p.get_text())<700 and
         (price_terms_reason({'evidence':p.get_text(' ',strip=True)}) or 'без стоимости материал' in p.get_text().casefold()))
     for table_no,table in enumerate(soup.select('table')):
@@ -79,7 +80,7 @@ def table_records(body,url,bucket):
                 layouts=[]
                 for p in price_cols:
                     start=max([j+1 for j in price_cols if j<p],default=0)
-                    unit_cols=[j for j in (range(len(values)) if len(price_cols)==1 else range(start,p)) if re.search(r'ед\.?\s*изм',values[j],re.I)]
+                    unit_cols=[j for j in (range(len(values)) if len(price_cols)==1 else range(start,p)) if re.search(r'\bед(?:иниц[аы])?\.?\s*изм',values[j],re.I)]
                     names=[j for j in range(start,p) if j not in unit_cols and values[j] and not re.fullmatch(r'№|п/?п|номер',values[j],re.I)]
                     if names: layouts.append((names[-1],p,unit_cols[-1] if unit_cols else None,values[p],values[names[-1]]))
                 continue
@@ -110,6 +111,10 @@ def table_records(body,url,bucket):
                     amounts=[float(price_text.replace(' ','').replace(',','.'))]
                 amount=amounts[0] if amounts else None
                 evidence=name+' | '+price_text+' | '+unit+' · '+heading
+                if name_heading:
+                    evidence+=' · '+name_heading
+                if date_notice:
+                    evidence+=' · '+date_notice
                 reason=price_terms_reason({'evidence':evidence}) or price_notice
                 if lot and float(lot[1].replace(',','.'))!=1:
                     reason=reason or 'Цена указана за '+raw_unit+'; пересчёт требует проверки условий'
@@ -117,13 +122,17 @@ def table_records(body,url,bucket):
                 if len(set(amounts))>1: reason=reason or 'В строке указан диапазон или несколько цен'
                 # Inspect only this column group, retaining the source's own headers and notices.
                 import html
-                fragment='<table><tr><th>Наименование</th><th>Ед. изм.</th><th>'+html.escape(heading)+'</th></tr><tr><td>'+html.escape(name)+'</td><td>'+html.escape(unit)+'</td><td>'+html.escape(price_text)+'</td></tr></table>'+notices
+                fragment='<table><tr><th>'+html.escape(name_heading or 'Наименование')+'</th><th>Ед. изм.</th><th>'+html.escape(heading)+'</th></tr><tr><td>'+html.escape(name)+'</td><td>'+html.escape(unit)+'</td><td>'+html.escape(price_text)+'</td></tr></table>'+notices
                 inspection=inspect_source_page(fragment,url,name=name,target_unit=unit,position_bucket=bucket)
                 if not inspection.accepted: reason=reason or inspection.reason
                 if inspection.price is not None and amount is not None and abs(inspection.price-amount)>0.001:
                     reason=reason or 'Не удалось однозначно связать сумму со строкой прайса'
+                # Preserve applicable notes at the same boundary as the price.
+                # Reusing a row must not lose a footnote such as "all prices from".
+                if inspection.evidence and inspection.evidence not in evidence:
+                    evidence+=' · '+inspection.evidence
                 item_bucket='equipment' if re.search(r'^аренда\b',name,re.I) else bucket
-                published=''
+                published=published_date
                 date_columns=[j for j,v in enumerate(headers) if re.search(r'актуаль|дата',v,re.I)]
                 if len(date_columns)==1 and len(values)>date_columns[0]:
                     for pattern in ('%d.%m.%y','%d.%m.%Y'):
@@ -134,6 +143,7 @@ def table_records(body,url,bucket):
                     'price_kind':'on_request' if amount is None else 'conditional' if reason else 'published',
                     'reason':reason,'evidence':evidence,
                     'details':{'price_scope':inspection.price_scope,'quantity_terms':list(inspection.quantity_terms),'published_at':published,
+                        'source_unit':raw_unit,'name_heading':name_heading,'price_heading':heading,
                         'price_prefix':'от' if re.search(r'\bот\s*\d',price_text,re.I) else '', 'extractor':'supplier-table'}})
     return result
 

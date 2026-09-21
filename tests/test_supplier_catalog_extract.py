@@ -105,3 +105,42 @@ def test_price_list_pagination_stays_inside_selected_brand():
     config={'url':'https://supplier.example/prajs-list/price/ekf','catalog':{'adapter':'svetelektro'}}
     html='<a href="/prajs-list/price/ekf/100">2</a><a href="/prajs-list/price/iek/100">IEK</a><a href="/prajs-list/price/ekf?format=xls">XLS</a>'
     assert [link['url'] for link in navigate(html,config['url'],config)]==['https://supplier.example/prajs-list/price/ekf/100']
+
+
+@pytest.mark.parametrize('unit_heading', ['Единицы измерения', 'Единица измерения', 'Ед. измер.', 'Ед.изм.'])
+def test_full_unit_header_cannot_replace_service_name(unit_heading):
+    html=f'''<table><tr><th>Список оказываемых услуг</th><th>{unit_heading}</th><th>Стоимость</th></tr>
+      <tr><td>Измерение сопротивления изоляции кабеля</td><td>линия</td><td>90 руб</td></tr>
+      <tr><td>Измерение сопротивления заземления</td><td>измерение</td><td>500 руб</td></tr></table>'''
+    rows=table_records(html,'https://supplier.example/price','works')
+    assert [(r['name'],r['price'],r['unit']) for r in rows]==[
+        ('Измерение сопротивления изоляции кабеля',90,'линия'),
+        ('Измерение сопротивления заземления',500,'измерение')]
+    assert all(r['price_kind']=='published' and r['details']['price_scope']=='work_only' for r in rows)
+
+
+def test_saved_table_evidence_keeps_global_minimum_notice():
+    html='''<table><tr><th>Работы</th><th>Ед.изм.</th><th>Цена</th></tr>
+      <tr><td>Укладка геотекстиля</td><td>м2</td><td>80 руб</td></tr></table>
+      <p>Все цены в прайсе указаны как минимальная стоимость</p>'''
+    row=table_records(html,'https://supplier.example/price','works')[0]
+    assert 'минимальная стоимость' in row['evidence']
+    assert row['price_kind']=='conditional'
+
+
+def test_old_price_effective_date_is_not_replaced_by_new_capture_date():
+    from autobot.market_evidence_policy import freshness_reason
+    html='''<p>Расценки на услуги действительны с 1-го марта 2020 года.</p>
+      <table><tr><th>Работы</th><th>Ед. изм.</th><th>Цена</th></tr>
+      <tr><td>Разработка грунта</td><td>м3</td><td>380 руб</td></tr></table>'''
+    row=table_records(html,'https://supplier.example/price','works')[0]
+    assert row['details']['published_at']=='2020-03-01T00:00:00+00:00'
+    assert '2020 года' in row['evidence']
+    assert freshness_reason({'observed_at':'2026-09-21T00:00:00+00:00', **row['details']},'works')
+
+
+@pytest.mark.parametrize('text', ['© 2020 Компания', 'Компания работает с 01.03.2020', 'Новости от 01.03.2020',
+                                  'Цены действуют с 40.15.2020'])
+def test_unrelated_or_invalid_date_is_not_price_publication_date(text):
+    from autobot.supplier_evidence import price_list_date
+    assert price_list_date('<p>'+text+'</p>')==('', '')

@@ -99,6 +99,7 @@ def offers_for_row(row: Mapping[str, Any]) -> list[dict]:
             from autobot.market_evidence_policy import price_origin_reason
             reason = freshness_reason(item, position.bucket) or price_terms_reason(item) or price_origin_reason(item) or specification_reason(
                 row.get(COL_NAME), clean(item.get('evidence')) or clean(item.get('snippet')) or clean(item.get('title')),
+                position_bucket=position.bucket,
             )
             from autobot.supplier_evidence import quantity_terms_reason
             reason = reason or quantity_terms_reason(item.get('quantity_terms'), row.get(COL_QTY), clean(row.get(COL_UNIT)))

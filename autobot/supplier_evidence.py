@@ -1,6 +1,7 @@
 """Supplier discovery and terms. A search snippet is never price evidence."""
 import re
 import math
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
@@ -67,6 +68,30 @@ def delivery_terms(page_html: str, evidence: str) -> str:
         if len(value) <= 600 and re.search(r'цен[аы].{0,35}(?:указана с доставкой|включает доставку|без доставки)', value, re.I):
             return value[:500]
     return 'Стоимость доставки до объекта не подтверждена; в цену автоматически не добавляется.'
+
+
+def price_list_date(page_html: str) -> tuple[str, str]:
+    """Read an explicit price effective date, never a footer or news date."""
+    soup = BeautifulSoup(page_html, 'html.parser')
+    months = ('января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+              'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря')
+    dates = {}
+    for node in soup.select('p,small,h1,h2,h3'):
+        value = re.sub(r'\s+', ' ', node.get_text(' ', strip=True))
+        if len(value) > 700:
+            continue
+        match = re.search(r'(?:цен[аы]|расценки|прайс).{0,90}?(?:действ\w*\s+с|актуальн\w*\s+на|обновлен\w*\s*)\s*'
+                          r'(\d{1,2})(?:-го)?[.\s]+(\d{1,2}|' + '|'.join(months) + r')[.\s]+(20\d{2})', value, re.I)
+        if not match:
+            continue
+        month = match[2].casefold()
+        try:
+            date = datetime(int(match[3]), int(month) if month.isdigit() else months.index(month) + 1,
+                            int(match[1]), tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            continue
+        dates[date] = value
+    return next(iter(dates.items())) if len(dates) == 1 else ('', '')
 
 
 def outdated_price_notice(page_html: str) -> str:

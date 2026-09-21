@@ -28,7 +28,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,6 +133,10 @@ _SEARCH_CANCELLED = ContextVar('market_search_cancelled', default=None)
 
 class SearchBudgetExceeded(TimeoutError):
     pass
+
+
+class SearchProviderBusy(SearchBudgetExceeded):
+    """A shared native client is busy; other search engines can still run."""
 
 
 def _search_provider_get(provider: str, url: str, *, timeout: float) -> str:
@@ -1961,13 +1965,34 @@ def _ddgs_text(client_class, query, *, timeout, **kwargs):
     # Concurrent primp clients can deadlock in native logger initialization.
     # Serialize this provider, including lazy result consumption, within the
     # position's existing time budget. Other providers remain independent.
-    if not _DDGS_CLIENT_LOCK.acquire(timeout=_remaining_timeout(timeout)):
-        raise SearchBudgetExceeded('Резервный поиск занят; лимит ожидания исчерпан')
+    # Do not queue every tender row behind one slow native request. DDGS may
+    # retry internally, so its socket timeout is not a wall-clock deadline.
+    if not _DDGS_CLIENT_LOCK.acquire(timeout=min(.1, _remaining_timeout(timeout))):
+        raise SearchProviderBusy('Резервный поиск занят; другие источники продолжают работу')
+    finished = threading.Event()
+    outcome = {}
+    context = copy_context()
+    def fetch():
+        try:
+            with client_class(timeout=_remaining_timeout(timeout)) as client:
+                outcome['items'] = list(client.text(query, **kwargs))
+        except Exception as error:
+            outcome['error'] = error
+        finally:
+            # A timed-out caller never releases a still-running native client.
+            # At most one such request exists; later positions use other engines.
+            _DDGS_CLIENT_LOCK.release()
+            finished.set()
     try:
-        with client_class(timeout=_remaining_timeout(timeout)) as client:
-            return list(client.text(query, **kwargs))
-    finally:
+        threading.Thread(target=lambda: context.run(fetch),name='market-ddgs-fetch',daemon=True).start()
+    except Exception:
         _DDGS_CLIENT_LOCK.release()
+        raise
+    if not finished.wait(_remaining_timeout(timeout)):
+        raise TimeoutError('DDGS timeout: резервный поиск превысил время ожидания')
+    if 'error' in outcome:
+        raise outcome['error']
+    return outcome.get('items', [])
 
 
 def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer], str]:
@@ -1990,10 +2015,10 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
     backends = [backend.strip().casefold() for backend in configured if backend.strip()]
     try:
         backend_limit = max(1, min(4, int(os.environ.get("MARKET_SEARCH_BACKEND_LIMIT", "2") or 2)))
-        ddgs_timeout = max(5, min(25, int(os.environ.get("MARKET_SEARCH_DDGS_TIMEOUT_SEC", "12") or 12)))
+        ddgs_timeout = max(2, min(25, int(os.environ.get("MARKET_SEARCH_DDGS_TIMEOUT_SEC", "6") or 6)))
     except ValueError:
         backend_limit = 2
-        ddgs_timeout = 12
+        ddgs_timeout = 6
     configured_regions = [
         item.strip() for item in (os.environ.get("MARKET_SEARCH_REGIONS") or "ru-ru").split(",") if item.strip()
     ] or ["ru-ru"]
@@ -2025,6 +2050,8 @@ def _search_web_ddgs(query: str, *, max_results: int) -> tuple[list[MarketOffer]
                     )
                 if len(_relevant_search_offers(offers, query, max_results=3, write_log=False)) >= 3:
                     return _dedupe_and_sort(offers, max_results=max_results), last_err
+            except SearchProviderBusy as e:
+                return _dedupe_and_sort(offers, max_results=max_results), str(e)
             except Exception as e:
                 last_err = f"{backend}: {type(e).__name__}: {e}"[:300]
                 folded_error = str(e).casefold()
@@ -2186,8 +2213,9 @@ def search_web(query: str, *, region: str = "", max_results: int = 3, exclude_ur
     except Exception as e:
         errors.append(f"Bing RSS: {type(e).__name__}: {e}")
 
-    if len(useful_batch()) >= min(max_results, 3):
-        return useful_batch()
+    early = useful_batch()
+    if len(early) >= min(max_results, 3) or (early and _remaining_timeout(7) <= 6):
+        return early
     # Yandex supplied most useful links in the full-run audit. Give it a turn
     # before slower fallback engines can exhaust discovery's own deadline.
     ddgs_offers, ddgs_err = _search_web_ddgs(q, max_results=max_results * 5)

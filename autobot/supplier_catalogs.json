@@ -120,6 +120,24 @@
     "buckets": ["materials"]
   },
   {
+    "name": "Держава — бетонные работы и основания, Ярославская область",
+    "catalog": {"adapter": "table", "bucket": "works", "region_label": "Ярославская область"},
+    "url": "https://beton-76.ru/",
+    "price_page": true,
+    "regions": ["ярослав", "рыбинск"],
+    "topics": ["бетонная подготовка", "геотекстиль", "основание", "песок", "щебень", "уплотнение", "засыпка"],
+    "buckets": ["works"]
+  },
+  {
+    "name": "Гамма-Бетон — товарный бетон, Ярославль",
+    "catalog": {"adapter": "table", "bucket": "materials", "region_label": "Ярославская область"},
+    "url": "https://yaroslavl.gamma-beton.ru/tovarniy-beton",
+    "price_page": true,
+    "regions": ["ярослав"],
+    "topics": ["бетон", "бст", "бсг", "В15", "В20", "гравий"],
+    "buckets": ["materials"]
+  },
+  {
     "name": "Орион — дорожные работы, Ярославль",
     "catalog": {"adapter": "table", "bucket": "works", "region_label": "Ярославская область"},
     "url": "https://orion76.ru/czeny/",

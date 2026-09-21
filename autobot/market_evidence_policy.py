@@ -58,8 +58,13 @@ def freshness_reason(offer: dict, bucket: str, *, now: float | None = None) -> s
         return 'Неизвестна дата проверки цены'
     if observed > current + 900:
         return 'Дата проверки цены находится в будущем'
-    if current - observed > evidence_ttl_days(bucket, text(offer.get('url'))) * 86400:
+    ttl = evidence_ttl_days(bucket, text(offer.get('url'))) * 86400
+    if current - observed > ttl:
         return 'Цена устарела: требуется повторная проверка источника'
+    if text(offer.get('published_at')):
+        published = observed_timestamp(offer['published_at'])
+        if published is None or published > current + 900 or current - published > ttl:
+            return 'Дата прайса требует обновления цены'
     return ''
 
 
@@ -114,11 +119,16 @@ def price_terms_reason(offer: dict) -> str:
     return ''
 
 
-def specification_reason(name: object, evidence: object) -> str:
+def specification_reason(name: object, evidence: object, *, position_bucket: str = '') -> str:
     """Reject explicit conflicts; lack of a detected conflict is not verification."""
     wanted, found = (text(value).casefold().replace('ё', 'е') for value in (name, evidence))
     if not wanted or not found:
         return ''
+    if position_bucket == 'works' or re.match(r'^(?:укладк|устройств|монтаж|установк|прокладк|затягиван|протяж|измерен|определен|испытан|уплотнен|планировк|засыпк|перевозк|погрузк|посев|разработк)', wanted):
+        from autobot.work_requirements import work_match_reason
+        work_reason = work_match_reason(name, evidence, declared_work=position_bucket == 'works')
+        if work_reason:
+            return work_reason
     curb = re.compile(r'бордюр\w*|бортов\w*\s+кам\w*|кам\w*\s+бортов\w*|\bб[рв]\s*\d')
     if curb.search(wanted) and not curb.search(found):
         return 'Цена материала не подтверждает стоимость готового бортового камня'

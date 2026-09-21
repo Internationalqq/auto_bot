@@ -41,7 +41,7 @@ def test_existing_extreme_offer_is_not_displayed_as_verified() -> None:
 
 def test_market_and_estimate_are_displayed_in_same_block() -> None:
     sources = _parse_bundle(
-        _bundle(180, 'м3', 'Разработка грунта с погрузкой'),
+        _bundle(180, 'м3', 'Разработка грунта с погрузкой в траншеях'),
         estimate_price=84_518,
         name="Разработка грунта с погрузкой в траншеях 1000",
         unit="м3",

@@ -332,6 +332,9 @@ def _scope(text: object, page_text: object = "") -> str:
     material_markers = ("под ключ", "с материал", "материалы включ", "материал включ")
     if any(marker in local for marker in work_markers) and not any(marker in local for marker in material_markers):
         return "work_only"
+    from autobot.work_requirements import operation
+    if operation(local)[0] and not any(marker in local for marker in material_markers):
+        return 'work_only'
     return "unknown"
 
 
@@ -554,7 +557,11 @@ def _table_row_facts(soup: BeautifulSoup, name: str, position_bucket: str) -> li
                     if numeric is not None: values=[numeric]
                 if not values: continue
                 title=''
-                for previous in reversed(texts[:index]):
+                for column in reversed(range(index)):
+                    previous = texts[column]
+                    label = headers[column] if column < len(headers) else ''
+                    if re.search(r'\bед(?:иниц[аы])?\.?\s*изм|^№|дата|актуаль', label, re.I):
+                        continue
                     if (re.search(r'[а-яa-z]',previous,re.I) and not parse_ruble_values(previous)
                             and not re.fullmatch(r'(?:\d+(?:[.,]\d+)?\s*)?(?:м[2²3³]?|шт|кг|т|л|пог\.?\s*м)\.?', _fold(previous))):
                         title=previous; break
