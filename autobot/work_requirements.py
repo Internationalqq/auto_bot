@@ -119,11 +119,13 @@ def _constraints(name):
             numeric = re.search(r'(?:до\s*|свыше\s*)?\d', found[0])
             normalized = re.sub(r'\s+', '', found[0][numeric.start():]).replace(',', '.').replace('²', '2').replace('³', '3')
             result.append({'kind': kind, 'label': label, 'value': normalized, 'evidence': found[0]})
-    soil = re.search(r'групп\w*\s+грунт\w*\s*[:=]?\s*(\d+)', value)
+    group = r'(\d+(?:\s*[-–]\s*\d+)?)'
+    soil = re.search(r'групп\w*\s+грунт\w*\s*[:=]?\s*' + group, value)
     if not soil:
-        soil = re.search(r'грунт\w*\s+(\d+)\s*(?:-?й\s*)?групп\w*', value)
+        soil = re.search(r'грунт\w*\s+' + group + r'\s*(?:-?й\s*)?групп\w*', value)
     if soil:
-        result.append({'kind':'soil-group', 'label':'группа грунта', 'value':soil[1], 'evidence':soil[0]})
+        normalized = re.sub(r'\s+', '', soil[1]).replace('–', '-')
+        result.append({'kind':'soil-group', 'label':'группа грунта', 'value':normalized, 'evidence':soil[0]})
     return result
 
 

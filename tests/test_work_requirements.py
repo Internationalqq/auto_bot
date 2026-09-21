@@ -66,6 +66,13 @@ def test_excavator_rate_keeps_bucket_and_soil_group():
     assert not work_match_reason(name, 'Разработка грунта 2 группы экскаватором с ковшом 0,25 м3')
 
 
+@pytest.mark.parametrize('source_group', ['1', '2', '1-3'])
+def test_soil_group_range_is_not_reduced_to_its_first_number(source_group):
+    name='Уплотнение грунта пневматическими трамбовками, группа грунтов: 1-2'
+    assert work_match_reason(name, 'Уплотнение грунта '+source_group+' группы пневматическими трамбовками')
+    assert not work_match_reason(name, 'Уплотнение грунта 1 – 2 группы пневматическими трамбовками')
+
+
 def test_diameter_label_inflection_does_not_change_explicit_dimension():
     assert not work_match_reason('Монтаж вертикального заземлителя диаметром 16 мм',
                                  'Монтаж вертикального заземлителя, диаметр: 16 мм')
