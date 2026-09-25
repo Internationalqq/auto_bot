@@ -33,6 +33,8 @@ class QueueTests(unittest.TestCase):
         self.db = Path(self.tmp.name) / 'queue.sqlite3'
         self.patch = patch.object(jobs, 'DB_PATH', self.db)
         self.patch.start(); self.addCleanup(self.patch.stop)
+        outbox_patch = patch.object(routes.outbox, 'DB_PATH', Path(self.tmp.name) / 'outbox.sqlite3')
+        outbox_patch.start(); self.addCleanup(outbox_patch.stop)
 
     def test_groups_separate_work_material_signs_and_repeat(self):
         ids = jobs.enqueue(SOURCE)

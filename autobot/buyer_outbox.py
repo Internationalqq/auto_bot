@@ -1,0 +1,116 @@
+"""Explicit supplier sends, isolated from both draft and market-price queues.
+
+An expired send is never reclaimed for execution. It becomes uncertain until
+the original worker can report its receipt; a repeat click returns that row.
+"""
+from contextlib import closing
+import hashlib
+import json
+import re
+import secrets
+import sqlite3
+import time
+import uuid
+
+from autobot import buyer_jobs
+from autobot.hermes_buyer import BuyerError, encoded, validate_draft
+from autobot.paths import DATA_DIR
+
+DB_PATH = DATA_DIR / 'buyer_outbox.sqlite3'
+
+
+def connect():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DB_PATH, timeout=10)
+    db.row_factory = sqlite3.Row
+    db.execute('''CREATE TABLE IF NOT EXISTS outbound (
+        id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE NOT NULL, tender_id TEXT NOT NULL,
+        draft_job_id TEXT NOT NULL, draft_index INTEGER NOT NULL, recipient TEXT NOT NULL,
+        subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
+        worker TEXT, token TEXT, lease_until REAL, receipt TEXT,
+        created_at REAL NOT NULL, updated_at REAL NOT NULL)''')
+    db.commit()
+    return db
+
+
+def enqueue(tid, job_id, index, recipient):
+    if (not isinstance(recipient, str) or len(recipient) > 254 or
+            not re.fullmatch(r'[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}', recipient.strip())):
+        raise BuyerError('Укажите один email поставщика')
+    recipient = recipient.strip().lower()
+    job = next((j for j in buyer_jobs.jobs(tid) if j['id'] == job_id), None)
+    if not job or job['status'] != 'completed' or not job['result']:
+        raise BuyerError('Сначала подготовьте обращение')
+    payload = job['payload']['draft_task']
+    if payload.get('schema_version', 1) < 2:
+        raise BuyerError('Это старый текст. Выберите позиции и подготовьте обращение заново')
+    validate_draft(job['result'], payload)
+    if type(index) is not int or not 0 <= index < len(job['result']['drafts']):
+        raise BuyerError('Обращение не найдено')
+    draft = job['result']['drafts'][index]
+    fingerprint = hashlib.sha256(encoded([tid, recipient, draft['subject'], draft['body']]).encode()).hexdigest()
+    with closing(connect()) as db, db:
+        now = time.time()
+        db.execute('''INSERT OR IGNORE INTO outbound
+            (id,fingerprint,tender_id,draft_job_id,draft_index,recipient,subject,body,status,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,'queued',?,?)''',
+            (uuid.uuid4().hex, fingerprint, tid, job_id, index, recipient, draft['subject'], draft['body'], now, now))
+        return db.execute('SELECT id FROM outbound WHERE fingerprint=?', (fingerprint,)).fetchone()['id']
+
+
+def expire(db):
+    db.execute("UPDATE outbound SET status='uncertain',updated_at=? WHERE status='sending' AND lease_until<?",
+               (time.time(), time.time()))
+
+
+def listing(tid):
+    with closing(connect()) as db, db:
+        expire(db)
+        return [{k: row[k] for k in ('id', 'draft_job_id', 'draft_index', 'recipient', 'status', 'created_at', 'updated_at')} |
+                {'receipt': json.loads(row['receipt']) if row['receipt'] else None}
+                for row in db.execute('SELECT * FROM outbound WHERE tender_id=? ORDER BY created_at', (tid,))]
+
+
+def claim(worker):
+    with closing(connect()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        expire(db)
+        # Reattach only to the SAME attempt, for local journal reconciliation.
+        row = db.execute("SELECT * FROM outbound WHERE worker=? AND status IN ('sending','uncertain') AND receipt IS NULL ORDER BY created_at LIMIT 1", (worker,)).fetchone()
+        if row:
+            return dict(row)
+        row = db.execute("SELECT * FROM outbound WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
+        if not row:
+            return None
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        db.execute("UPDATE outbound SET worker=?,token=?,status='sending',lease_until=?,updated_at=? WHERE id=?",
+                   (worker, token, now+120, now, row['id']))
+        return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone())
+
+
+def update(job_id, worker, token, receipt=None):
+    with closing(connect()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM outbound WHERE id=?', (job_id,)).fetchone()
+        if not row or not token or row['worker'] != worker or not secrets.compare_digest(row['token'] or '', token):
+            return False
+        if receipt is None:
+            if row['status'] != 'sending':
+                return False
+            db.execute('UPDATE outbound SET lease_until=?,updated_at=? WHERE id=?', (time.time()+120, time.time(), job_id))
+            return True
+        if not isinstance(receipt, dict) or set(receipt) != {'status', 'detail', 'evidence'}:
+            raise BuyerError('Некорректное подтверждение отправки')
+        if receipt['status'] not in ('sent', 'blocked', 'uncertain'):
+            raise BuyerError('Неизвестный результат отправки')
+        if any(not isinstance(receipt[k], str) or len(receipt[k]) > 2000 for k in ('detail', 'evidence')):
+            raise BuyerError('Некорректное подтверждение отправки')
+        if receipt['status'] == 'sent' and not receipt['evidence'].strip():
+            raise BuyerError('Нет подтверждения из отправленных писем')
+        text = encoded(receipt)
+        if row['receipt']:
+            return row['receipt'] == text
+        db.execute('UPDATE outbound SET status=?,receipt=?,lease_until=NULL,updated_at=? WHERE id=?',
+                   (receipt['status'], text, time.time(), job_id))
+        return True

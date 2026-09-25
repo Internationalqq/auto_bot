@@ -48,6 +48,8 @@ data/market_index/
 data/agent_market_jobs.sqlite3
 data/agent_market_jobs.sqlite3-*
 data/agent_market_worker.token
+data/buyer_outbox.sqlite3
+data/buyer_outbox.sqlite3-*
 
 # Runtime state; the existing user checkpoint remains tracked.
 /data/market_web_worker.lock

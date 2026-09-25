@@ -11,7 +11,16 @@
 .buyer-group p, .buyer-group li { font-size: 14px; line-height: 1.6; max-width: 75ch; }
 .buyer-draft + .buyer-draft { border-top: 1px solid var(--line, #dce2e9); margin-top: 20px; }
 .buyer-body { white-space: pre-wrap; user-select: text; }
+.buyer-send { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; max-width: 680px; margin: 16px 0; }
+.buyer-send label { grid-column: 1 / -1; font-size: 13px; font-weight: 600; }
+.buyer-send input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line, #dce2e9); border-radius: 8px; padding: 10px 12px; font: inherit; color: var(--text, #182332); background: var(--surface, #fff); }
+.buyer-send input::placeholder { color: var(--muted, #526071); }
+.buyer-send input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.buyer-send-feedback { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.buyer-send-feedback:empty { display: none; }
 @media (max-width: 600px) {
+  .buyer-send { grid-template-columns: minmax(0, 1fr); }
+  .buyer-send button { min-height: 44px; white-space: normal; }
   .buyer-panel .agent-market-actions { width: 100%; }
   .buyer-panel .agent-market-actions button { white-space: normal; min-height: 44px; }
 }

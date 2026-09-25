@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import requests
 
-from autobot.hermes_buyer import BuyerError, HermesBusy, DraftJournal, HermesClient, task_payload, validate_draft
+from autobot.hermes_buyer import BuyerError, HermesBusy, DraftJournal, HermesClient, task_payload, validate_draft, supplier_brief, restore_position_keys
 
 
 SOURCE = {'tender_id': 'example', 'region': 'Ярославская область', 'positions': [
@@ -19,6 +19,9 @@ SOURCE = {'tender_id': 'example', 'region': 'Ярославская област
     {'position_key': 'sign', 'name': 'Знак дорожный', 'quantity': None, 'unit': 'шт', 'type_slug': 'product'}]}
 DRAFT = {'drafts': [{'position_keys': [key], 'subject': 'Запрос цены', 'body': 'Просим сообщить цену и условия.'}
                     for key in ['cable', 'labour', 'sign']], 'questions': ['Уточните количество знаков']}
+MODEL_DRAFT = copy.deepcopy(DRAFT)
+for index, draft in enumerate(MODEL_DRAFT['drafts'], 1):
+    draft['position_keys'] = ['item_' + str(index)]
 
 
 class HermesBuyerTests(unittest.TestCase):
@@ -48,6 +51,54 @@ class HermesBuyerTests(unittest.TestCase):
         source['positions'].append(source['positions'][0])
         with self.assertRaises(BuyerError):
             self.journal.enqueue(source)
+
+    def test_model_input_excludes_prices_and_internal_context(self):
+        source = copy.deepcopy(SOURCE)
+        source.update(tender_id='0171200001926000664', budget=900000,
+                      conditions={'overhead': 19, 'reserve': 7})
+        source['positions'][0].update(position_key='0171200001926000664-row-1',
+            section='Раздел 2. Внутренний ориентир 456789', price=456789,
+            specification={'section_note': 'Цена 456789', 'requirements': {
+                'budget': 456789, 'specifications': [{'kind': 'voltage', 'label': 'Напряжение',
+                 'value': '660 В', 'price': 456789, 'evidence': 'внутренняя смета'}]}})
+        client = self.fake()
+        job = self.journal.enqueue(source)
+        self.journal.advance(job['id'], client)
+        sent = json.loads(client.request.call_args.kwargs['json']['input'])
+        serialized = json.dumps(sent, ensure_ascii=False)
+        for private in ['0171200001926000664', '456789', 'budget', 'overhead', 'reserve', 'section', 'price', 'evidence']:
+            self.assertNotIn(private, serialized)
+        self.assertEqual(sent['positions'][0]['quantity'], 120)
+        self.assertIn('660 В', serialized)
+        self.assertEqual(sent['positions'][0]['position_key'], 'item_1')
+
+    def test_internal_or_price_text_is_rejected_but_dimensions_are_allowed(self):
+        payload = task_payload(SOURCE)
+        for text in ['Цена по смете 100', 'Раздел 2', 'Наш бюджет 99', 'Черновик не отправлен',
+                     'Ориентир 5 000 рублей', 'Можем заплатить 1000₽']:
+            draft = copy.deepcopy(DRAFT)
+            draft['drafts'][0]['body'] = text
+            with self.subTest(text=text), self.assertRaises(BuyerError):
+                validate_draft(draft, payload)
+        draft['drafts'][0]['body'] = 'Нужен кабель 3х2,5, 120 м, 660 В. Укажите вашу цену в руб/м с НДС.'
+        self.assertEqual(validate_draft(draft, payload), draft)
+
+    def test_alias_mapping_and_invented_alias(self):
+        self.assertEqual(restore_position_keys(MODEL_DRAFT, task_payload(SOURCE)), DRAFT)
+        draft = copy.deepcopy(MODEL_DRAFT)
+        draft['drafts'][0]['position_keys'] = ['cable']
+        with self.assertRaises(BuyerError): restore_position_keys(draft, task_payload(SOURCE))
+
+    def test_legacy_running_job_can_complete_after_upgrade(self):
+        job = self.journal.enqueue(SOURCE)
+        payload = job['payload']; payload['schema_version'] = 1
+        with self.journal.connect() as db:
+            db.execute("UPDATE buyer_drafts SET payload=?,status='running',run_id='old',endpoint=? WHERE id=?",
+                       (json.dumps(payload), self.fake().base_url, job['id']))
+        db.close()
+        client = self.fake()
+        client.request.return_value = {'run_id': 'old', 'status': 'completed', 'output': DRAFT}
+        self.assertEqual(self.journal.advance(job['id'], client)['result'], DRAFT)
 
     def test_nan_rejected(self):
         source = copy.deepcopy(SOURCE)
@@ -123,7 +174,7 @@ class HermesBuyerTests(unittest.TestCase):
         job = self.journal.enqueue(SOURCE)
         client = self.fake()
         self.journal.advance(job['id'], client)
-        client.request.return_value = {'run_id': 'run_test', 'status': 'completed', 'output': json.dumps(DRAFT)}
+        client.request.return_value = {'run_id': 'run_test', 'status': 'completed', 'output': json.dumps(MODEL_DRAFT)}
         restarted = DraftJournal(self.path)
         result = restarted.advance(job['id'], client)
         self.assertEqual(result['status'], 'draft_ready')
@@ -269,7 +320,7 @@ class HermesTransportTests(unittest.TestCase):
                 if self.path.endswith('/toolsets'):
                     self.reply([])
                 else:
-                    self.reply({'run_id': 'run_http', 'status': 'completed', 'output': json.dumps(DRAFT)})
+                    self.reply({'run_id': 'run_http', 'status': 'completed', 'output': json.dumps(MODEL_DRAFT)})
 
             def do_POST(self):
                 calls.append((self.path, self.headers.get('Idempotency-Key'),

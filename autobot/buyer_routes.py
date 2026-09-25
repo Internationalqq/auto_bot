@@ -4,7 +4,7 @@ import re
 import sqlite3
 from pathlib import Path
 from flask import Blueprint, jsonify, request, send_from_directory
-from autobot import buyer_jobs as jobs, crm_actor
+from autobot import buyer_jobs as jobs, buyer_outbox as outbox, crm_actor
 from autobot.hermes_buyer import BuyerError
 from autobot.uploaded_corrections import CorrectionError
 from autobot.estimate_publication_recovery import consistent_report, PublicationRecoveryRequired
@@ -76,8 +76,18 @@ def tender_jobs(tid):
     for job in jobs.jobs(tid):
         task = job['payload']['draft_task']
         result.append({k: job[k] for k in ('id', 'position_name', 'status', 'error', 'created_at', 'updated_at', 'result')} |
-                      {'positions': task['positions'], 'region': task['region']})
-    return jsonify(ok=True, jobs=result)
+                      {'positions': task['positions'], 'region': task['region'], 'can_send': task.get('schema_version', 1) >= 2})
+    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid))
+
+
+@blueprint.post('/api/tenders/<tid>/buyer/outbox')
+@user_route
+def send_draft(tid):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise BuyerError('Ожидаются параметры отправки')
+    job_id = outbox.enqueue(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('recipient'))
+    return jsonify(ok=True, id=job_id), 202
 
 
 @blueprint.get('/tenders/buyer.<ext>')
@@ -112,6 +122,26 @@ def worker_route(fn):
 @worker_route
 def claim(data):
     return jsonify(ok=True, job=jobs.claim(data['worker_id']))
+
+
+@blueprint.post(WORKER_API + '/outbox/claim')
+@worker_route
+def claim_outbound(data):
+    return jsonify(ok=True, job=outbox.claim(data['worker_id']))
+
+
+@blueprint.post(WORKER_API + '/outbox/<job_id>/<action>')
+@worker_route
+def update_outbound(data, job_id, action):
+    if action not in ('heartbeat', 'complete'):
+        return jsonify(ok=False), 404
+    token = data.get('lease_token')
+    if not isinstance(token, str) or not token:
+        return jsonify(ok=False), 409
+    if action == 'complete' and not isinstance(data.get('receipt'), dict):
+        raise BuyerError('Нужно подтверждение отправки')
+    ok = outbox.update(job_id, data['worker_id'], token, data.get('receipt') if action == 'complete' else None)
+    return (jsonify(ok=True), 200) if ok else (jsonify(ok=False), 409)
 
 
 @blueprint.post(WORKER_API + '/jobs/<job_id>/<action>')
