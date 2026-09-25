@@ -29,6 +29,8 @@ def connect():
         subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
         worker TEXT, token TEXT, lease_until REAL, receipt TEXT,
         created_at REAL NOT NULL, updated_at REAL NOT NULL)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS outbound_attempt_history (
+        id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, previous_result TEXT NOT NULL, retried_at REAL NOT NULL)''')
     db.commit()
     return db
 
@@ -63,6 +65,24 @@ def expire(db):
                (time.time(), time.time()))
 
 
+def retry_blocked(tid, job_id):
+    """Explicit retry after a proven no-send; uncertain/sent cannot be retried."""
+    with closing(connect()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM outbound WHERE id=? AND tender_id=?', (job_id, tid)).fetchone()
+        if not row:
+            raise BuyerError('Письмо не найдено')
+        if row['status'] == 'queued':
+            return job_id  # double-click on retry
+        if row['status'] != 'blocked' or not row['receipt']:
+            raise BuyerError('Повтор разрешён только после подтверждения, что письмо не отправлялось')
+        db.execute('INSERT INTO outbound_attempt_history(job_id,previous_result,retried_at) VALUES (?,?,?)',
+                   (job_id, row['receipt'], time.time()))
+        db.execute("UPDATE outbound SET status='queued',receipt=NULL,worker=NULL,token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                   (time.time(), job_id))
+        return job_id
+
+
 def listing(tid):
     with closing(connect()) as db, db:
         expire(db)
@@ -78,7 +98,7 @@ def claim(worker):
         # Reattach only to the SAME attempt, for local journal reconciliation.
         row = db.execute("SELECT * FROM outbound WHERE worker=? AND status IN ('sending','uncertain') AND receipt IS NULL ORDER BY created_at LIMIT 1", (worker,)).fetchone()
         if row:
-            return dict(row)
+            return dict(row) | {'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
         row = db.execute("SELECT * FROM outbound WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
         if not row:
             return None
@@ -86,7 +106,8 @@ def claim(worker):
         now = time.time()
         db.execute("UPDATE outbound SET worker=?,token=?,status='sending',lease_until=?,updated_at=? WHERE id=?",
                    (worker, token, now+120, now, row['id']))
-        return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone())
+        return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone()) | {
+            'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
 
 
 def update(job_id, worker, token, receipt=None):

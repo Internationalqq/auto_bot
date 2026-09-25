@@ -78,7 +78,12 @@ uncertain — могло отправиться, но подтверждения
 
 
 def execute(job, config, remote):
-    folder = Path(config['outbox_dir']) / job['id']
+    # Each explicitly authorized retry has a new lease token and its own audit.
+    # Existing attempt journals remain untouched, including pre-v2 journals.
+    folder = Path(config['outbox_dir']) / job['id'] / hashlib.sha256(job['token'].encode()).hexdigest()[:24]
+    legacy = Path(config['outbox_dir']) / job['id']
+    if job.get('attempt_number', 0) == 0 and (legacy / 'state.json').exists():
+        folder = legacy
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_path = folder / 'state.json'
     if state_path.exists():

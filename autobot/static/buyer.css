@@ -18,6 +18,7 @@
 .buyer-send input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .buyer-send-feedback { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .buyer-send-feedback:empty { display: none; }
+.buyer-draft > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; min-height: 44px; }
 @media (max-width: 600px) {
   .buyer-send { grid-template-columns: minmax(0, 1fr); }
   .buyer-send button { min-height: 44px; white-space: normal; }

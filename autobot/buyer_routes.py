@@ -86,7 +86,12 @@ def send_draft(tid):
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         raise BuyerError('Ожидаются параметры отправки')
-    job_id = outbox.enqueue(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('recipient'))
+    if data.get('action') == 'retry_blocked':
+        job_id = outbox.retry_blocked(tid, data.get('id'))
+    elif data.get('action', 'send') == 'send':
+        job_id = outbox.enqueue(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('recipient'))
+    else:
+        raise BuyerError('Неизвестное действие отправки')
     return jsonify(ok=True, id=job_id), 202
 
 

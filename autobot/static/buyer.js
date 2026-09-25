@@ -84,7 +84,24 @@
             });
             article.append(form);
             outbox.filter(item => item.draft_job_id === job.id && item.draft_index === index).forEach(item => {
-              article.append(node('p', `${item.recipient} · ${sendLabels[item.status] || item.status}${item.receipt?.detail ? '. ' + item.receipt.detail : ''}`, 'buyer-send-feedback'));
+              const receipt = node('p', `${item.recipient} · ${sendLabels[item.status] || item.status}${item.receipt?.detail ? '. ' + item.receipt.detail : ''}`, 'buyer-send-feedback');
+              article.append(receipt);
+              if (item.status === 'blocked') {
+                const retry = node('button', `Повторить для ${item.recipient}`, 'btn ghost');
+                retry.type = 'button'; retry.title = 'После устранения причины. Предыдущая попытка не отправляла письмо.';
+                retry.addEventListener('click', async () => {
+                  if (busy) return;
+                  busy = true; retry.disabled = true;
+                  try {
+                    const response = await fetch(url.replace(/jobs$/, 'outbox'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'retry_blocked',id:item.id})});
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось повторить. Обновите статус отправки.');
+                    await load();
+                  } catch (error) { receipt.textContent = error.message; }
+                  finally { busy = false; retry.disabled = false; }
+                });
+                article.append(retry);
+              }
             });
           } else {
             article.append(node('p', 'Старый формат. Выберите эти позиции и подготовьте новое обращение перед отправкой.'));

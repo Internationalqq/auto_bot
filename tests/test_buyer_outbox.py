@@ -1,6 +1,7 @@
 from contextlib import closing
 import copy
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -49,6 +50,21 @@ class OutboxTests(unittest.TestCase):
         self.assertEqual(box.claim('mac')['token'], job['token'])
         self.assertFalse(box.update(first, 'other', job['token']))
         self.assertFalse(box.update(first, 'mac', 'wrong'))
+        with self.assertRaises(BuyerError): box.retry_blocked('123456789012345', first)
+
+    def test_explicit_blocked_retry_preserves_history_and_fences_old_worker(self):
+        key = self.enqueue(); old = box.claim('mac')
+        receipt = {'status': 'blocked', 'detail': 'Нет инструмента, отправки не было', 'evidence': ''}
+        box.update(key, 'mac', old['token'], receipt)
+        box.retry_blocked('123456789012345', key)
+        box.retry_blocked('123456789012345', key)
+        new = box.claim('mac')
+        self.assertNotEqual(new['token'], old['token'])
+        self.assertFalse(box.update(key, 'mac', old['token'], receipt))
+        with closing(box.connect()) as db:
+            saved = db.execute('SELECT previous_result FROM outbound_attempt_history').fetchall()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(json.loads(saved[0][0]), receipt)
 
     def test_invalid_recipient_legacy_and_other_tender_rejected(self):
         for address in ['a@example.org,b@example.org', 'a@example.org\r\nBcc:x@evil.org', '', 'abc']:
@@ -80,7 +96,7 @@ class OutboxTests(unittest.TestCase):
 
     def test_restart_does_not_rerun_agent_after_uncertain_start(self):
         job = {'id': 'q1', 'recipient': 'a@example.org', 'status': 'sending', 'token': 'token'}
-        folder = self.path/'q1'; folder.mkdir()
+        folder = self.path/'q1'/hashlib.sha256(b'token').hexdigest()[:24]; folder.mkdir(parents=True)
         (folder/'state.json').write_text('{"started_at":1}')
         with patch('autobot.buyer_sender.subprocess.Popen') as popen:
             receipt = execute(job, {'outbox_dir': str(self.path)}, Mock())
