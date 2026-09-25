@@ -107,17 +107,19 @@ def validate_draft(output, payload):
 
 
 class HermesClient:
-    def __init__(self, base_url, token, session=None):
+    def __init__(self, base_url, token, session=None, *, standalone=False):
         url = urlsplit(base_url)
+        allowed_path = '' if standalone else '/p/autobot-buyer'
         if (url.scheme not in {'http', 'https'} or not url.hostname or url.username
                 or url.password or url.query or url.fragment
-                or url.path.rstrip('/') != '/p/autobot-buyer'):
+                or url.path.rstrip('/') != allowed_path):
             raise BuyerError('Нужен адрес отдельного профиля /p/autobot-buyer')
         if url.scheme == 'http' and url.hostname not in {'127.0.0.1', 'localhost', '::1'}:
             raise BuyerError('Вне localhost требуется HTTPS')
         if not token or any(c in token for c in '\r\n'):
             raise BuyerError('Не задан ключ отдельного профиля Hermes')
         self.base_url = base_url.rstrip('/')
+        self.standalone = standalone
         self.token = token
         self.session = session or requests.Session()
         self.session.trust_env = False
@@ -139,7 +141,17 @@ class HermesClient:
             raise BuyerError('Hermes недоступен или вернул некорректный ответ') from None
 
     def check(self):
+        if self.standalone:
+            models = self.request('GET', '/v1/models')
+            if (not isinstance(models, dict) or not isinstance(models.get('data'), list)
+                    or len(models['data']) != 1 or not isinstance(models['data'][0], dict)
+                    or models['data'][0].get('id') != 'autobot-buyer'):
+                raise BuyerError('Локальный API не подтвердил профиль autobot-buyer')
         toolsets = self.request('GET', '/v1/toolsets')
+        # Hermes v0.17 returns an OpenAI-style list envelope. Other supported
+        # versions return the array directly. Unknown envelopes fail closed.
+        if isinstance(toolsets, dict) and toolsets.get('object') == 'list' and toolsets.get('platform') == 'api_server':
+            toolsets = toolsets.get('data')
         if not isinstance(toolsets, list):
             raise BuyerError('Не удалось проверить инструменты Hermes')
         for item in toolsets:
@@ -243,7 +255,8 @@ def main():
         elif args.command == 'show':
             result = journal.get(args.job_id)
         else:
-            client = HermesClient(os.environ.get('HERMES_BUYER_URL', ''), os.environ.get('HERMES_BUYER_KEY', ''))
+            client = HermesClient(os.environ.get('HERMES_BUYER_URL', ''), os.environ.get('HERMES_BUYER_KEY', ''),
+                standalone=os.environ.get('HERMES_BUYER_STANDALONE') == '1')
             result = client.check() if args.command == 'check' else journal.advance(args.job_id, client)
         print(encoded(result))
     except (BuyerError, OSError, json.JSONDecodeError) as error:

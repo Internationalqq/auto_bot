@@ -180,6 +180,31 @@ class HermesTransportTests(unittest.TestCase):
         self.assertEqual(kwargs['headers']['Authorization'], 'Bearer private-key')
         self.assertFalse(session.trust_env)
 
+    def test_installed_hermes_toolset_envelope(self):
+        client, _ = self.make_client({'object': 'list', 'platform': 'api_server',
+                                     'data': [{'enabled': False, 'tools': ['terminal']}]})
+        self.assertTrue(client.check()['ready_for_drafts'])
+        client, _ = self.make_client({'object': 'list', 'platform': 'cli', 'data': []})
+        with self.assertRaises(BuyerError):
+            client.check()
+
+    def test_envelope_does_not_allow_enabled_tools(self):
+        client, _ = self.make_client({'object': 'list', 'platform': 'api_server',
+                                     'data': [{'enabled': True, 'tools': ['send_message']}]})
+        with self.assertRaises(BuyerError):
+            client.check()
+
+    def test_standalone_requires_expected_profile_identity(self):
+        client, session = self.make_client([])
+        client = HermesClient('http://127.0.0.1:8644', 'private-key', session, standalone=True)
+        session.request.return_value.json.side_effect = [
+            {'data': [{'id': 'autobot-buyer'}]},
+            {'object': 'list', 'platform': 'api_server', 'data': []}]
+        self.assertTrue(client.check()['ready_for_drafts'])
+        session.request.return_value.json.side_effect = [{'data': [{'id': 'default'}]}]
+        with self.assertRaises(BuyerError):
+            client.check()
+
     def test_errors_dont_echo_secrets(self):
         for status in [301, 401, 403, 404, 500]:
             client, _ = self.make_client({'error': 'private-key'}, status)

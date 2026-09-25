@@ -1,0 +1,17 @@
+.buyer-panel { margin-top: 24px; }
+.buyer-panel .agent-market-head { align-items: flex-start; }
+.buyer-panel .agent-market-actions { flex-wrap: wrap; }
+.buyer-group { padding: 16px 0; border-top: 1px solid var(--line, #dce2e9); overflow-wrap: anywhere; }
+.buyer-group summary { display: grid; grid-template-columns: minmax(0, 1fr) 12px; gap: 8px 20px; cursor: pointer; padding: 4px 0; }
+.buyer-group summary::after { content: ''; grid-column: 2; grid-row: 1; align-self: center; width: 7px; height: 7px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); }
+.buyer-group[open] summary::after { transform: rotate(225deg); }
+.buyer-group summary span { color: var(--muted, #526071); font-size: 13px; }
+.buyer-group summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+.buyer-group h3 { font-size: 15px; margin: 20px 0 8px; }
+.buyer-group p, .buyer-group li { font-size: 14px; line-height: 1.6; max-width: 75ch; }
+.buyer-draft + .buyer-draft { border-top: 1px solid var(--line, #dce2e9); margin-top: 20px; }
+.buyer-body { white-space: pre-wrap; user-select: text; }
+@media (max-width: 600px) {
+  .buyer-panel .agent-market-actions { width: 100%; }
+  .buyer-panel .agent-market-actions button { white-space: normal; min-height: 44px; }
+}

@@ -11,6 +11,8 @@
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
+  <link rel="stylesheet" href="/tenders/buyer.css?v=20260925-1" />
+  <script defer src="/tenders/buyer.js?v=20260925-1"></script>
 </head>
 <body>
   <header class="topbar">
@@ -317,6 +319,19 @@
       </details>
     </section>
 
+    <section class="agent-market-card buyer-panel" data-buyer="{{ tender.tender_id }}" aria-labelledby="buyerTitle">
+      <div class="agent-market-head">
+        <div><h2 id="buyerTitle">Запросы поставщикам</h2><span>Hermes подготовит обращения по направлениям сметы. Регион: {{ tender.region or "нужно уточнить" }}.</span></div>
+        <div class="agent-market-actions">
+          <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
+          <button class="btn ghost" type="button" data-buyer-cancel hidden>Отменить задания</button>
+          <button class="btn primary" type="button" data-buyer-start>Подготовить обращения</button>
+        </div>
+      </div>
+      <p class="agent-market-note">Пока только черновики: отправка поставщикам ещё не подключена. Они не учитываются в найденных ценах.</p>
+      <p role="status" aria-live="polite" data-buyer-status>Загружаем задания…</p>
+      <div data-buyer-list></div>
+    </section>
     </div>
     <section class="economics-workspace" data-workspace-panel="economics" id="workspaceEconomics" aria-labelledby="workspaceTabEconomics" hidden>
       <h2>Расчёт участия</h2><p>Подтверждённые цены — основа закупки. Доставку, налоги, накладные и резерв задайте для этого тендера.</p>

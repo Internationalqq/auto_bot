@@ -62,3 +62,7 @@ data/agent_market_worker.token
 /data/main_jobs.sqlite3-*
 /data/main_jobs.sqlite3.executor.lock
 /data/main_jobs.sqlite3.schema.lock
+
+# Separate Hermes draft queue and credentials
+/data/buyer_jobs.sqlite3*
+/data/buyer_worker.token

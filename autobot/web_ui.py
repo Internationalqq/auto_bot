@@ -96,6 +96,8 @@ from autobot.tender_review import blueprint as tender_review_blueprint
 app.register_blueprint(tender_review_blueprint)
 from autobot.supplier_catalog_routes import blueprint as supplier_catalog_blueprint
 app.register_blueprint(supplier_catalog_blueprint)
+from autobot.buyer_routes import blueprint as buyer_blueprint
+app.register_blueprint(buyer_blueprint)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 _estimate_capability_secret_raw = str(os.environ.get("AUTOBOT_BRIDGE_SIGNING_SECRET") or "")
 _ESTIMATE_IMPORT_CAPABILITY_SECRET = (
