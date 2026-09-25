@@ -17,9 +17,16 @@ from autobot.hermes_buyer import BuyerError
 
 def save(path, value):
     temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+    with temp.open('w', encoding='utf-8') as output:
+        output.write(json.dumps(value, ensure_ascii=False))
+        output.flush()
+        os.fsync(output.fileno())
     temp.chmod(0o600)
     os.replace(temp, path)
+    if os.name == 'posix':
+        directory = os.open(path.parent, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
 
 
 def read_receipt(folder, job):
@@ -88,6 +95,7 @@ def execute(job, config, remote):
     save(state_path, {'started_at': time.time(), 'recipient': job['recipient']})
     save(folder / 'request.json', {k: job[k] for k in ('id', 'recipient', 'subject', 'body')})
     log_path = folder / 'agent.log'
+    process = None
     try:
         with log_path.open('w', encoding='utf-8') as log:
             log_path.chmod(0o600)
@@ -108,7 +116,9 @@ def execute(job, config, remote):
                 time.sleep(10)
         receipt = read_receipt(folder, job)
     except OSError:
-        receipt = {'status': 'blocked', 'detail': 'Не удалось запустить профиль отправки на Mac.', 'evidence': ''}
+        receipt = ({'status': 'blocked', 'detail': 'Не удалось запустить профиль отправки на Mac.', 'evidence': ''}
+                   if process is None else
+                   {'status': 'uncertain', 'detail': 'Связь с отправляющим агентом прервалась. Проверьте отправленные на Mac.', 'evidence': ''})
     save(state_path, {'receipt': receipt})
     return receipt
 
