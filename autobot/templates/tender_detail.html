@@ -12,7 +12,7 @@
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
   <link rel="stylesheet" href="/tenders/buyer.css?v=20260925-1" />
-  <script defer src="/tenders/buyer.js?v=20260925-1"></script>
+  <script defer src="/tenders/buyer.js?v=20260925-2"></script>
 </head>
 <body>
   <header class="topbar">
@@ -321,7 +321,7 @@
 
     <section class="agent-market-card buyer-panel" data-buyer="{{ tender.tender_id }}" aria-labelledby="buyerTitle">
       <div class="agent-market-head">
-        <div><h2 id="buyerTitle">Запросы поставщикам</h2><span>Hermes подготовит обращения по направлениям сметы. Регион: {{ tender.region or "нужно уточнить" }}.</span></div>
+        <div><h2 id="buyerTitle">Запросы поставщикам</h2><span>По выбранным строкам; без выбора — по всем позициям без подтверждённой цены. Регион: {{ tender.region or "нужно уточнить" }}.</span></div>
         <div class="agent-market-actions">
           <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
           <button class="btn ghost" type="button" data-buyer-cancel hidden>Отменить задания</button>

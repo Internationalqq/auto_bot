@@ -88,10 +88,16 @@
   });
   cancel.addEventListener('click', () => mutate({action: 'cancel'}));
   refresh.addEventListener('click', load);
-  document.addEventListener('change', () => {
+  function syncSelection() {
     const count = document.querySelectorAll('[data-agent-position]:checked').length;
     start.textContent = count ? `Подготовить по выбранным (${count})` : 'Подготовить обращения';
-  });
+  }
+  document.addEventListener('change', syncSelection);
+  // Existing bulk actions (and the price search) update this shared count
+  // without firing checkbox change events. Keep displayed and submitted scope equal.
+  const selectionCount = document.querySelector('#agentSelectedCount');
+  if (selectionCount) new MutationObserver(syncSelection).observe(selectionCount, {childList: true, characterData: true, subtree: true});
+  syncSelection();
   load();
   setInterval(() => { if (!document.hidden && !busy) load(); }, 15000);
 })();
