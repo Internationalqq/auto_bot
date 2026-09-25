@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import requests
 
-from autobot.hermes_buyer import BuyerError, DraftJournal, HermesClient, task_payload, validate_draft
+from autobot.hermes_buyer import BuyerError, HermesBusy, DraftJournal, HermesClient, task_payload, validate_draft
 
 
 SOURCE = {'tender_id': 'example', 'region': 'Ярославская область', 'positions': [
@@ -85,6 +85,39 @@ class HermesBuyerTests(unittest.TestCase):
         result = restarted.advance(job['id'], client)
         self.assertEqual(result['status'], 'submission_uncertain')
         self.assertEqual(client.request.call_count, 1)
+
+    def test_explicit_busy_rejection_keeps_same_job_retryable(self):
+        job = self.journal.enqueue(SOURCE)
+        client = self.fake()
+        client.request.side_effect = HermesBusy('busy')
+        with self.assertRaises(HermesBusy): self.journal.advance(job['id'], client)
+        self.assertEqual(self.journal.get(job['id'])['status'], 'queued')
+        client.request.side_effect = None
+        self.assertEqual(self.journal.advance(job['id'], client)['status'], 'running')
+        self.assertEqual(client.request.call_count, 2)
+
+    def test_only_recognized_busy_http_response_allows_retry(self):
+        session = Mock()
+        session.request.return_value.status_code = 429
+        session.request.return_value.json.return_value = {'error': {'code': 'rate_limit_exceeded'}}
+        client = HermesClient('http://127.0.0.1:8644', 'private', session, standalone=True)
+        with self.assertRaises(HermesBusy): client.request('POST', '/v1/runs')
+        session.request.return_value.json.return_value = {'error': 'unknown'}
+        with self.assertRaises(BuyerError) as error: client.request('POST', '/v1/runs')
+        self.assertNotIsInstance(error.exception, HermesBusy)
+
+    def test_terminal_event_stream_is_consumed_closed_and_repeatable(self):
+        session = Mock(); response = session.request.return_value
+        response.status_code = 200
+        response.headers = {'Content-Type': 'text/event-stream'}
+        response.iter_content.return_value = iter([b'data: {}\n\n', b': stream closed\n\n'])
+        client = HermesClient('http://127.0.0.1:8644', 'private', session, standalone=True)
+        client.release_events('run_done')
+        response.iter_content.assert_called_once()
+        response.close.assert_called_once()
+        response.status_code = 404
+        client.release_events('run_done')
+        self.assertEqual(response.close.call_count, 2)
 
     def test_resume_polls_saved_run_and_keeps_draft_distinct_from_price(self):
         job = self.journal.enqueue(SOURCE)

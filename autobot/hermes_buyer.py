@@ -24,6 +24,11 @@ class BuyerError(ValueError):
     pass
 
 
+class HermesBusy(BuyerError):
+    """Explicit pre-admission rejection; no run was created by Hermes."""
+    pass
+
+
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
@@ -129,6 +134,11 @@ class HermesClient:
         try:
             response = self.session.request(method, self.base_url + path,
                 headers=headers, timeout=(5, 30), allow_redirects=False, **kwargs)
+            if method == 'POST' and path == '/v1/runs' and response.status_code == 429:
+                body = response.json()
+                error = body.get('error', {}) if isinstance(body, dict) else {}
+                if isinstance(error, dict) and error.get('code') == 'rate_limit_exceeded':
+                    raise HermesBusy('Hermes занят; задание остаётся в очереди')
             if response.status_code not in (200, 202):
                 raise BuyerError('Hermes API: HTTP ' + str(response.status_code))
             if len(response.content) > 1_000_000:
@@ -139,6 +149,31 @@ class HermesClient:
                 raise
             # Exceptions/response bodies can contain provider keys or user data.
             raise BuyerError('Hermes недоступен или вернул некорректный ответ') from None
+
+    def release_events(self, run_id):
+        """Drain only a known terminal run. v0.17 counts its SSE queue as active
+        until consumed, even after GET /runs/id reports completed. Repeated
+        cleanup may return 404; it never creates a run or stops another agent.
+        """
+        response = None
+        try:
+            response = self.session.request('GET', self.base_url + '/v1/runs/' + run_id + '/events',
+                headers={'Authorization': 'Bearer ' + self.token}, timeout=(5, 20),
+                allow_redirects=False, stream=True)
+            if response.status_code == 404:
+                return
+            if response.status_code != 200 or not response.headers.get('Content-Type', '').startswith('text/event-stream'):
+                raise BuyerError('Не удалось освободить завершённый запуск Hermes')
+            size = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                size += len(chunk)
+                if size > 2_000_000:
+                    break  # Closing also releases the server SSE queue.
+        except requests.RequestException:
+            raise BuyerError('Не удалось завершить чтение событий Hermes; повторим') from None
+        finally:
+            if response is not None:
+                response.close()
 
     def check(self):
         if self.standalone:
@@ -207,9 +242,16 @@ class DraftJournal:
             if not claimed:
                 return self.get(job_id)
             # Leave uncertain on timeout/crash. Never create a new independent run.
-            response = client.request('POST', '/v1/runs',
-                headers={'Idempotency-Key': 'autobot-draft-' + job_id},
-                json={'input': encoded(job['payload']), 'instructions': INSTRUCTIONS})
+            try:
+                response = client.request('POST', '/v1/runs',
+                    headers={'Idempotency-Key': 'autobot-draft-' + job_id},
+                    json={'input': encoded(job['payload']), 'instructions': INSTRUCTIONS})
+            except HermesBusy:
+                # Installed Hermes rejects concurrency before creating run_id.
+                # All other errors remain uncertain, including ambiguous 429s.
+                with closing(self.connect()) as db, db:
+                    db.execute("UPDATE buyer_drafts SET status='queued' WHERE id=? AND status='submission_uncertain' AND run_id IS NULL", (job_id,))
+                raise
             run_id = response.get('run_id') if isinstance(response, dict) else None
             if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', run_id):
                 raise BuyerError('Hermes не вернул идентификатор запуска; повтор заблокирован')

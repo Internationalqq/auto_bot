@@ -122,6 +122,7 @@ class FakeHermes:
     base_url = 'http://127.0.0.1:8644'
     def __init__(self): self.posts = 0
     def check(self): pass
+    def release_events(self, run_id): self.released = run_id
     def request(self, method, path, **kwargs):
         if method == 'POST':
             self.posts += 1
@@ -156,6 +157,7 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(BuyerError): worker.step()
             self.assertEqual(worker.step(), 'completed')
             self.assertEqual(hermes.posts, 1)
+            self.assertEqual(hermes.released, 'run_1')
             self.assertEqual(remote.done[0], remote.done[1])
 
     def test_cancel_does_not_submit_or_deliver(self):

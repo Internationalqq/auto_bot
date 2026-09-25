@@ -72,10 +72,13 @@ class Worker:
                 # heartbeats and polls the saved run instead of creating another.
                 local = self.journal.advance(local['id'], self.hermes)
             if local['status'] == 'draft_ready':
+                self.hermes.release_events(local['run_id'])
                 self.remote.request(path + '/complete', **lease, result=local['result'])
                 self.job = None
                 return 'completed'
             if local['status'] not in {'queued', 'running'}:
+                if local['run_id']:
+                    self.hermes.release_events(local['run_id'])
                 self.remote.request(path + '/fail', **lease, error=local['status'])
                 self.job = None
                 return 'failed'
