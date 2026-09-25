@@ -4,6 +4,7 @@ import json
 import hashlib
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch, Mock
 
@@ -98,10 +99,10 @@ class OutboxTests(unittest.TestCase):
         job = {'id': 'q1', 'recipient': 'a@example.org', 'status': 'sending', 'token': 'token'}
         folder = self.path/'q1'/hashlib.sha256(b'token').hexdigest()[:24]; folder.mkdir(parents=True)
         (folder/'state.json').write_text('{"started_at":1}')
-        with patch('autobot.buyer_sender.subprocess.Popen') as popen:
+        with patch('autobot.buyer_sender.sender_client') as client:
             receipt = execute(job, {'outbox_dir': str(self.path)}, Mock())
             self.assertEqual(receipt['status'], 'uncertain')
-            popen.assert_not_called()
+            client.assert_not_called()
             self.assertEqual(execute(job, {'outbox_dir': str(self.path)}, Mock()), receipt)
 
     def test_receipt_requires_matching_recipient_and_local_artifact(self):
@@ -114,6 +115,35 @@ class OutboxTests(unittest.TestCase):
         data['recipient'] = 'different@example.org'
         (self.path/'receipt.json').write_text(json.dumps(data))
         self.assertEqual(read_receipt(self.path, job)['status'], 'uncertain')
+
+    def test_ambiguous_api_post_is_never_repeated(self):
+        job = {'id':'q2','recipient':'a@example.org','status':'sending','token':'token','subject':'Запрос','body':'Здравствуйте!'}
+        client = Mock(); client.request.side_effect = BuyerError('lost response')
+        config = {'outbox_dir':str(self.path),'sender_email':'buyer@example.org'}
+        with patch('autobot.buyer_sender.sender_client', return_value=client):
+            first = execute(job, config, Mock())
+            self.assertEqual(first['status'], 'uncertain')
+            self.assertEqual(execute(job, config, Mock()), first)
+            self.assertEqual(client.request.call_count, 1)
+
+    def test_api_restart_polls_saved_run_without_new_post(self):
+        job = {'id':'q3','recipient':'a@example.org','status':'sending','token':'token'}
+        folder = self.path/'q3'/hashlib.sha256(b'token').hexdigest()[:24];folder.mkdir(parents=True)
+        (folder/'state.json').write_text(json.dumps({'run_id':'run_saved','started_at':time.time()}))
+        (folder/'receipt.json').write_text(json.dumps({'job_id':'q3','recipient':'a@example.org','status':'blocked','detail':'Login required','evidence':''}))
+        client = Mock();client.request.return_value={'run_id':'run_saved','status':'completed'}
+        with patch('autobot.buyer_sender.sender_client', return_value=client):
+            receipt = execute(job, {'outbox_dir':str(self.path)}, Mock())
+        self.assertEqual(receipt['status'], 'blocked')
+        client.request.assert_called_once_with('GET','/v1/runs/run_saved')
+        client.release_events.assert_called_once_with('run_saved')
+
+    def test_legacy_cli_attempt_is_not_restarted_by_api_upgrade(self):
+        job = {'id':'q4','recipient':'a@example.org','status':'sending','token':'token','attempt_number':0}
+        folder=self.path/'q4';folder.mkdir();(folder/'state.json').write_text('{"started_at":1}')
+        with patch('autobot.buyer_sender.sender_client') as client:
+            self.assertEqual(execute(job, {'outbox_dir':str(self.path)}, Mock())['status'], 'uncertain')
+            client.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()
