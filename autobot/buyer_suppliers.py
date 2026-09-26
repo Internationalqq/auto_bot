@@ -1,13 +1,13 @@
 """Supplier-first RFQs. Scripts retain line identities; no accounting in messages."""
 from contextlib import closing
-from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
 import time
 
+from autobot.buyer_drafts import draft, quantity
 from autobot import buyer_jobs as jobs
-from autobot.hermes_buyer import BuyerError, encoded, task_payload, validate_draft, supplier_brief
+from autobot.hermes_buyer import BuyerError, encoded, task_payload, validate_draft
 
 # Public business contacts checked 2026-09-26. Revalidated before every send.
 # Assortment is a search lead, never a claim of a specific model being in stock.
@@ -112,36 +112,6 @@ def category(row):
 
 def source_for(key):
     return next((dict(s) for s in REGISTRY if s['id'] == key), None)
-
-
-def quantity(value):
-    try:
-        n = Decimal(str(value))
-        if not n.is_finite() or n <= 0: raise ValueError()
-        return format(n, 'f').rstrip('0').rstrip('.') if '.' in format(n,'f') else format(n,'f')
-    except (InvalidOperation, ValueError, TypeError):
-        raise BuyerError('Для запроса нужны положительный объём и единица каждой позиции') from None
-
-
-def draft(payload):
-    lines = []
-    briefs = supplier_brief(payload)['positions']
-    for i, p in enumerate(payload['positions'], 1):
-        if not p.get('unit'): raise BuyerError('Не определена единица позиции')
-        multiplier = ' × ' if re.match(r'^\d',p['unit']) else ' '
-        characteristics = '; '.join(f"{c.get('label') or c.get('kind')}: {c['value']}" for c in briefs[i-1]['characteristics'] if c.get('value') is not None)
-        lines.append(f"{i}. {p['name']}{'; '+characteristics if characteristics else ''} — {quantity(p['quantity']).replace('.', ',')}{multiplier}{p['unit']}.")
-    works = any(p.get('type_slug') in ('work','service') for p in payload['positions'])
-    goods = any(p.get('type_slug') in ('material','product') for p in payload['positions'])
-    intro = 'поставить оборудование и выполнить работы по списку' if works and goods else 'выполнить такие работы' if works else 'поставить такие материалы'
-    terms = (' По работам укажите отдельно стоимость работ, материалов и техники, чтобы не посчитать их дважды.' if works else '')
-    body = (f'Добрый день!\n\nПодскажите, сможете {intro}:\n' + '\n'.join(lines)
-            + f"\n\nОбъект — {payload['region']}. Напишите, пожалуйста, цену за указанную единицу по каждой строке, с НДС или без, и сроки.{terms}"
-            + (' По материалам уточните наличие и доставку, её стоимость укажите отдельно.' if goods else '')
-            + ' Если для расчёта нужны адрес или дополнительные характеристики — уточним. Если можете предложить только замену, обозначьте её отдельно.\n\nСпасибо!')
-    result = {'drafts':[{'position_keys':[p['position_key'] for p in payload['positions']],
-                         'subject':'Запрос стоимости работ' if works else 'Материалы — наличие и цены', 'body':body}], 'questions':[]}
-    return validate_draft(result, payload)
 
 
 def prepare(source):

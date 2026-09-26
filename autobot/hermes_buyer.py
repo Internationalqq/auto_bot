@@ -341,6 +341,29 @@ class DraftJournal:
                 raise BuyerError('Неизвестный статус Hermes')
         return self.get(job_id)
 
+    def prepare_locally(self, job_id):
+        """Use the ordinary RFQ formatter without a second AI profile.
+
+        Never replace a previously submitted agent run or regenerate a reviewed
+        result. The queue payload already groups rows by section and kind.
+        """
+        from autobot.buyer_drafts import draft
+        job = self.get(job_id)
+        if job['status'] == 'draft_ready':
+            return job
+        if job['status'] != 'queued' or job['run_id']:
+            raise BuyerError('Сначала завершите прежнее задание Hermes; новый черновик не создавался')
+        try:
+            result = draft(job['payload'], allow_incomplete=True)
+        except BuyerError:
+            with closing(self.connect()) as db, db:
+                db.execute("UPDATE buyer_drafts SET status='invalid_result' WHERE id=? AND status='queued' AND run_id IS NULL", (job_id,))
+            raise
+        with closing(self.connect()) as db, db:
+            db.execute("""UPDATE buyer_drafts SET status='draft_ready',result=?
+                WHERE id=? AND status='queued' AND run_id IS NULL""", (encoded(result), job_id))
+        return self.get(job_id)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Отдельное подключение Hermes: только черновики')

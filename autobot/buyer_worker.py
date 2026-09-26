@@ -70,14 +70,16 @@ class Worker:
             if local['status'] in {'queued', 'running'}:
                 # Retain the current job on connection errors; the next iteration
                 # heartbeats and polls the saved run instead of creating another.
-                local = self.journal.advance(local['id'], self.hermes)
+                local = (self.journal.prepare_locally(local['id']) if self.hermes is None
+                         else self.journal.advance(local['id'], self.hermes))
             if local['status'] == 'draft_ready':
-                self.hermes.release_events(local['run_id'])
+                if self.hermes is not None and local['run_id']:
+                    self.hermes.release_events(local['run_id'])
                 self.remote.request(path + '/complete', **lease, result=local['result'])
                 self.job = None
                 return 'completed'
             if local['status'] not in {'queued', 'running'}:
-                if local['run_id']:
+                if self.hermes is not None and local['run_id']:
                     self.hermes.release_events(local['run_id'])
                 self.remote.request(path + '/fail', **lease, error=local['status'])
                 self.job = None
@@ -89,6 +91,17 @@ class Worker:
             return 'lease_lost'
 
 
+def draft_client(config):
+    mode = config.get('draft_mode', 'hermes')
+    if mode == 'template':
+        return None
+    if mode != 'hermes':
+        raise BuyerError('Неизвестный режим подготовки обращений')
+    env = dict(line.split('=', 1) for line in Path(config['hermes_env_file']).read_text().splitlines()
+               if '=' in line and not line.lstrip().startswith('#'))
+    return HermesClient(config['hermes_url'], env['API_SERVER_KEY'], standalone=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=Path, required=True)
@@ -96,10 +109,7 @@ def main():
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     token = Path(config['queue_token_file']).read_text().strip()
-    # Read only the dedicated profile's API key, never its provider auth file.
-    env = dict(line.split('=', 1) for line in Path(config['hermes_env_file']).read_text().splitlines()
-               if '=' in line and not line.lstrip().startswith('#'))
-    hermes = HermesClient(config['hermes_url'], env['API_SERVER_KEY'], standalone=True)
+    hermes = draft_client(config)
     journal = DraftJournal(config['journal'])
     worker = Worker(QueueClient(config['queue_url'], token, config['worker_id']), hermes, journal)
     # launchd and manual diagnostics must not run two pollers against one journal.
