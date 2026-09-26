@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import autobot
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -109,7 +110,9 @@ class QueueTests(unittest.TestCase):
         source = copy.deepcopy(SOURCE); source['positions'][0]['verified_count'] = 1
         source['positions'][1]['price_state'] = 'excluded'
         web = SimpleNamespace(REPORTS_DIR=reports, load_tender_metadata=lambda: {}, build_tender_detail=lambda *a: source)
-        with patch.object(routes.crm_actor, 'resolve', return_value={'id': 1}), patch.object(routes, 'consistent_report', return_value=nullcontext()), patch.dict('sys.modules', {'autobot.web_ui': web}):
+        # `from autobot import web_ui` also uses the package attribute when another
+        # suite has already imported the real app. Isolate both import paths.
+        with patch.object(routes.crm_actor, 'resolve', return_value={'id': 1}), patch.object(routes, 'consistent_report', return_value=nullcontext()), patch.object(autobot, 'web_ui', web, create=True), patch.dict('sys.modules', {'autobot.web_ui': web}):
             url = '/api/tenders/' + tid + '/buyer/jobs'
             self.assertEqual(client.post(url, json={'action': 'oops'}).status_code, 400)
             response = client.post(url, json={})
