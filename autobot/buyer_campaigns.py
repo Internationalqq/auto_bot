@@ -15,6 +15,7 @@ from urllib.parse import unquote
 from bs4 import BeautifulSoup
 import requests
 from autobot import buyer_outbox as outbox
+from autobot import buyer_suppliers as suppliers
 from autobot.hermes_buyer import BuyerError, encoded
 
 SOURCES = (
@@ -27,6 +28,16 @@ SOURCES = (
 )
 _lock = threading.Lock()
 _running = False
+
+
+def selected_sources(tid, job_id):
+    job = next((j for j in outbox.buyer_jobs.jobs(tid) if j['id'] == job_id), None)
+    supplier = (job or {}).get('payload', {}).get('draft_task', {}).get('supplier')
+    if supplier:
+        source = suppliers.source_for(supplier.get('id'))
+        if source is None: raise BuyerError('Поставщик больше не подключён')
+        return (source,)
+    return SOURCES
 
 
 def connect():
@@ -47,8 +58,12 @@ def connect():
 
 def start(tid, job_id, index, message=None):
     payload, draft = outbox.draft_message(tid, job_id, index, message)
+    sources = selected_sources(tid, job_id)
     positions = [p for p in payload['positions'] if p['position_key'] in draft['position_keys']]
-    if (not positions or any('щебень' not in p['name'].casefold() or p.get('type_slug') not in
+    if payload.get('supplier'):
+        if not positions or any(suppliers.category(p) not in sources[0]['categories'] for p in positions) or not re.search('ярослав', str(payload.get('region','')), re.I):
+            raise BuyerError('Поставщик не соответствует позициям или региону')
+    elif (not positions or any('щебень' not in p['name'].casefold() or p.get('type_slug') not in
                             ('material', 'product') for p in positions)
             or not re.search(r'ярослав', str(payload.get('region', '')), re.I)):
         raise BuyerError('Автоподбор пока подключён для щебня в Ярославской области. Для этой позиции укажите контакт вручную.')
@@ -62,7 +77,7 @@ def start(tid, job_id, index, message=None):
             (uuid.uuid4().hex,fingerprint,tid,job_id,index,encoded(message),payload['region'],now,now))
         saved = db.execute('SELECT id,status FROM buyer_campaigns WHERE fingerprint=?',(fingerprint,)).fetchone()
         key = saved['id']
-        missing = db.execute('SELECT count(*) FROM buyer_campaign_contacts WHERE campaign_id=? AND outbox_id IS NOT NULL',(key,)).fetchone()[0] < len(SOURCES)
+        missing = db.execute('SELECT count(*) FROM buyer_campaign_contacts WHERE campaign_id=? AND outbox_id IS NOT NULL',(key,)).fetchone()[0] < len(sources)
         if saved['status'] in ('completed','failed') and missing:
             db.execute("UPDATE buyer_campaigns SET status='queued',error='',updated_at=? WHERE id=?",(now,key))
     launch()
@@ -73,7 +88,7 @@ def extract_contact(source, html):
     soup = BeautifulSoup(html, 'html.parser')
     for node in soup(['script','style','noscript']): node.decompose()
     text = soup.get_text(' ', strip=True)
-    if not re.search('ярослав', text, re.I) or not re.search('щеб', text, re.I):
+    if not re.search('ярослав', text, re.I) or not re.search(source.get('evidence','щеб'), text, re.I):
         raise BuyerError('На странице не подтверждены категория и регион')
     emails = set(re.findall(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}', text))
     emails.update(unquote(a['href'][7:]).split('?')[0] for a in soup.select('a[href^="mailto:"]'))
@@ -84,7 +99,7 @@ def extract_contact(source, html):
 
 def fetch_contact(source):
     # No arbitrary caller URL or redirected/private network destination.
-    if source not in SOURCES: raise BuyerError('Неизвестный источник')
+    if source not in SOURCES and source not in suppliers.REGISTRY: raise BuyerError('Неизвестный источник')
     with requests.get(source['url'], timeout=(4,8), allow_redirects=False, stream=True,
                       headers={'User-Agent':'AutoBot supplier contact verification/1.0'}) as response:
         if response.status_code != 200 or 'text/html' not in response.headers.get('Content-Type',''):
@@ -107,7 +122,7 @@ def run_one():
         db.execute("UPDATE buyer_campaigns SET status='checking',token=?,lease_until=?,updated_at=? WHERE id=?",
                    (token,time.time()+120,time.time(),row['id']))
     try:
-        for source in SOURCES:
+        for source in selected_sources(row['tender_id'], row['draft_job_id']):
             with closing(connect()) as db:
                 done = db.execute('SELECT outbox_id FROM buyer_campaign_contacts WHERE campaign_id=? AND source_id=?',
                                   (row['id'],source['id'])).fetchone()

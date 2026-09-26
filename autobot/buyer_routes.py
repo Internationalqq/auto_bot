@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from flask import Blueprint, jsonify, request, send_from_directory
 from autobot import buyer_jobs as jobs, buyer_outbox as outbox, buyer_campaigns as campaigns, crm_actor
+from autobot import buyer_suppliers as suppliers
+from autobot import buyer_replies as replies
 from autobot.hermes_buyer import BuyerError
 from autobot.uploaded_corrections import CorrectionError
 from autobot.estimate_publication_recovery import consistent_report, PublicationRecoveryRequired
@@ -51,7 +53,7 @@ def tender_jobs(tid):
             raise BuyerError('Ожидается объект параметров')
         if data.get('action') == 'cancel':
             return jsonify(ok=True, canceled=jobs.cancel(tid))
-        if data.get('action', 'start') != 'start':
+        if data.get('action', 'start') not in ('start','prepare_suppliers'):
             raise BuyerError('Неизвестное действие')
         from autobot import web_ui as web
         with consistent_report(web.REPORTS_DIR, tid):
@@ -76,15 +78,18 @@ def tender_jobs(tid):
             # Copy authoritative requirements, including composition warnings.
             positions = [{**p, 'specification': {'requirements': p.get('requirements'),
                 'resource_scope': p.get('resource_scope'), 'section_note': p.get('section_note')}} for p in rows]
-            ids = jobs.enqueue({'tender_id': tid, 'region': tender.get('region'), 'positions': positions})
+            source = {'tender_id': tid, 'region': tender.get('region'), 'positions': positions}
+            if data.get('action') == 'prepare_suppliers':
+                return jsonify(ok=True, **suppliers.prepare(source)), 202
+            ids = jobs.enqueue(source)
         return jsonify(ok=True, job_ids=ids, position_count=len(rows)), 202
     result = []
     for job in jobs.jobs(tid):
         task = job['payload']['draft_task']
         result.append({k: job[k] for k in ('id', 'position_name', 'status', 'error', 'created_at', 'updated_at', 'result')} |
-                      {'positions': task['positions'], 'region': task['region'], 'can_send': task.get('schema_version', 1) >= 2})
+                      {'positions': task['positions'], 'region': task['region'], 'supplier': task.get('supplier'), 'can_send': task.get('schema_version', 1) >= 2})
     campaigns.launch()
-    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid), campaigns=campaigns.listing(tid))
+    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid), campaigns=campaigns.listing(tid), replies=replies.listing(tid), coverage=suppliers.coverage(tid))
 
 
 @blueprint.post('/api/tenders/<tid>/buyer/outbox')
@@ -95,6 +100,9 @@ def send_draft(tid):
         raise BuyerError('Ожидаются параметры отправки')
     if data.get('action') == 'retry_blocked':
         job_id = outbox.retry_blocked(tid, data.get('id'))
+    elif data.get('action') == 'check_replies':
+        replies.request_check(tid,data.get('id'))
+        return jsonify(ok=True),202
     elif data.get('action') == 'find_and_send':
         key = campaigns.start(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('message'))
         return jsonify(ok=True, campaign_id=key), 202
@@ -143,6 +151,24 @@ def claim(data):
 @worker_route
 def claim_outbound(data):
     return jsonify(ok=True, job=outbox.claim(data['worker_id']))
+
+
+@blueprint.post(WORKER_API + '/inbox/claim')
+@worker_route
+def claim_inbox(data):
+    return jsonify(ok=True, job=replies.claim(data['worker_id']))
+
+
+@blueprint.post(WORKER_API + '/inbox/<job_id>/<action>')
+@worker_route
+def update_inbox(data, job_id, action):
+    if action not in ('heartbeat','complete'): return jsonify(ok=False),404
+    token = data.get('lease_token')
+    if not isinstance(token,str) or not token: return jsonify(ok=False),409
+    if action=='complete' and not isinstance(data.get('result'),dict):
+        raise BuyerError('Нет результата проверки')
+    ok = replies.update(job_id,data['worker_id'],token,data.get('result') if action=='complete' else None)
+    return (jsonify(ok=True),200) if ok else (jsonify(ok=False),409)
 
 
 @blueprint.post(WORKER_API + '/outbox/<job_id>/<action>')

@@ -185,6 +185,13 @@ def main():
                     receipt = execute(job, config, remote)
                     remote.request('/outbox/' + job['id'] + '/complete', lease_token=job['token'], receipt=receipt)
                     print(receipt['status'], flush=True)
+                elif config.get('collect_replies') is True:
+                    from autobot import buyer_inbox
+                    inbox_job = remote.request('/inbox/claim').get('job')
+                    if inbox_job:
+                        result = buyer_inbox.execute(inbox_job, config, remote)
+                        remote.request('/inbox/'+inbox_job['id']+'/complete', lease_token=inbox_job['token'], result=result)
+                        print('inbox '+str(result.get('status')), flush=True)
             except BuyerError as error:
                 print(str(error), flush=True)
             if args.once: break

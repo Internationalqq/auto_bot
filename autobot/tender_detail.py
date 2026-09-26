@@ -487,6 +487,8 @@ def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], wo
             }
         )
 
+    from autobot import buyer_replies
+    buyer_replies.annotate(tender_id, positions, region=metadata.get('region',''))
     from autobot.market_coverage import annotate_coverage, reconcile_search_history, coverage_plan
     from autobot import agent_market_queue
     if agent_market_queue.DEFAULT_DB_PATH.is_file():

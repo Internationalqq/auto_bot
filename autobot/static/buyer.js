@@ -8,6 +8,8 @@
   const status = root.querySelector('[data-buyer-status]');
   const list = root.querySelector('[data-buyer-list]');
   const refresh = root.querySelector('[data-buyer-refresh]');
+  const legacyDrafts = root.querySelector('[data-buyer-drafts]');
+  const coverage = root.querySelector('[data-buyer-coverage]');
   let busy = false, last = '', active = false;
   const recipients = new Map();
   const messages = new Map();
@@ -27,7 +29,7 @@
     if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось получить задания. Нажмите «Обновить».');
     return data;
   }
-  function render(jobs, outbox = [], campaigns = []) {
+  function render(jobs, outbox = [], campaigns = [], replies = {checks:{},messages:[]}) {
     active = jobs.some(j => j.status === 'queued' || j.status === 'leased');
     cancel.hidden = !active;
     const queued = jobs.filter(j => j.status === 'queued').length;
@@ -35,7 +37,7 @@
     const ready = jobs.filter(j => j.status === 'completed').length;
     const failed = jobs.filter(j => j.status === 'failed').length;
     status.textContent = jobs.length ? `Групп в очереди: ${queued} · В работе: ${running} · Готово: ${ready}${failed ? ` · Ошибки: ${failed}` : ''}${queued && !running ? '. Ожидаем закупщика на Mac.' : ''}` : 'Заданий пока нет. Выберите строки в смете или подготовьте запросы по всем позициям без подтверждённой цены.';
-    const signature = JSON.stringify([jobs.map(j => [j.id, j.status, j.error, j.result, j.can_send]), outbox, campaigns]);
+    const signature = JSON.stringify([jobs.map(j => [j.id, j.status, j.error, j.result, j.can_send]), outbox, campaigns, replies]);
     if (signature === last) return;
     last = signature;
     const open = new Set(Array.from(list.querySelectorAll('details[open]')).map(el => el.dataset.key));
@@ -48,7 +50,11 @@
       group.dataset.key = job.id;
       group.open = open.has(job.id);
       const summary = node('summary');
-      summary.append(node('strong', job.position_name), node('span', `${labels[job.status] || 'Неизвестное состояние'} · Позиций: ${job.positions.length}`));
+      const ownOutbox = outbox.filter(item => item.draft_job_id === job.id);
+      const latestSend = ownOutbox.at(-1);
+      const hasReply = (replies.messages || []).some(reply => ownOutbox.some(item => item.id === reply.outbound_id));
+      const supplierState = hasReply ? 'Ответ получен' : latestSend ? sendLabels[latestSend.status] : 'Запрос готов';
+      summary.append(node('strong', job.position_name), node('span', `${job.supplier ? supplierState+' · Email · '+job.supplier.email : labels[job.status] || 'Неизвестное состояние'} · Позиций: ${job.positions.length}`));
       group.append(summary);
       if (job.result) {
         job.result.drafts.forEach((draft, index) => {
@@ -56,7 +62,16 @@
           const message = messages.get(key) || {subject:draft.subject, body:draft.body};
           const article = node('article', null, 'buyer-draft');
           const heading = node('h3', message.subject), preview = node('p', message.body, 'buyer-body');
-          article.append(heading, preview);
+          if (job.supplier) {
+            const requestText = node('details',null,'buyer-edit'); requestText.dataset.key = `text-${key}`;
+            requestText.open = open.has(requestText.dataset.key);
+            requestText.append(node('summary',`Позиции и текст запроса (${job.positions.length})`),heading,preview);
+            article.append(requestText);
+          } else article.append(heading, preview);
+          if (job.supplier) {
+            const source = node('a','Поставщик и ассортимент'); source.href = job.supplier.url;
+            source.target = '_blank'; source.rel = 'noopener noreferrer'; article.append(source);
+          }
           if (job.can_send) {
             const edit = node('details', null, 'buyer-edit'); edit.dataset.key = `edit-${key}`;
             edit.open = open.has(edit.dataset.key);
@@ -75,13 +90,14 @@
               edit.append(label, input);
             });
             article.append(edit);
-            const automatic = node('button', 'Найти поставщиков и отправить', 'btn primary');
+            const automatic = node('button', job.supplier ? 'Отправить запрос поставщику' : 'Найти поставщиков и отправить', 'btn primary');
             automatic.type = 'button';
             const autoRows = job.positions.filter(p => draft.position_keys.includes(p.position_key));
-            const supported = /ярослав/i.test(job.region || '') && autoRows.length > 0 && autoRows.every(p => /щебень/i.test(p.name) && ['material','product'].includes(p.type_slug));
+            const supported = !!job.supplier || (/ярослав/i.test(job.region || '') && autoRows.length > 0 && autoRows.every(p => /щебень/i.test(p.name) && ['material','product'].includes(p.type_slug)));
             automatic.hidden = !supported;
             const autoFeedback = node('p', 'Автоподбор: щебень · Ярославская область · 3 сайта · Email. Другие направления и мессенджеры пока не подключены.', 'buyer-send-feedback');
             if (!supported) autoFeedback.textContent = 'Автоподбор для этого направления пока не подключён. Можно отправить письмо по указанному контакту.';
+            if (job.supplier) autoFeedback.textContent = `Один запрос на ${job.positions.length} поз. · ${job.region} · Email. Перед отправкой скрипт повторно проверит контакт на сайте. WhatsApp и MAX пока не подключены.`;
             autoFeedback.setAttribute('role','status');
             automatic.addEventListener('click', async () => {
               if (busy) return;
@@ -125,7 +141,7 @@
               } catch (error) { feedback.textContent = error.message; }
               finally { busy = false; button.disabled = false; }
             });
-            article.append(form);
+            if (!job.supplier) article.append(form);
             const ownCampaigns = campaigns.filter(c => c.draft_job_id === job.id && c.draft_index === index);
             ownCampaigns.forEach(c => {
               article.append(node('p', `${campaignLabels[c.status] || c.status} · ${c.region}${c.error ? '. '+c.error : ''}`, 'buyer-send-feedback'));
@@ -148,9 +164,42 @@
                 const source = node('a', 'Контакт на сайте поставщика'); source.href = contact.source_url;
                 source.target = '_blank'; source.rel = 'noopener noreferrer'; entry.append(source);
               }
-              entry.append(node('h4', item.subject), node('p', item.body, 'buyer-body'));
+              const sentText = node('details',null,'buyer-edit'); sentText.dataset.key = `sent-text-${item.id}`;
+              sentText.open = open.has(sentText.dataset.key);
+              sentText.append(node('summary','Точный текст обращения'),node('h4',item.subject),node('p',item.body,'buyer-body'));
+              entry.append(sentText);
               const receipt = node('p', item.receipt?.detail || 'Результат появится после проверки агентом на Mac.', 'buyer-send-feedback');
               entry.append(receipt);
+              const check = replies.checks?.[item.id];
+              if (item.status === 'sent') {
+                const checkStatus = node('p', check?.status === 'checking' ? 'Проверяем ответы на Mac…' : check?.status === 'blocked' ? `Проверка ответов остановлена: ${check.error}` : check?.checked_at ? `Ответы проверены ${new Date(check.checked_at*1000).toLocaleString('ru-RU')}. ${check.error || ''}` : 'Ждём ответ. Автобот проверит переписку через несколько минут.', 'buyer-send-feedback');
+                const checkButton = node('button','Проверить ответы','btn ghost'); checkButton.type = 'button';
+                checkButton.disabled = check?.status === 'checking';
+                checkButton.addEventListener('click',async () => {
+                  if (busy) return; busy = true; checkButton.disabled = true;
+                  try {
+                    const response = await fetch(url.replace(/jobs$/,'outbox'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'check_replies',id:item.id})});
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось проверить ответы');
+                    checkStatus.textContent = 'Проверка поставлена в очередь Mac.';
+                  } catch(error) { checkStatus.textContent = error.message; }
+                  finally { busy = false; checkButton.disabled = false; }
+                });
+                entry.append(checkStatus, checkButton);
+              }
+              (replies.messages || []).filter(reply => reply.outbound_id === item.id).forEach(reply => {
+                entry.append(node('h4',`Ответ ${new Date(reply.received_at*1000).toLocaleString('ru-RU')}`),node('p',reply.raw_text,'buyer-body'));
+                if (!reply.prices.length) entry.append(node('p','В ответе пока нет построчных цен.'));
+                reply.prices.forEach(price => {
+                  const position = job.positions.find(p => p.position_key === price.position_key);
+                  const amount = price.price_kopecks == null ? 'Цена не указана' : `${(price.price_kopecks/100).toLocaleString('ru-RU')} ₽ / ${price.unit}`;
+                  const row = node('div',null,'buyer-quote');
+                  row.append(node('strong',position?.name || 'Позиция запроса'),node('p',`${amount} · ${price.vat || 'НДС не указан'}`),node('p',price.state === 'comparable' ? 'Цена привязана к позиции сметы. Условия доставки учитываются отдельно.' : `Нужно уточнить: ${price.reason}`));
+                  if (price.state === 'comparable' && price.comparison_kopecks != null && price.estimate_unit !== price.unit) row.append(node('p',`В единице сметы: ${(price.comparison_kopecks/100).toLocaleString('ru-RU')} ₽ / ${price.estimate_unit}`));
+                  if (price.availability || price.delivery) row.append(node('p',[price.availability,price.delivery].filter(Boolean).join(' · ')));
+                  entry.append(row);
+                });
+              });
               (item.attempts || []).forEach(attempt => entry.append(node('p', `Предыдущая попытка: ${attempt.receipt.detail} · Повтор ${new Date(attempt.retried_at*1000).toLocaleString('ru-RU')}`)));
               if (item.status === 'blocked') {
                 const retry = node('button', `Повторить для ${item.recipient}`, 'btn ghost');
@@ -198,27 +247,46 @@
       if (input && selection?.[0] != null && ['text','textarea'].includes(input.type)) input.setSelectionRange(...selection);
     }
   }
+  function renderCoverage(result) {
+    if (!coverage || !result) return;
+    const expanded = coverage.querySelector('details')?.open;
+    coverage.replaceChildren();
+    const date = new Date(result.updated_at * 1000).toLocaleString('ru-RU');
+    coverage.append(node('p',`Последний подбор: ${date}. Поставщиков: ${result.job_ids.length}. Позиций в запросах: ${result.position_count}. Без поставщика: ${result.uncovered.length}.`));
+    if (result.uncovered.length) {
+      const details = node('details'); details.open = !!expanded;
+      details.append(node('summary','Позиции, для которых ещё нужен поставщик'));
+      const rows = node('ul'); result.uncovered.forEach(p => rows.append(node('li',`${p.name} — ${p.reason}`)));
+      details.append(rows); coverage.append(details);
+    }
+  }
   async function load() {
-    try { const data = await api(); render(data.jobs, data.outbox, data.campaigns); }
+    try { const data = await api(); render(data.jobs, data.outbox, data.campaigns, data.replies); renderCoverage(data.coverage); }
     catch (error) { status.textContent = error.message; }
   }
   async function mutate(body) {
     if (busy) return;
     busy = true; start.disabled = cancel.disabled = true;
     status.textContent = body.action === 'cancel' ? 'Отменяем задания…' : 'Собираем позиции по направлениям…';
-    try { await api(body); await load(); }
+    try {
+      await api(body); await load();
+    }
     catch (error) { status.textContent = error.message; }
     finally { busy = false; start.disabled = cancel.disabled = false; }
   }
   start.addEventListener('click', () => {
     const keys = Array.from(document.querySelectorAll('[data-agent-position]:checked')).map(el => el.value);
-    mutate(keys.length ? {position_keys: keys} : {});
+    mutate(keys.length ? {action:'prepare_suppliers',position_keys: keys} : {action:'prepare_suppliers'});
+  });
+  legacyDrafts?.addEventListener('click',() => {
+    const keys = Array.from(document.querySelectorAll('[data-agent-position]:checked')).map(el => el.value);
+    mutate(keys.length ? {position_keys:keys} : {});
   });
   cancel.addEventListener('click', () => mutate({action: 'cancel'}));
   refresh.addEventListener('click', load);
   function syncSelection() {
     const count = document.querySelectorAll('[data-agent-position]:checked').length;
-    start.textContent = count ? `Подготовить по выбранным (${count})` : 'Подготовить обращения';
+    start.textContent = count ? `Подобрать поставщиков (${count})` : 'Подобрать поставщиков';
   }
   document.addEventListener('change', syncSelection);
   // Existing bulk actions (and the price search) update this shared count

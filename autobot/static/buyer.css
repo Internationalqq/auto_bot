@@ -11,6 +11,11 @@
 .buyer-group p, .buyer-group li { font-size: 14px; line-height: 1.6; max-width: 75ch; }
 .buyer-draft + .buyer-draft { border-top: 1px solid var(--line, #dce2e9); margin-top: 20px; }
 .buyer-body { white-space: pre-wrap; user-select: text; }
+.buyer-quote { padding: 12px 0; border-top: 1px solid var(--line, #dce2e9); }
+.buyer-quote p { margin: 6px 0; }
+.buyer-coverage { margin: 12px 0; overflow-wrap: anywhere; }
+.buyer-coverage summary { cursor: pointer; padding: 8px 0; }
+.buyer-coverage li { margin: 6px 0; }
 .buyer-send { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; max-width: 680px; margin: 16px 0; }
 .buyer-send label { grid-column: 1 / -1; font-size: 13px; font-weight: 600; }
 .buyer-send input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line, #dce2e9); border-radius: 8px; padding: 10px 12px; font: inherit; color: var(--text, #182332); background: var(--surface, #fff); }

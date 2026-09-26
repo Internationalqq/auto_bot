@@ -11,8 +11,8 @@
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
-  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-1" />
-  <script defer src="/tenders/buyer.js?v=20260926-1"></script>
+  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-2" />
+  <script defer src="/tenders/buyer.js?v=20260926-2"></script>
 </head>
 <body>
   <header class="topbar">
@@ -216,7 +216,7 @@
               </td>
               <td class="quantity-cell" data-label="Объём"><b>{{ p.quantity_fmt if p.quantity is not none else "—" }}</b><small>{{ p.unit }}</small></td>
               <td class="money col-estimate" data-label="Цена сметы"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% elif p.price_state == 'excluded' %}Отдельная цена не требуется{% elif p.price_state == 'pending' %}Поиск ещё не выполнен{% elif p.price_state == 'candidate' %}Предложения требуют уточнения{% else %}Нет сопоставимой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}</td>
+              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% elif p.price_state == 'excluded' %}Отдельная цена не требуется{% elif p.price_state == 'pending' %}Поиск ещё не выполнен{% elif p.price_state == 'candidate' %}Предложения требуют уточнения{% else %}Нет сопоставимой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% for quote in p.buyer_quotes|default([]) %}<small><b>Ответ поставщика: {% if quote.price_kopecks is not none %}{{ "{:,.2f}".format(quote.price_kopecks / 100).replace(",", " ") }} ₽ / {{ quote.unit }}{% else %}без цены{% endif %}</b><br>{{ quote.sender }} · {{ quote.vat or 'НДС не указан' }}{% if quote.state != 'comparable' %}<br>Уточнить: {{ quote.reason }}{% endif %}<br><a href="#search">Открыть переписку и условия</a></small>{% endfor %}</td>
               <td class="money col-difference difference-{{ p.difference_tone }}" data-label="Смета − рынок"><b>{{ p.difference_fmt }}</b><small>{{ p.difference_percent_fmt if p.market_unit is not none else "Ждём цену рынка" }}</small></td>
               <td class="sources" data-label="Проверка цены">
                 {% if p.verified_count %}<span class="source-count verified">{{ icon("check") }} {{ p.verified_count }} подтверждено</span>{% endif %}
@@ -325,11 +325,13 @@
         <div class="agent-market-actions">
           <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
           <button class="btn ghost" type="button" data-buyer-cancel hidden>Отменить задания</button>
-          <button class="btn primary" type="button" data-buyer-start>Подготовить обращения</button>
+          <button class="btn ghost" type="button" data-buyer-drafts>Обращение без подбора</button>
+          <button class="btn primary" type="button" data-buyer-start>Подобрать поставщиков</button>
         </div>
       </div>
       <p class="agent-market-note">Проверьте текст, запустите автоподбор поставщиков или укажите email вручную. Письма отправит агент через рабочую почту на Mac. Адресаты и результаты видны в журнале; для найденной цены нужен ответ поставщика.</p>
       <p role="status" aria-live="polite" data-buyer-status>Загружаем задания…</p>
+      <div class="buyer-coverage" data-buyer-coverage role="status"></div>
       <div data-buyer-list></div>
     </section>
     </div>

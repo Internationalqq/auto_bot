@@ -59,6 +59,7 @@ def enqueue(tid, job_id, index, recipient, *, message=None):
         raise BuyerError('Укажите один email поставщика')
     recipient = recipient.strip().lower()
     _, draft = draft_message(tid, job_id, index, message)
+    other_drafts = {j['id']:j.get('result') for j in buyer_jobs.jobs(tid)}
     fingerprint = hashlib.sha256(encoded([tid, recipient, draft['subject'], draft['body']]).encode()).hexdigest()
     with closing(connect()) as db, db:
         db.execute('BEGIN IMMEDIATE')
@@ -67,6 +68,11 @@ def enqueue(tid, job_id, index, recipient, *, message=None):
             ORDER BY created_at LIMIT 1""", (tid, job_id, index, recipient)).fetchone()
         if existing:
             return existing['id']
+        for other in db.execute("SELECT * FROM outbound WHERE tender_id=? AND recipient=? AND draft_job_id<>? AND status IN ('queued','sending','sent','uncertain')", (tid,recipient,job_id)):
+            result = other_drafts.get(other['draft_job_id']) or {}
+            entries = result.get('drafts', [])
+            if other['draft_index'] < len(entries) and set(entries[other['draft_index']]['position_keys']) & set(draft['position_keys']):
+                raise BuyerError('Этому поставщику уже создан запрос с такими позициями. Проверьте существующую переписку.')
         now = time.time()
         db.execute('''INSERT OR IGNORE INTO outbound
             (id,fingerprint,tender_id,draft_job_id,draft_index,recipient,subject,body,status,created_at,updated_at)
@@ -82,6 +88,7 @@ def expire(db):
 
 def retry_blocked(tid, job_id):
     """Explicit retry after a proven no-send; uncertain/sent cannot be retried."""
+    drafts = {j['id']:j.get('result') or {} for j in buyer_jobs.jobs(tid)}
     with closing(connect()) as db, db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT * FROM outbound WHERE id=? AND tender_id=?', (job_id, tid)).fetchone()
@@ -96,6 +103,13 @@ def retry_blocked(tid, job_id):
             (tid,row['draft_job_id'],row['draft_index'],row['recipient'],job_id)).fetchone()
         if other:
             raise BuyerError('Для этого адресата уже есть другая отправка этого обращения. Проверьте её в журнале; повтор запрещён.')
+        original = drafts.get(row['draft_job_id'],{}).get('drafts',[])
+        if row['draft_index'] < len(original):
+            keys = set(original[row['draft_index']]['position_keys'])
+            for candidate in db.execute("SELECT draft_job_id,draft_index FROM outbound WHERE tender_id=? AND recipient=? AND id<>? AND status IN ('queued','sending','sent','uncertain')",(tid,row['recipient'],job_id)):
+                entries = drafts.get(candidate['draft_job_id'],{}).get('drafts',[])
+                if candidate['draft_index']<len(entries) and keys & set(entries[candidate['draft_index']]['position_keys']):
+                    raise BuyerError('Эти позиции уже есть в другой переписке с поставщиком. Повтор запрещён.')
         db.execute('INSERT INTO outbound_attempt_history(job_id,previous_result,retried_at) VALUES (?,?,?)',
                    (job_id, row['receipt'], time.time()))
         db.execute("UPDATE outbound SET status='queued',receipt=NULL,worker=NULL,token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
