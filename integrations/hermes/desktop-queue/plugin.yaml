@@ -1,0 +1,6 @@
+name: desktop-queue
+version: 1.0.0
+description: Serialize desktop workflows across Hermes profiles on one Mac.
+platforms: [macos, linux]
+hooks:
+  - on_session_end
