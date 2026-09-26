@@ -82,6 +82,14 @@ class FirefoxLight:
     def capture(self):
         state = self.call({'action': 'capture', 'app': 'Firefox', 'mode': 'ax', 'max_elements': 1200})
         if self.sender + ' - Почта Mail.ru' not in state.get('window_title', ''):
+            tabs = unique([e for e in state.get('elements', []) if e['role'] == 'AXRadioButton'
+                           and e.get('label', '').endswith(self.sender + ' - Почта Mail.ru')])
+            if len(tabs) == 1:
+                # Restore only the observed tab for this account, preserving
+                # other tabs. All account/URL guards still run after selection.
+                self.click(tabs[0])
+                state = self.call({'action': 'capture', 'app': 'Firefox', 'mode': 'ax', 'max_elements': 1200})
+        if self.sender + ' - Почта Mail.ru' not in state.get('window_title', ''):
             raise BuyerError('Откройте рабочую почту в упрощённой версии Mail.ru в Firefox')
         if not any(e['role'] == 'AXStaticText' and e['label'].startswith('light.mail.ru/') for e in state['elements']):
             raise BuyerError('Не подтверждён адрес рабочей почты')

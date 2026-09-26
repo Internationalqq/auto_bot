@@ -74,6 +74,16 @@ class ScriptTests(unittest.TestCase):
         self.assertIsNone(browser.find_sent(JOB))
         self.assertEqual([c.args[0] for c in browser.link.call_args_list],['Назад во «Входящие»','Отправленные'])
 
+    def test_capture_restores_only_one_observed_tab_for_our_account(self):
+        browser=object.__new__(script.FirefoxLight);browser.sender='buyer@mail.ru';browser.click=Mock()
+        tab={'role':'AXRadioButton','label':'Поиск - AB-CAB-01 - buyer@mail.ru - Почта Mail.ru','index':7,'bounds':[1,1,20,20]}
+        valid={'window_title':tab['label'],'elements':[{'role':'AXStaticText','label':'light.mail.ru/search/?q_query=AB-CAB-01'}]}
+        browser.call=Mock(side_effect=[{'window_title':'Другая вкладка','elements':[tab]},valid])
+        self.assertEqual(browser.capture(),valid);browser.click.assert_called_once_with(tab)
+        browser.click.reset_mock();browser.call=Mock(return_value={'window_title':'Другая вкладка','elements':[]})
+        with self.assertRaises(BuyerError):browser.capture()
+        browser.click.assert_not_called()
+
     def test_script_dispatch_never_contacts_model_and_completed_is_reused(self):
         config = {'sender_mode': 'mailru_lite_script', 'outbox_dir': str(self.folder)}
         with patch('autobot.buyer_sender.sender_client') as model, patch.object(script, 'execute', return_value={'status': 'sent'}) as run:
