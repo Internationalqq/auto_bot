@@ -52,6 +52,16 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.run_script()['status'], 'uncertain')
         self.assertEqual(json.loads((self.folder/'state.json').read_text())['phase'], 'send_reserved')
 
+    def test_delayed_confirmation_observes_without_another_send_click(self):
+        browser=object.__new__(script.FirefoxLight)
+        browser.validate=Mock();browser.click=Mock();browser.call=Mock()
+        browser.capture=Mock(side_effect=[
+            {'elements':[{'role':'AXButton','label':'Отправить','bounds':[1,1,10,10],'index':9}]},
+            {'window_title':'Новое письмо'}, {'window_title':'Новое письмо'},
+            {'window_title':'Письмо отправлено - Mail.ru'}])
+        browser.send(JOB)
+        browser.click.assert_called_once()
+
     def test_wrong_account_before_prepare_is_blocked(self):
         self.browser.find_sent.side_effect = BuyerError('Другой ящик')
         self.assertEqual(self.run_script()['status'], 'blocked')

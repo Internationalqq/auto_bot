@@ -148,8 +148,12 @@ class FirefoxLight:
         buttons = [e for e in state['elements'] if e['role'] == 'AXButton' and e['label'] == 'Отправить']
         if not buttons: raise BuyerError('Не найдена кнопка отправки')
         self.click(min(buttons, key=lambda e: e['bounds'][1]))
-        if not self.capture()['window_title'].startswith('Письмо отправлено'):
-            raise BuyerError('Почта не подтвердила отправку; повтор запрещён')
+        # Mail.ru can finish submitting after the first read-back. Observe only;
+        # never click Send again while waiting for confirmation.
+        for attempt in range(5):
+            if self.capture()['window_title'].startswith('Письмо отправлено'): return
+            if attempt < 4: self.call({'action':'wait','seconds':1})
+        raise BuyerError('Почта не подтвердила отправку; повтор запрещён')
 
 
 def execute(job, config, remote, folder, state, *, browser_factory=FirefoxLight):

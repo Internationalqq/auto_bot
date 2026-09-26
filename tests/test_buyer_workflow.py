@@ -241,6 +241,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(replies.claim('reader'))
         with self.assertRaises(BuyerError): replies.request_check('999999999999',key)
 
+    def test_tagged_reply_must_match_subject_and_other_sender_prices_need_review(self):
+        j=self.prepared();draft=j['result']['drafts'][0]
+        subject=draft['subject']+' [AB-CABLE-02]'
+        key=box.enqueue(TID,j['id'],0,'info@tl-electro.ru',message={'subject':subject,'body':draft['body']})
+        sent=box.claim('mac');box.update(key,'mac',sent['token'],dict(status='sent',detail='Проверено',evidence='sent.txt'))
+        replies.request_check(TID,key);claim=replies.claim('reader')
+        result=self.result();result['messages'][0]['subject']='Re: Другой запрос [AB-CABLE-03]'
+        with self.assertRaisesRegex(BuyerError,'метку'): replies.update(key,'reader',claim['token'],result)
+        self.assertEqual(replies.listing(TID)['messages'],[])
+        result['messages'][0].update(subject='Re: '+subject,sender='manager@tl-electro.ru')
+        self.assertTrue(replies.update(key,'reader',claim['token'],result))
+        message=replies.listing(TID)['messages'][0]
+        self.assertIn(subject,message['evidence'])
+        self.assertEqual(message['prices'][0]['state'],'review')
+        self.assertIn('другого адреса',message['prices'][0]['reason'])
+
     def test_inbox_api_auth_and_token_required(self):
         app=Flask(__name__);app.register_blueprint(routes.blueprint);c=app.test_client()
         endpoint=routes.WORKER_API+'/inbox/claim'

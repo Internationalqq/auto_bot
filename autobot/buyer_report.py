@@ -35,7 +35,9 @@ def build(tid, run_id=None):
                     (j['payload']['draft_task'].get('supplier', {}).get('id') == supplier['id'] or
                      supplier.get('email') and j['payload']['draft_task'].get('supplier', {}).get('email') == supplier['email'])]
         job_ids = {j['id'] for j in matching}
-        sent = [m for m in outgoing if m['draft_job_id'] in job_ids and m['recipient'] == supplier.get('email')]
+        # A user may send this same RFQ to a freshly verified contact. The
+        # immutable draft ID binds it to the company, not a stale scraped email.
+        sent = [m for m in outgoing if m['draft_job_id'] in job_ids]
         out_ids = {m['id'] for m in sent}
         answers = [r for r in incoming['messages'] if r['outbound_id'] in out_ids]
         prices = [dict(p, origin='website') for p in supplier.get('prices', [])]
@@ -48,6 +50,9 @@ def build(tid, run_id=None):
         messages = [{'subject': d['subject'], 'body': d['body'], 'position_keys': d['position_keys']}
                     for j in matching for d in (j['result'] or {}).get('drafts', [])]
         contacts = ([{'channel':'email', 'address':supplier['email'], 'source_url':supplier['url']}] if supplier.get('email') else []) + supplier.get('channels', [])
+        if sent:
+            recipients=list(dict.fromkeys(m['recipient'] for m in sent))
+            contacts=[{'channel':'email','address':email,'source_url':supplier['url'] if email==supplier.get('email') else ''} for email in recipients] + supplier.get('channels',[])
         status = 'answered' if answers else sent[-1]['status'] if sent else 'prepared' if messages and supplier.get('email') else 'contact_required'
         companies.append({'id':supplier['id'], 'name':supplier['company'], 'source_url':supplier['url'],
                           'draft_job_ids':[j['id'] for j in matching],

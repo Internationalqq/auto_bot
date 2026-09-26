@@ -20,7 +20,7 @@ def prompt(job, folder, account):
 Сохрани в {folder / 'reply.json'} JSON:
 {{"status":"checked|blocked","detail":"краткий результат","messages":[
 {{"message_id":"стабильный ID письма из интерфейса или URL письма",
-"sender":"точный email","received_at":1234567890,"text":"полный текст ответа без цитирования исходящего",
+"sender":"точный email","subject":"точная тема ответа","received_at":1234567890,"text":"полный текст ответа без цитирования исходящего",
 "evidence":"точная фиксация заголовка, отправителя, даты и связи с запросом",
 "prices":[{{"line":1,"price":"123,45","unit":"м","vat":"дословная фраза о НДС",
 "availability":"дословная фраза или пусто","delivery":"дословная фраза или пусто",
@@ -42,6 +42,9 @@ def execute(job, config, remote):
     folder.mkdir(parents=True,exist_ok=True,mode=0o700)
     state_path = folder/'state.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    if not state and config.get('inbox_mode') == 'mailru_lite_script':
+        from autobot.buyer_mailru_inbox import execute as collect
+        return collect(job,config,remote,folder)
     client = sender_client(config)
     if not state:
         state = {'started_at':time.time()}

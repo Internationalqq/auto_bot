@@ -208,6 +208,16 @@ class DiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(BuyerError,'Правила проверки'):
                 workflow.prepare_run(self.source['tender_id'],run_id)
 
+    def test_report_binds_user_selected_contact_to_the_immutable_draft(self):
+        run_id=self.pipeline();job=jobs.jobs(self.source['tender_id'])[0]
+        key=box.enqueue(self.source['tender_id'],job['id'],0,'current@example.org')
+        claim=box.claim('mac')
+        box.update(key,'mac',claim['token'],{'status':'sent','detail':'Подтверждено','evidence':'sent-proof.json'})
+        company=report.build(self.source['tender_id'],run_id)['companies'][0]
+        self.assertEqual(company['status'],'sent')
+        self.assertEqual(company['outbox_ids'],[key])
+        self.assertEqual(company['contacts'][0],{'channel':'email','address':'current@example.org','source_url':''})
+
     def test_contact_anchor_does_not_refetch_the_same_page(self):
         facts=discovery.page_facts('https://supplier.example/',
             '<a href="#contacts">Контакты</a><a href="/contacts">Контакты</a>')

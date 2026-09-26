@@ -121,6 +121,7 @@ def parse_price(item, row, raw):
             amount = int(number*100)
     except InvalidOperation: pass
     reasons = []
+    if row.get('_sender_unverified'): reasons.append('Ответ с другого адреса: подтвердите принадлежность поставщику')
     if row.get('_request_edited'): reasons.append('Текст запроса изменён: вручную проверьте привязку ответа к позиции')
     quoted_numbers = [n.replace(' ','').replace('\u00a0','').replace(',','.') for n in re.findall(r'(?<!\w)\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?(?!\w)',quote)]
     if amount is None or not any(Decimal(n)*100==amount for n in quoted_numbers): reasons.append('Цена не подтверждена цитатой')
@@ -155,12 +156,23 @@ def update(key, worker, token, result=None):
         for message in messages:
             if not isinstance(message,dict): raise BuyerError('Некорректное сообщение')
             sender = short(message.get('sender'),254,empty=False).lower()
-            if sender != outbound['recipient']: raise BuyerError('Ответ другого отправителя')
+            if not re.fullmatch(r'[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+',sender):
+                raise BuyerError('Не определён email отправителя ответа')
+            marker = re.search(r'\[AB-[A-Z0-9-]{4,60}\]',outbound['subject'])
+            reply_subject = short(message.get('subject',''),500)
+            if marker and marker[0] not in reply_subject:
+                raise BuyerError('Ответ не содержит метку исходного обращения в теме')
+            if sender != outbound['recipient'] and not marker:
+                raise BuyerError('Ответ другого отправителя')
             mid = short(message.get('message_id'),500,empty=False)
             raw = short(message.get('text'),50000,empty=False)
             evidence = short(message.get('evidence'),2000,empty=False)
+            if marker: evidence = ('Тема ответа: '+reply_subject+'\n'+evidence)[:2000]
             received = message.get('received_at')
-            if isinstance(received,bool) or not isinstance(received,(int,float)) or not outbound['created_at']<=received<=time.time()+300:
+            precision = message.get('received_precision','second')
+            if precision not in ('second','minute'): raise BuyerError('Неизвестная точность даты ответа')
+            earliest=outbound['created_at']-(59 if precision=='minute' else 0)
+            if isinstance(received,bool) or not isinstance(received,(int,float)) or not earliest<=received<=time.time()+300:
                 raise BuyerError('Некорректная дата ответа')
             reply_id = hashlib.sha256(encoded([key,mid]).encode()).hexdigest()
             existing = db.execute('SELECT * FROM buyer_replies WHERE id=?',(reply_id,)).fetchone()
@@ -176,7 +188,7 @@ def update(key, worker, token, result=None):
                 line = item.get('line') if isinstance(item,dict) else None
                 if type(line) is not int or not 1<=line<=len(rows) or line in seen:
                     raise BuyerError('Неизвестная или повторная строка запроса')
-                seen.add(line); row = rows[line-1]
+                seen.add(line); row = rows[line-1] | {'_sender_unverified':sender!=outbound['recipient']}
                 values = parse_price(item,row,raw)
                 db.execute('INSERT INTO buyer_reply_prices VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                            (reply_id,row['position_key'],*values))
