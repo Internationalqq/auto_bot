@@ -176,6 +176,34 @@ class WorkflowTests(unittest.TestCase):
         result=replies.listing(TID);self.assertFalse(result['messages'])
         self.assertNotIn('token',str(result));self.assertNotIn('worker',str(result))
 
+    def test_reply_checks_repeat_every_ten_minutes_and_keep_the_request_marker(self):
+        j=self.prepared();draft=j['result']['drafts'][0]
+        subject=draft['subject']+' [AB-CABLE-01]'
+        key=box.enqueue(TID,j['id'],0,'info@tl-electro.ru',message={'subject':subject,'body':draft['body']})
+        job=box.claim('mac')
+        with patch.object(box.time,'time',return_value=time.time()+1):
+            box.update(key,'mac',job['token'],dict(status='sent',detail='Проверено',evidence='sent.txt'))
+        with closing(box.connect()) as db:
+            sent_at=db.execute('SELECT updated_at FROM outbound WHERE id=?',(key,)).fetchone()[0]
+        with patch.object(replies.time,'time',return_value=sent_at+599):
+            self.assertIsNone(replies.claim('reader'))
+        with patch.object(replies.time,'time',return_value=sent_at+600):
+            claim=replies.claim('reader')
+            self.assertEqual(claim['subject'],subject)
+            self.assertTrue(claim['mapping_trusted'])
+            self.assertTrue(replies.update(key,'reader',claim['token'],dict(status='checked',messages=[],detail='Ответа нет')))
+        with patch.object(replies.time,'time',return_value=sent_at+1199):
+            self.assertIsNone(replies.claim('reader'))
+        with patch.object(replies.time,'time',return_value=sent_at+1200):
+            second=replies.claim('reader')
+            self.assertEqual(second['id'],key)
+            self.assertNotEqual(second['token'],claim['token'])
+            replies.update(key,'reader',second['token'],dict(status='blocked',messages=[],detail='Почта недоступна'))
+        with closing(replies.connect()) as db:
+            check=db.execute('SELECT status,next_at,error FROM buyer_inbox_checks WHERE outbound_id=?',(key,)).fetchone()
+            self.assertEqual((check['status'],check['next_at'],check['error']),('blocked',sent_at+1800,'Почта недоступна'))
+        self.assertEqual(replies.listing(TID)['messages'],[])
+
     def test_changed_position_does_not_use_old_quote(self):
         key,claim=self.sent();replies.update(key,'reader',claim['token'],self.result())
         changed=copy.deepcopy(self.source['positions']);changed[0]['quantity']=200

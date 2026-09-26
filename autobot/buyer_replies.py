@@ -10,6 +10,8 @@ import time
 from autobot import buyer_outbox as box
 from autobot.hermes_buyer import BuyerError, encoded
 
+CHECK_INTERVAL_SECONDS = 10 * 60
+
 
 def connect():
     db = box.connect()
@@ -55,7 +57,7 @@ def claim(worker):
             return None  # The same signed-in browser is still occupied.
         # Only already-authorized, successfully sent RFQs. Never inspect unrelated mail.
         db.execute("""INSERT OR IGNORE INTO buyer_inbox_checks(outbound_id,status,next_at)
-            SELECT id,'waiting',updated_at+300 FROM outbound WHERE status='sent' AND created_at>?""",(now-7*86400,))
+            SELECT id,'waiting',updated_at+? FROM outbound WHERE status='sent' AND created_at>?""",(CHECK_INTERVAL_SECONDS,now-7*86400))
         row = (db.execute('SELECT * FROM outbound WHERE id=?', (active['outbound_id'],)).fetchone() if active else
                db.execute("""SELECT o.* FROM buyer_inbox_checks c JOIN outbound o ON o.id=c.outbound_id
                   WHERE o.status='sent' AND c.next_at<=? AND c.status<>'checking'
@@ -179,7 +181,7 @@ def update(key, worker, token, result=None):
                 db.execute('INSERT INTO buyer_reply_prices VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                            (reply_id,row['position_key'],*values))
         db.execute("UPDATE buyer_inbox_checks SET status=?,next_at=?,checked_at=?,error=?,lease_until=NULL WHERE outbound_id=?",
-                   (result['status'],time.time()+1800,time.time(),error,key))
+                   (result['status'],time.time()+CHECK_INTERVAL_SECONDS,time.time(),error,key))
         return True
 
 
