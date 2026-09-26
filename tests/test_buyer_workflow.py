@@ -82,12 +82,46 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(campaigns.listing(TID)[0]['contacts']),1)
         self.assertEqual(box.listing(TID)[0]['recipient'],'info@tl-electro.ru')
 
-    def test_new_draft_cannot_resend_overlapping_positions(self):
+    def test_expanded_registry_requests_only_new_rows_for_existing_contact(self):
         j=self.prepared();box.enqueue(TID,j['id'],0,'info@tl-electro.ru')
         self.source['positions'].append(row('new','Кабель АВВГ'))
         ids=suppliers.prepare(self.source)['job_ids']
-        newer=next(j for j in jobs.jobs(TID) if j['id'] in ids and j['payload']['draft_task']['supplier']['id']=='technolight')
-        with self.assertRaises(BuyerError): box.enqueue(TID,newer['id'],0,'info@tl-electro.ru')
+        self.assertIn(j['id'],ids)
+        newer=next(item for item in jobs.jobs(TID) if item['id'] in ids and item['id']!=j['id'] and item['payload']['draft_task']['supplier']['id']=='technolight')
+        self.assertEqual(newer['result']['drafts'][0]['position_keys'],['new'])
+        box.enqueue(TID,newer['id'],0,'info@tl-electro.ru')
+        again=suppliers.prepare(self.source)
+        self.assertEqual(again['position_count'],4)
+        self.assertEqual(len(box.listing(TID)),2)
+
+    def test_materials_and_work_route_separately_and_exact_brands_are_preserved(self):
+        cases=[('Кабель ВВГнг','material','cable'),('Кабель до 35 кВ','work','electrical_work'),
+               ('Измерение сопротивления изоляции','work','electrical_testing'),
+               ('Бордюрный камень Тиманфайа','material','gotika'),
+               ('Светильник AF123456789012','product','alfresco'),
+               ('Стеклошарики для разметки','material','marking_material'),
+               ('Бурение ям глубиной до 2 м','work','drilling')]
+        for name,kind,expected in cases:
+            with self.subTest(name=name): self.assertEqual(suppliers.category(row('x',name,kind=kind)),expected)
+        self.assertIsNone(suppliers.category(row('x','Неизвестная работа',kind='work')))
+        self.assertIsNone(suppliers.category(row('x','Кабель до 35 кВ',kind='aggregate')))
+
+    def test_contractor_request_separates_labor_materials_and_machine_costs(self):
+        self.source['positions']=[row('w','Установка опор наружного освещения',kind='work')]
+        result=suppliers.prepare(self.source)
+        self.assertEqual(result['position_count'],1)
+        body=jobs.jobs(TID)[0]['result']['drafts'][0]['body']
+        self.assertIn('выполнить такие работы',body)
+        self.assertIn('отдельно стоимость работ, материалов и техники',body)
+        self.assertNotIn('12345678',body)
+        self.assertNotIn('наличие',body)
+
+    def test_nonlocal_manufacturer_requires_explicit_evidence(self):
+        source=suppliers.source_for('td-souz')
+        self.assertIn('Москвы',source['company'])
+        html='Фабрика Готика: продажа с доставкой в регионы. zakaz@td-souz.ru'
+        self.assertEqual(campaigns.extract_contact(source,html),'zakaz@td-souz.ru')
+        with self.assertRaises(BuyerError): campaigns.extract_contact(source,html.replace('доставкой в регионы','самовывоз'))
 
     def test_reply_partial_prices_saved_and_shown_by_position_without_overwriting_estimate(self):
         key,claim=self.sent();self.assertTrue(replies.update(key,'reader',claim['token'],self.result()))

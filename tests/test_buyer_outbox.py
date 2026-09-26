@@ -53,6 +53,17 @@ class OutboxTests(unittest.TestCase):
         self.assertFalse(box.update(first, 'mac', 'wrong'))
         with self.assertRaises(BuyerError): box.retry_blocked('123456789012345', first)
 
+    def test_shared_browser_sends_sequentially_even_with_two_workers(self):
+        first=self.enqueue(); second=self.enqueue('second@example.org')
+        claim=box.claim('mac')
+        self.assertIsNone(box.claim('other-mac'))
+        with closing(box.connect()) as db,db:
+            db.execute('UPDATE outbound SET lease_until=0 WHERE id=?',(first,))
+        self.assertIsNone(box.claim('other-mac'))
+        self.assertEqual(box.claim('mac')['id'],first)
+        box.update(first,'mac',claim['token'],{'status':'sent','detail':'В отправленных','evidence':'sent.png hash'})
+        self.assertEqual(box.claim('other-mac')['id'],second)
+
     def test_explicit_blocked_retry_preserves_history_and_fences_old_worker(self):
         key = self.enqueue(); old = box.claim('mac')
         receipt = {'status': 'blocked', 'detail': 'Нет инструмента, отправки не было', 'evidence': ''}

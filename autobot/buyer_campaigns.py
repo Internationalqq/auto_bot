@@ -88,7 +88,7 @@ def extract_contact(source, html):
     soup = BeautifulSoup(html, 'html.parser')
     for node in soup(['script','style','noscript']): node.decompose()
     text = soup.get_text(' ', strip=True)
-    if not re.search('ярослав', text, re.I) or not re.search(source.get('evidence','щеб'), text, re.I):
+    if not re.search(source.get('region_evidence','ярослав'), text, re.I) or not re.search(source.get('evidence','щеб'), text, re.I):
         raise BuyerError('На странице не подтверждены категория и регион')
     emails = set(re.findall(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}', text))
     emails.update(unquote(a['href'][7:]).split('?')[0] for a in soup.select('a[href^="mailto:"]'))

@@ -97,7 +97,7 @@
             automatic.hidden = !supported;
             const autoFeedback = node('p', 'Автоподбор: щебень · Ярославская область · 3 сайта · Email. Другие направления и мессенджеры пока не подключены.', 'buyer-send-feedback');
             if (!supported) autoFeedback.textContent = 'Автоподбор для этого направления пока не подключён. Можно отправить письмо по указанному контакту.';
-            if (job.supplier) autoFeedback.textContent = `Один запрос на ${job.positions.length} поз. · ${job.region} · Email. Перед отправкой скрипт повторно проверит контакт на сайте. WhatsApp и MAX пока не подключены.`;
+            if (job.supplier) autoFeedback.textContent = `Один запрос на ${job.positions.length} поз. · ${job.region} · Email. ${job.supplier.region_note || ''} Перед отправкой скрипт повторно проверит контакт на сайте. WhatsApp и MAX пока не подключены.`;
             autoFeedback.setAttribute('role','status');
             automatic.addEventListener('click', async () => {
               if (busy) return;
@@ -252,7 +252,7 @@
     const expanded = coverage.querySelector('details')?.open;
     coverage.replaceChildren();
     const date = new Date(result.updated_at * 1000).toLocaleString('ru-RU');
-    coverage.append(node('p',`Последний подбор: ${date}. Поставщиков: ${result.job_ids.length}. Позиций в запросах: ${result.position_count}. Без поставщика: ${result.uncovered.length}.`));
+    coverage.append(node('p',`Последний подбор: ${date}. Поставщиков: ${result.supplier_count ?? result.job_ids.length}. Позиций в запросах: ${result.position_count}. Без поставщика: ${result.uncovered.length}.`));
     if (result.uncovered.length) {
       const details = node('details'); details.open = !!expanded;
       details.append(node('summary','Позиции, для которых ещё нужен поставщик'));

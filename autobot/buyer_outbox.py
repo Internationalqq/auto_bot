@@ -135,6 +135,10 @@ def claim(worker):
         row = db.execute("SELECT * FROM outbound WHERE worker=? AND status IN ('sending','uncertain') AND receipt IS NULL ORDER BY created_at LIMIT 1", (worker,)).fetchone()
         if row:
             return dict(row) | {'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
+        # All workers share the same signed-in browser. A slow or disconnected
+        # attempt must finish/reconcile before another letter uses that window.
+        if db.execute("SELECT 1 FROM outbound WHERE status IN ('sending','uncertain') AND receipt IS NULL LIMIT 1").fetchone():
+            return None
         row = db.execute("SELECT * FROM outbound WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
         if not row:
             return None
