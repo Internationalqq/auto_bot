@@ -101,6 +101,10 @@ class FirefoxLight:
         state = self.capture()
         if state['window_title'].startswith('Новое письмо'):
             raise BuyerError('В Firefox открыт черновик. Завершите или закройте его')
+        if state['window_title'].startswith('Поиск - '):
+            # The inbox collector leaves search results open; that page has
+            # folder filters rather than the normal Sent navigation link.
+            self.link('Назад во «Входящие»')
         self.link('Отправленные')
         state = self.capture()
         if not state['window_title'].startswith('Отправленные'):

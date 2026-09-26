@@ -67,6 +67,13 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.run_script()['status'], 'blocked')
         self.browser.send.assert_not_called()
 
+    def test_sending_after_reply_search_returns_to_mail_navigation(self):
+        browser=object.__new__(script.FirefoxLight);browser.link=Mock()
+        browser.capture=Mock(side_effect=[{'window_title':'Поиск - AB-CAB-01'},
+            {'window_title':'Отправленные - Mail.ru','elements':[]}])
+        self.assertIsNone(browser.find_sent(JOB))
+        self.assertEqual([c.args[0] for c in browser.link.call_args_list],['Назад во «Входящие»','Отправленные'])
+
     def test_script_dispatch_never_contacts_model_and_completed_is_reused(self):
         config = {'sender_mode': 'mailru_lite_script', 'outbox_dir': str(self.folder)}
         with patch('autobot.buyer_sender.sender_client') as model, patch.object(script, 'execute', return_value={'status': 'sent'}) as run:
