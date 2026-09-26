@@ -7,6 +7,17 @@ from flask import Response
 from autobot import web_ui
 
 
+def test_shared_navigation_styles_use_the_existing_estimates_proxy() -> None:
+    client = web_ui.app.test_client()
+    page = client.get('/estimates').get_data(as_text=True)
+    assert '/estimates/workspace-nav.css?' in page
+    assert '/static/workspace_nav.css' not in page
+    response = client.get('/estimates/workspace-nav.css')
+    assert response.status_code == 200
+    assert response.mimetype == 'text/css'
+    assert response.get_data() == (web_ui.REPO_ROOT / 'autobot/static/workspace_nav.css').read_bytes()
+
+
 def test_large_text_response_is_gzipped_and_hardened() -> None:
     with web_ui.app.test_request_context(headers={"Accept-Encoding": "gzip"}):
         response = web_ui.app.process_response(

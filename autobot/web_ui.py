@@ -6264,7 +6264,7 @@ RESEARCH_TEMPLATE = """
     @media (max-width:760px){ .form-grid{grid-template-columns:1fr} .btn-row{flex-direction:column} .btn{width:100%;box-sizing:border-box} }
   </style>
   <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
-  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1" />
 </head>
 <body class="autobot-page research-page">
   {% from 'workspace_nav.html' import workspace_nav %}
@@ -6343,7 +6343,7 @@ ESTIMATE_MARKET_VIEW_TEMPLATE = """
     .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   </style>
   <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
-  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1" />
 </head>
 <body class="autobot-page market-view-page">
   {% from 'workspace_nav.html' import workspace_nav %}
@@ -6764,6 +6764,12 @@ def estimate_detail_page(estimate_id: str):
 @app.get('/estimates/catalog.css')
 def estimate_catalog_css():
     return app.send_static_file('estimate_catalog.css')
+
+
+@app.get('/estimates/workspace-nav.css')
+def workspace_navigation_css():
+    # /estimates is proxied with CRM authentication; /static only permits legacy names.
+    return app.send_static_file('workspace_nav.css')
 
 
 @app.get('/estimates/workspace.css')
