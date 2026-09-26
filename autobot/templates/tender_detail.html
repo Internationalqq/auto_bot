@@ -11,8 +11,8 @@
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
-  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-4" />
-  <script defer src="/tenders/buyer.js?v=20260926-4"></script>
+  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-5" />
+  <script defer src="/tenders/buyer.js?v=20260926-5"></script>
   <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1">
 </head>
 <body>
@@ -319,23 +319,28 @@
           <div><h2 id="buyerTitle">Поставщики и исполнители</h2><p>Компании, предложения и переписка по этой смете.</p></div>
           <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
         </header>
+        <details class="buyer-setup" data-buyer-setup open>
+        <summary>Подбор поставщиков</summary>
         <div class="buyer-launch">
           <div class="buyer-scope"><strong data-buyer-scope>Все позиции без подтверждённой цены</strong><span>{{ tender.region or "Регион нужно уточнить в данных тендера" }} · <a href="#positions" data-workspace-link="positions">Выбрать позиции в смете</a></span></div>
           <label class="buyer-mode">После подбора<select data-buyer-mode aria-describedby="buyerModeHint"><option value="draft">Подготовить обращения</option><option value="email">Отправить по email</option></select></label>
           <button class="btn primary" type="button" data-buyer-start>Подобрать поставщиков</button>
           <p id="buyerModeHint" data-buyer-mode-hint>Автобот найдёт компании и соберёт общий запрос для каждой. Вы сможете проверить текст перед отправкой.</p>
         </div>
-        <div class="buyer-statusbar"><p role="status" aria-live="polite" data-buyer-status>Загружаем поставщиков…</p><button class="btn ghost" type="button" data-buyer-cancel hidden>Остановить подбор</button></div>
         <div data-buyer-discovery aria-label="Состояние подбора"></div>
+        </details>
+        <div class="buyer-statusbar" data-buyer-statusbar><p role="status" aria-live="polite" data-buyer-status>Загружаем поставщиков…</p><button class="btn ghost" type="button" data-buyer-cancel hidden>Остановить подбор</button></div>
         <div class="buyer-results-toolbar" data-buyer-toolbar hidden>
           <div class="buyer-filters" role="group" aria-label="Показать компании">
             <button type="button" data-buyer-filter="all" aria-pressed="true">Все <span data-buyer-count="all">0</span></button>
+            <button type="button" data-buyer-filter="sent" aria-pressed="false">Отправлено <span data-buyer-count="sent">0</span></button>
             <button type="button" data-buyer-filter="priced" aria-pressed="false">С ценами <span data-buyer-count="priced">0</span></button>
             <button type="button" data-buyer-filter="answered" aria-pressed="false">Ответили <span data-buyer-count="answered">0</span></button>
             <button type="button" data-buyer-filter="attention" aria-pressed="false">Нужно действие <span data-buyer-count="attention">0</span></button>
           </div>
           <label class="buyer-find"><span class="sr-only">Найти компанию или позицию</span><input type="search" data-buyer-find placeholder="Компания, контакт или позиция" /></label>
         </div>
+        <p class="buyer-mail-note" data-buyer-mail-note hidden>Ответы проверяются автоматически каждые 10 минут. Нажмите на компанию, чтобы открыть переписку.</p>
         <div data-buyer-list aria-label="Компании и обращения"></div>
         <p class="buyer-empty" data-buyer-no-results hidden>По этому фильтру компаний нет. Измените фильтр или строку поиска.</p>
         <div class="buyer-coverage" data-buyer-coverage></div>

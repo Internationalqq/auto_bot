@@ -14,6 +14,8 @@
   const mode = root.querySelector('[data-buyer-mode]');
   const runSelect = root.querySelector('[data-buyer-run]');
   const find = root.querySelector('[data-buyer-find]');
+  const setup = root.querySelector('[data-buyer-setup]');
+  let setupInitialized = false;
   let selectedRun = '', filter = 'all', loading = false, loadAgain = false;
   let busy = false, last = '', active = false;
   const recipients = new Map();
@@ -43,6 +45,7 @@
     const selection = focusedInput ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     list.replaceChildren();
     const jobNodes = new Map();
+    const mailNodes = new Map();
     jobs.forEach(job => {
       const group = node('details', null, 'buyer-group');
       group.dataset.key = job.id;
@@ -52,7 +55,7 @@
       const latestSend = ownOutbox.at(-1);
       const hasReply = (replies.messages || []).some(reply => ownOutbox.some(item => item.id === reply.outbound_id));
       const supplierState = hasReply ? 'Ответ получен' : latestSend ? sendLabels[latestSend.status] : 'Запрос готов';
-      summary.append(node('strong', job.position_name), node('span', `${job.supplier ? supplierState+' · Email · '+job.supplier.email : labels[job.status] || 'Неизвестное состояние'} · Позиций: ${job.positions.length}`));
+      summary.append(node('strong', job.position_name), node('span', `${job.supplier ? supplierState+' · Email · '+(latestSend?.recipient || job.supplier.email) : labels[job.status] || 'Неизвестное состояние'} · Позиций: ${job.positions.length}`));
       group.append(summary);
       if (job.result) {
         job.result.drafts.forEach((draft, index) => {
@@ -228,6 +231,7 @@
                 entry.append(retry);
               }
               article.append(entry);
+              mailNodes.set(item.id, entry);
             });
           } else {
             article.append(node('p', 'Старый формат. Выберите эти позиции и подготовьте новое обращение перед отправкой.'));
@@ -249,7 +253,7 @@
       }
       jobNodes.set(job.id, group);
     });
-    renderCompanies(report, jobs, outbox, replies, jobNodes, open);
+    renderCompanies(report, jobs, outbox, replies, jobNodes, open, mailNodes);
     if (focusedKey) {
       const group = Array.from(list.querySelectorAll('details')).find(el => el.dataset.key === focusedKey);
       const input = focusedInput ? Array.from(group?.querySelectorAll('input, textarea') || []).find(el => el.dataset.recipientKey === focusedInput) : null;
@@ -266,37 +270,63 @@
     else if (/^https?:\/\//i.test(address)) { a.href = address; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
     return a;
   }
-  function renderCompanies(report, jobs, outbox, replies, jobNodes, expanded) {
-    const companies = report ? report.companies : [];
-    // Existing tender correspondence remains useful before the first discovery run.
-    if (!report) {
-      const grouped = new Map();
-      jobs.filter(j => j.supplier).forEach(job => {
-        const supplier = job.supplier, id = supplier.id || supplier.email || job.id;
-        let company = grouped.get(id);
+  function correspondence(company, outbox, replies) {
+    const ids = new Set(company.draft_job_ids || []);
+    const outgoing = outbox.filter(item => company.correspondence_ids ? company.correspondence_ids.includes(item.id) : ids.has(item.draft_job_id) && (!company.correspondence_recipient || item.recipient === company.correspondence_recipient)).sort((a,b) => b.created_at-a.created_at);
+    const outgoingIds = new Set(outgoing.map(item => item.id));
+    const answers = (replies.messages || []).filter(reply => outgoingIds.has(reply.outbound_id)).sort((a,b) => b.received_at-a.received_at);
+    const checks = outgoing.filter(item => item.status === 'sent').map(item => replies.checks?.[item.id]).filter(Boolean);
+    return {outgoing, latest:outgoing[0], answers, answer:answers[0],
+      blocked:checks.some(check => check.status === 'blocked'),
+      checking:checks.some(check => check.status === 'checking'),
+      checkedAt:Math.max(0,...checks.map(check => check.checked_at || 0)),
+      sent:outgoing.some(item => item.status === 'sent'),
+      attention:outgoing.some(item => ['blocked','uncertain'].includes(item.status)) || checks.some(check => check.status === 'blocked')};
+  }
+  function companyList(report, jobs, outbox, replies) {
+    const companies = (report?.companies || []).map(c => ({...c, contacts:[...(c.contacts || [])], prices:[...(c.prices || [])], position_keys:[...c.position_keys], draft_job_ids:[...(c.draft_job_ids || [])], current_job_ids:[...(c.draft_job_ids || [])], correspondence_ids:outbox.filter(item => c.draft_job_ids?.includes(item.draft_job_id)).map(item => item.id), history_outbox_ids:[]}));
+    const assigned = new Set(companies.flatMap(c => c.draft_job_ids));
+    // Sent requests stay visible when a newer sourcing run replaces its results.
+    jobs.filter(job => !assigned.has(job.id) && (!report && job.supplier || outbox.some(item => item.draft_job_id === job.id))).forEach(job => {
+        const supplier = job.supplier || {}, sent = outbox.filter(item => item.draft_job_id === job.id);
+        const addresses = sent.length ? [...new Set(sent.map(item => item.recipient))] : [supplier.email || ''];
+        addresses.forEach(address => {
+        const id = address || supplier.id || job.id;
+        let company = companies.find(c => address ? c.correspondence_recipient === address || c.contacts.some(contact => contact.channel === 'email' && address === contact.address) : c.id === id);
         if (!company) {
-          company = {id, name:supplier.company || job.position_name, source_url:supplier.url, contacts:supplier.email ? [{channel:'email',address:supplier.email}] : supplier.channels || [], prices:[], status:job.result ? 'prepared' : job.status, position_keys:[], draft_job_ids:[], region_note:supplier.region_note};
-          grouped.set(id, company); companies.push(company);
+          company = {id, name:addresses.length === 1 && supplier.company || address || job.position_name, source_url:supplier.url, contacts:address ? [{channel:'email',address}] : supplier.channels || [], prices:[], status:job.result ? 'prepared' : job.status, position_keys:[], draft_job_ids:[], current_job_ids:[], region_note:supplier.region_note, previous:!!report, correspondence_recipient:address, correspondence_ids:[], history_outbox_ids:[]};
+          companies.push(company);
         }
-        company.draft_job_ids.push(job.id);
+        if (!company.draft_job_ids.includes(job.id)) company.draft_job_ids.push(job.id);
+        if (!sent.length) company.current_job_ids.push(job.id);
         company.position_keys = [...new Set([...company.position_keys, ...job.positions.map(p => p.position_key)])];
-        const sent = outbox.filter(o => o.draft_job_id === job.id);
-        const answers = (replies.messages || []).filter(r => sent.some(o => o.id === r.outbound_id));
-        company.prices.push(...answers.flatMap(r => r.prices.map(p => ({...p,origin:'reply'}))));
+        const own = sent.filter(item => item.recipient === address);
+        company.correspondence_ids.push(...own.map(item => item.id));
+        company.history_outbox_ids.push(...own.map(item => item.id));
+        const answers = (replies.messages || []).filter(r => own.some(o => o.id === r.outbound_id));
+        company.prices.push(...answers.flatMap(r => (r.prices || []).map(p => ({...p,origin:'reply'}))));
         if (answers.length) company.status = 'answered';
-        else if (company.status !== 'answered' && sent.length) company.status = sent.at(-1).status;
-      });
-    }
+        else if (company.status !== 'answered' && own.length) company.status = own.at(-1).status;
+        });
+    });
+    return companies;
+  }
+  function shortDate(timestamp) {
+    return timestamp ? new Date(timestamp*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+  }
+  function renderCompanies(report, jobs, outbox, replies, jobNodes, expanded, mailNodes = new Map()) {
+    const companies = companyList(report, jobs, outbox, replies);
     const positionMap = new Map([...jobs.flatMap(j => j.positions), ...(report?.positions || [])].map(p => [p.position_key,p]));
     const used = new Set();
-    const companyStates = {...sendLabels, answered:'Ответ получен', prepared:'Обращение готово', contact_required:'Нужен контакт или канал'};
+    const companyStates = {...sendLabels, sent:'Отправлено', answered:'Отправлено', prepared:'Готово к отправке', contact_required:'Нужен контакт'};
     companies.forEach(company => {
       const card = node('details', null, 'buyer-company'); card.dataset.key = `company-${company.id}`; card.open = expanded.has(card.dataset.key);
       const positions = company.position_keys.map(key => positionMap.get(key)).filter(Boolean);
       const prices = company.prices || [], priced = prices.some(p => p.price_kopecks != null);
-      const attention = ['blocked','uncertain','contact_required'].includes(company.status) || prices.some(p => p.state === 'review') || !!report?.version_note;
-      card.dataset.priced = String(priced); card.dataset.answered = String(company.status === 'answered'); card.dataset.attention = String(attention);
-      card.dataset.search = [company.name,...company.contacts.map(c => c.address),...positions.map(p => p.name)].join(' ').toLocaleLowerCase('ru-RU');
+      const thread = correspondence(company, outbox, replies);
+      const attention = thread.attention || ['blocked','uncertain','contact_required'].includes(company.status) || prices.some(p => p.state === 'review') || !!report?.version_note;
+      card.dataset.priced = String(priced); card.dataset.answered = String(!!thread.answer); card.dataset.sent = String(thread.sent); card.dataset.attention = String(attention);
+      card.dataset.search = [company.name,...thread.outgoing.map(item => item.recipient),...company.contacts.map(c => c.address),...positions.map(p => p.name)].join(' ').toLocaleLowerCase('ru-RU');
       const summary = node('summary', null, 'buyer-company-summary');
       const media = node('span', null, 'buyer-company-media'); media.setAttribute('aria-hidden','true');
       media.append(node('span', (company.name || '?').split(/\s+/).slice(0,2).map(s => s[0]).join('').toUpperCase()));
@@ -305,18 +335,41 @@
         img.addEventListener('error', () => img.remove()); media.append(img);
       }
       const identity = node('span', null, 'buyer-company-identity');
-      identity.append(node('strong', company.name), node('span', company.contacts[0]?.address || 'Контакт пока не найден', 'buyer-company-contact'));
-      identity.append(node('span', `${company.position_keys.length} поз. · ${positions.slice(0,2).map(p => p.name).join(' · ') || 'Состав запроса уточняется'}`, 'buyer-company-scope'));
+      identity.append(node('strong', company.name));
+      const recipient = thread.latest?.recipient || company.contacts[0]?.address || 'Контакт пока не найден';
+      if (recipient !== company.name) identity.append(node('span', recipient, 'buyer-company-contact'));
+      identity.append(node('span', `${company.previous ? 'Ранее по тендеру · ' : ''}${company.position_keys.length} поз. · ${positions.slice(0,2).map(p => p.name).join(' · ') || 'Состав запроса уточняется'}`, 'buyer-company-scope'));
+      const activity = node('span',null,'buyer-company-activity');
+      const sendState = thread.latest?.status || company.status;
+      activity.append(node('span',companyStates[sendState] || 'Готовим обращение',`buyer-company-state buyer-state-${sendState}`));
+      if (thread.latest) activity.append(node('span',shortDate(thread.latest.status === 'sent' ? thread.latest.updated_at : thread.latest.created_at),'buyer-company-date'));
+      if (thread.outgoing.length > 1) activity.append(node('span',`Обращений: ${thread.outgoing.length}`,'buyer-company-date'));
       const offer = node('span', null, 'buyer-company-offer');
+      if (thread.answer) {
+        offer.append(node('span',`Ответ · ${shortDate(thread.answer.received_at)}`,'buyer-reply-label'));
+        const excerpt = thread.answer.raw_text?.trim() || 'Получен ответ без текста';
+        offer.append(node('span',excerpt.length > 240 ? excerpt.slice(0,237).trimEnd()+'…' : excerpt,'buyer-reply-preview'));
+      } else {
+        const waiting = thread.blocked ? 'Не удалось проверить ответы' : thread.checking ? 'Проверяем ответы…' : thread.sent ? 'Ожидаем ответ' : thread.latest?.status === 'uncertain' ? 'Ответ пока не отслеживается' : 'Ответа пока нет';
+        offer.append(node('span',waiting,thread.blocked ? 'buyer-inbox-warning' : 'buyer-reply-empty'));
+      }
+      if (thread.blocked) offer.append(node('span',thread.answer ? 'Новые ответы не проверены' : 'Откройте переписку, чтобы повторить проверку','buyer-inbox-warning'));
+      else if (!thread.answer && thread.checkedAt) offer.append(node('span',`Проверено ${shortDate(thread.checkedAt)}`,'buyer-company-date'));
       const price = prices.find(p => p.origin === 'reply' && p.price_kopecks != null) || prices.find(p => p.price_kopecks != null);
       if (price) {
         offer.append(node('strong', `${(price.price_kopecks/100).toLocaleString('ru-RU')} ₽ / ${price.unit || 'ед.'}`));
-        offer.append(node('span', positionMap.get(price.position_key)?.name || 'Позиция сохранённого запроса', 'buyer-offer-position'));
+        if (company.position_keys.length > 1) offer.append(node('span', positionMap.get(price.position_key)?.name || 'Позиция сохранённого запроса', 'buyer-offer-position'));
         offer.append(node('span', `${price.origin === 'website' ? 'Цена с сайта' : 'Из ответа'}${price.state === 'review' ? ' · уточнить' : price.origin === 'website' ? ' · подтвердить' : ''}${prices.length > 1 ? ` · ещё ${prices.length-1}` : ''}`));
-      } else offer.append(node('strong','Цена по запросу'),node('span','Предложение ещё не получено'));
-      const state = node('span', companyStates[company.status] || 'Проверяем компанию', `buyer-company-state buyer-state-${company.status}`);
-      summary.append(media, identity, offer, state); card.append(summary);
+      }
+      summary.append(media, identity, activity, offer); card.append(summary);
       const body = node('div', null, 'buyer-company-body');
+      if (thread.answer) {
+        const answer = node('section',null,'buyer-latest-reply');
+        answer.append(node('h3','Последний ответ'),node('p',`${thread.answer.sender || thread.latest?.recipient || company.name} · ${shortDate(thread.answer.received_at)}`,'buyer-company-date'),node('p',thread.answer.raw_text || 'Ответ без текста','buyer-body'));
+        body.append(answer);
+      }
+      const contactDetails = node('details',null,'buyer-contact-details'); contactDetails.dataset.key = `contacts-${company.id}`; contactDetails.open = expanded.has(contactDetails.dataset.key);
+      contactDetails.append(node('summary','Контакты и сайт компании'));
       const contacts = node('div', null, 'buyer-contacts');
       if (company.source_url) contacts.append(safeLink(company.source_url,'Сайт компании'));
       const channelNames = {email:'Email',phone:'Телефон',telegram:'Telegram',whatsapp:'WhatsApp',max:'MAX',avito:'Авито'};
@@ -326,8 +379,9 @@
         const key = `${c.channel}:${address}`; if (seen.has(key)) return; seen.add(key);
         contacts.append(safeLink(c.address, `${channelNames[c.channel] || c.channel}: ${c.address}`, c.channel));
       });
-      body.append(contacts);
-      if (company.region_note) body.append(node('p', company.region_note, 'buyer-region-note'));
+      contactDetails.append(contacts);
+      if (company.region_note) contactDetails.append(node('p', company.region_note, 'buyer-region-note'));
+      body.append(contactDetails);
       const scope = node('details', null, 'buyer-scope-details'); scope.dataset.key = `scope-${company.id}`; scope.open = expanded.has(scope.dataset.key);
       scope.append(node('summary',`Позиции сметы (${positions.length})`));
       const rows = node('ul'); positions.forEach(p => rows.append(node('li', `${p.name} — ${p.quantity ?? 'уточнить объём'} ${p.unit || ''}`))); scope.append(rows); body.append(scope);
@@ -342,9 +396,12 @@
           priceList.append(row);
         }); body.append(priceList);
       }
-      (company.draft_job_ids || []).forEach(id => {
+      thread.outgoing.filter(item => company.history_outbox_ids.includes(item.id)).forEach(item => {
+        const entry = mailNodes.get(item.id); if (entry) body.append(entry);
+      });
+      company.current_job_ids.forEach(id => {
         const group = jobNodes.get(id); if (!group) return;
-        used.add(id); group.classList.add('buyer-request'); group.open = company.draft_job_ids.length === 1 || expanded.has(id);
+        used.add(id); group.classList.add('buyer-request'); group.open = expanded.has(id);
         const heading = group.querySelector('summary strong'); if (heading) heading.textContent = 'Обращение и переписка';
         body.append(group);
       });
@@ -364,6 +421,7 @@
       list.append(empty);
     }
     const toolbar = root.querySelector('[data-buyer-toolbar]'); if (toolbar) toolbar.hidden = !companies.length;
+    const mailNote = root.querySelector('[data-buyer-mail-note]'); if (mailNote) mailNote.hidden = !outbox.some(item => item.status === 'sent');
     applyFilter();
   }
   function applyFilter() {
@@ -405,13 +463,21 @@
       renderCoverage(data.coverage, report); renderSearches(runs, data.jobs, report);
       status.classList?.remove('buyer-error');
     }
-    catch (error) { status.textContent = error.message; status.classList?.add('buyer-error'); }
+    catch (error) {
+      status.textContent = error.message; status.classList?.add('buyer-error');
+      const bar = root.querySelector('[data-buyer-statusbar]'); if (bar) bar.hidden = false;
+    }
     finally { loading = false; refresh.disabled = false; if (loadAgain) { loadAgain = false; await load(); } }
   }
   let lastSearches = '';
   function renderSearches(runs, jobs, report) {
     if (!discovery) return;
     active = runs.some(run => run.status === 'searching') || jobs.some(job => ['queued','leased'].includes(job.status));
+    if (setup && !setupInitialized) {
+      setup.open = active || !list.querySelectorAll('.buyer-company').length;
+      setupInitialized = true;
+    }
+    const bar = root.querySelector('[data-buyer-statusbar]'); if (bar) bar.hidden = !active && !!list.querySelectorAll('.buyer-company').length;
     cancel.hidden = !active;
     const run = runs.find(r => r.id === report?.run_id) || runs[0];
     const names = {searching:'Подбор выполняется',completed:'Подбор завершён',partial:'Есть результат · часть сайтов недоступна',canceled:'Подбор остановлен'};
@@ -478,6 +544,7 @@
     const action = mode?.value === 'email' ? 'Найти и отправить запросы' : 'Подобрать поставщиков';
     start.textContent = count ? `${action} (${count})` : action;
     const scope = root.querySelector('[data-buyer-scope]');
+    if (count && setup) setup.open = true;
     if (scope) scope.textContent = count ? `Выбрано позиций: ${count}` : 'Все позиции без подтверждённой цены';
     const hint = root.querySelector('[data-buyer-mode-hint]');
     if (hint) hint.textContent = mode?.value === 'email' ? 'Автобот найдёт компании и отправит каждой общий запрос по выбранным позициям. Ответы появятся здесь. Мессенджеры доступны для ручного обращения.' : 'Автобот найдёт компании и соберёт общий запрос для каждой. Вы сможете проверить текст перед отправкой.';
