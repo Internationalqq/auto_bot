@@ -52,6 +52,20 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.run_script()['status'], 'uncertain')
         self.assertEqual(json.loads((self.folder/'state.json').read_text())['phase'], 'send_reserved')
 
+    def test_late_sent_proof_recovers_failure_without_a_second_send(self):
+        self.browser.find_sent.side_effect=[None,self.proof]
+        self.browser.send.side_effect=BuyerError('Страница ещё не обновилась')
+        self.assertEqual(self.run_script()['status'],'sent')
+        self.browser.send.assert_called_once_with(JOB)
+        self.browser.prepare.assert_called_once_with(JOB)
+
+    def test_sent_navigation_waits_for_delayed_folder(self):
+        browser=object.__new__(script.FirefoxLight);browser.link=Mock();browser.call=Mock()
+        browser.capture=Mock(side_effect=[{'window_title':'Письмо отправлено'},
+            {'window_title':'Письмо отправлено'}, {'window_title':'Отправленные - Mail.ru','elements':[]}])
+        self.assertIsNone(browser.find_sent(JOB))
+        browser.link.assert_called_once_with('Отправленные')
+
     def test_delayed_confirmation_observes_without_another_send_click(self):
         browser=object.__new__(script.FirefoxLight)
         browser.validate=Mock();browser.click=Mock();browser.call=Mock()

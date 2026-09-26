@@ -114,9 +114,11 @@ class FirefoxLight:
             # folder filters rather than the normal Sent navigation link.
             self.link('Назад во «Входящие»')
         self.link('Отправленные')
-        state = self.capture()
-        if not state['window_title'].startswith('Отправленные'):
-            raise BuyerError('Не открылась папка отправленных')
+        for attempt in range(5):
+            state = self.capture()
+            if state['window_title'].startswith('Отправленные'): break
+            if attempt == 4: raise BuyerError('Не открылась папка отправленных')
+            self.call({'action':'wait','seconds':1})
         recipients = unique([e for e in state['elements'] if e['role'] == 'AXLink' and e['label'] == job['recipient']])
         candidates = unique([e for e in state['elements'] if e['role'] == 'AXLink' and e['label'] == job['subject'] and
                              any(abs(e['bounds'][1] - r['bounds'][1]) < 2 for r in recipients)])
@@ -170,6 +172,11 @@ class FirefoxLight:
 
 def execute(job, config, remote, folder, state, *, browser_factory=FirefoxLight):
     from autobot.buyer_sender import save
+    def confirmed(proof):
+        save(folder / 'sent-proof.json', proof)
+        digest = hashlib.sha256((folder / 'sent-proof.json').read_bytes()).hexdigest()
+        return {'status': 'sent', 'detail': 'Скрипт проверил адресата и полный текст в отправленных Mail.ru.',
+                'evidence': str(folder / 'sent-proof.json') + ' sha256:' + digest}
     browser = None
     reserved = bool(state)
     try:
@@ -187,13 +194,18 @@ def execute(job, config, remote, folder, state, *, browser_factory=FirefoxLight)
             browser.send(job)
             proof = browser.find_sent(job)
             if proof is None: raise BuyerError('Отправка не найдена в отправленных; повтор запрещён')
-        save(folder / 'sent-proof.json', proof)
-        digest = hashlib.sha256((folder / 'sent-proof.json').read_bytes()).hexdigest()
-        receipt = {'status': 'sent', 'detail': 'Скрипт проверил адресата и полный текст в отправленных Mail.ru.',
-                   'evidence': str(folder / 'sent-proof.json') + ' sha256:' + digest}
+        receipt = confirmed(proof)
     except Exception as error:
         detail = str(error) if isinstance(error, BuyerError) else 'Ошибка браузерного исполнителя: ' + type(error).__name__
         receipt = {'status': 'uncertain' if reserved else 'blocked', 'detail': detail[:1900], 'evidence': ''}
+        if reserved and browser is not None:
+            # A delayed page transition may have finished after the first
+            # read-back. Retry only finding proof, never preparing or sending.
+            try:
+                proof = browser.find_sent(job)
+                if proof is not None: receipt = confirmed(proof)
+            except Exception:
+                pass  # Preserve the first concrete failure and uncertainty.
     finally:
         if browser is not None: browser.close()
     save(folder / 'state.json', {**state, 'transport': 'mailru_lite', 'receipt': receipt})
