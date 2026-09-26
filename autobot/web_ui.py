@@ -6263,25 +6263,16 @@ RESEARCH_TEMPLATE = """
     .empty { padding:16px; text-align:center; color:#62748b; }
     @media (max-width:760px){ .form-grid{grid-template-columns:1fr} .btn-row{flex-direction:column} .btn{width:100%;box-sizing:border-box} }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1" />
 </head>
 <body class="autobot-page research-page">
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы AutoBot">
-      <a class="topnav-primary" href="/estimates">Сметы</a>
-      <a class="topnav-primary" href="/tenders">Тендеры</a>
-      <a class="is-active" href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('research') }}
   <div class="page">
     <header class="research-hero">
-      <span class="eyebrow">Быстрая проверка рынка</span>
       <h1>Найти цену по позиции</h1>
-      <p class="sub">AutoBot найдёт кандидатов, откроет прямые страницы и отдельно покажет проверенные цены и отклонённые источники.</p>
+      <p class="sub">Укажите материал или работу и город. Найденные предложения будут со ссылками на источники.</p>
     </header>
 
     <section class="panel research-form-panel">
@@ -6351,20 +6342,12 @@ ESTIMATE_MARKET_VIEW_TEMPLATE = """
     .status-note { color:#a06b18; font-size:10px; margin-top:5px; }
     .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   </style>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260902-tabs-1" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1" />
 </head>
 <body class="autobot-page market-view-page">
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы AutoBot">
-      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
-      <a class="topnav-primary" href="/tenders">Тендеры</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('estimates') }}
   <div class="page">
     <p style="margin:0 0 10px;"><a href="/estimates/{{ meta.id }}?{{ back_query }}">← Назад к смете</a> · <a href="/estimates">Все сметы</a> · <a href="/research">Поиск по позиции</a></p>
     <h1 style="margin:0 0 8px;">{{ meta.title }} · Сравнение цен</h1>

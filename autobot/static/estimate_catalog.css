@@ -1,5 +1,5 @@
-/* The estimates catalogue owns its layout; shared navigation stays in autobot-ui.css. */
-body.estimates-index-page { margin: 0; background: #f6f8fb; --ab-muted: #596b80; --text: var(--ab-ink); --muted: var(--ab-muted); --accent: var(--ab-blue); --border: var(--ab-line); --ok: #13714c; --ok-soft: #ebf6ef; }
+/* The estimates catalogue owns its layout; shared navigation stays in workspace_nav.css. */
+body.estimates-index-page { margin: 0; background: #fff; --ab-muted: #596b80; --text: var(--ab-ink); --muted: var(--ab-muted); --accent: var(--ab-blue); --border: var(--ab-line); --ok: #13714c; --ok-soft: #ebf6ef; }
 .estimates-index-page * { box-sizing: border-box; }
 .estimates-index-page [hidden] { display: none; }
 .estimates-index-page .page { max-width: 1440px; margin: auto; padding: 24px 24px 48px; }
@@ -9,7 +9,7 @@ body.estimates-index-page { margin: 0; background: #f6f8fb; --ab-muted: #596b80;
 .estimates-index-page input { caret-color: var(--ab-blue); }
 .estimates-index-page input::placeholder { color: #64758a; opacity: 1; }
 .hero-grid { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 20px; align-items: start; }
-.catalog-heading-main h1 { margin: 0; font-size: 27px; line-height: 1.3; font-weight: 650; }
+.catalog-heading-main h1 { margin: 0; font-size: 24px; line-height: 1.3; font-weight: 650; }
 .hero-text { margin: 8px 0 0; color: var(--ab-muted); font-size: 14px; line-height: 1.5; }
 .upload-card { flex: 0 1 auto; min-width: 260px; }
 .upload-card > summary { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 16px; color: #fff; background: #2563eb; border-radius: 8px; cursor: pointer; list-style: none; font-size: 14px; font-weight: 600; }
@@ -30,12 +30,10 @@ body.estimates-index-page { margin: 0; background: #f6f8fb; --ab-muted: #596b80;
 .estimates-index-page .btn { min-height: 40px; padding: 9px 13px; border-radius: 8px; font: inherit; font-size: 13px; font-weight: 600; box-shadow: none; background: #2563eb; color: #fff; border: 1px solid #2563eb; }
 .estimates-index-page .btn.secondary { color: #3c5672; background: #fff; border-color: #cbd7e5; }
 .estimates-index-page .btn:disabled { opacity: 1; color: #5f7085; background: #edf1f6; border-color: #dce4ed; cursor: not-allowed; box-shadow: none; }
-.overview-strip { display: flex; gap: 24px; flex-wrap: wrap; padding: 22px 0 16px; color: #53667c; font-size: 13px; }
-.overview-pill { display: flex; gap: 7px; align-items: baseline; }.overview-pill b { font-size: 15px; color: #233b54; font-weight: 600; }
-.catalog-panel { padding: 0; }
+.catalog-count { color: var(--ab-muted); font-size: 17px; font-weight: 400; margin-left: 6px; }
+.catalog-panel { padding: 0; margin-top: 24px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
-.catalog-heading h2 { margin: 0; font-size: 19px; font-weight: 600; }
-.panel-note { margin: 6px 0 0; color: var(--ab-muted); font-size: 13px; line-height: 1.5; }
+.panel-note { margin: 0; color: var(--ab-muted); font-size: 13px; line-height: 1.5; }
 .catalog-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .estimate-catalog-search { position: relative; display: block; }
 .estimate-catalog-search input { width: 240px; max-width: 100%; min-height: 40px; border: 1px solid #cbd7e5; background: #fff; border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 13px; }

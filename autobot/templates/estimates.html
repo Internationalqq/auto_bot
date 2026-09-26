@@ -8,28 +8,19 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>Сметы</title>
 
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260919-workspace-1" />
-  <link rel="stylesheet" href="/estimates/catalog.css?v=20260919-workspace-1" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/estimates/catalog.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1">
 </head>
 <body class="autobot-page estimates-index-page">
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы AutoBot">
-      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
-      <a class="topnav-primary" href="/tenders">Тендеры</a>
-      <a href="/tenders/suppliers">Поставщики и цены</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('estimates') }}
   <div class="page">
     <section class="hero-grid">
       <div class="catalog-heading-main">
 
-        <h1>Мои сметы</h1>
-        <p class="hero-text">Загрузите смету, проверьте позиции и сравните цены с поставщиками.</p>
+        <h1>Сметы <span class="catalog-count">{{ overview.total_count }}</span></h1>
+        <p class="hero-text">Загрузите файл или откройте сохранённую смету.</p>
       </div>
 
       <details class="upload-card" {% if not estimates %}open{% endif %}><summary>{{ icon("file") }} Загрузить смету <span>Excel / PDF</span></summary><div class="upload-card-body">
@@ -65,20 +56,15 @@
       </div></details>
     </section>
 
-    <section class="overview-strip" aria-label="Сводка по сметам">
-      <div class="overview-pill">Всего смет <b>{{ overview.total_count }}</b></div>
-      <div class="overview-pill">Есть сравнение <b>{{ overview.with_compare }}</b></div>
-    </section>
 
     <section class="catalog-panel">
       <div class="panel-head">
         <div class="catalog-heading">
-          <h2>Сохранённые сметы</h2>
-          <p class="panel-note">Выберите сметы, чтобы добавить их в объект CRM.</p>
+          <p class="panel-note">Для добавления в объект отметьте нужные сметы.</p>
         </div>
         <div class="catalog-tools">
           <label class="estimate-catalog-search"><span aria-hidden="true"></span><input type="search" id="estimateCatalogSearch" aria-label="Найти смету" placeholder="Найти смету" autocomplete="off" /></label>
-          <button class="btn secondary bundle-open-btn" id="estimateBundleOpenBtn" type="button" disabled>Добавить выбранные в объект</button>
+          <button class="btn secondary bundle-open-btn" id="estimateBundleOpenBtn" type="button" hidden disabled>Добавить выбранные в объект</button>
         </div>
       </div>
       {% if estimates %}
@@ -91,7 +77,7 @@
         {% for e in estimates %}
         <article class="estimate-card" data-estimate-card="{{ e.id }}" data-estimate-search="{{ (e.title ~ ' ' ~ e.original_filename ~ ' ' ~ e.types_short)|lower }}">
           <label class="estimate-select"><input type="checkbox" data-estimate-select value="{{ e.id }}" data-estimate-title="{{ e.title }}" data-estimate-rows="{{ e.row_count }}" data-estimate-total="{{ e.total_sum_value }}" data-estimate-capability="{{ e.crm_import_capability }}" aria-label="Выбрать смету {{ e.title }}" /></label>
-          <div class="estimate-card-name">{{ icon('file') }}<div><h3><a href="/estimates/{{ e.id }}">{{ e.title }}</a></h3><p>{{ e.original_filename }}</p><small>{{ e.created_at }} · {{ e.types_short }}</small></div></div>
+          <div class="estimate-card-name">{{ icon('file') }}<div><h3><a href="/estimates/{{ e.id }}">{{ e.title }}</a></h3>{% if e.original_filename != e.title %}<p>{{ e.original_filename }}</p>{% endif %}<small>{{ e.created_at }} · {{ e.types_short }}</small></div></div>
           <div class="estimate-card-count" data-label="Позиций"><b>{{ e.row_count }}</b></div>
           <div class="estimate-card-total" data-label="Сумма сметы"><b>{{ e.total_sum_fmt }}</b></div>
           <div class="estimate-card-state"><span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span><small>Подтверждено {{ e.market_progress_done }} из {{ e.market_progress_total }}</small></div>
@@ -201,6 +187,7 @@
           if (card) card.classList.toggle("is-selected", input.checked);
         });
         if (bundleOpenBtn) {
+          bundleOpenBtn.hidden = count === 0;
           bundleOpenBtn.disabled = count === 0 || bundleBusy;
           bundleOpenBtn.textContent = count
             ? "Добавить " + count + " " + (count === 1 ? "смету" : count < 5 ? "сметы" : "смет") + " в объект"

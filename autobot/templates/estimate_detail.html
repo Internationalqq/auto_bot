@@ -9,21 +9,13 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <title>{{ meta.title }} · Смета</title>
   <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260919-workspace-1" />
-  <link rel="stylesheet" href="/estimates/workspace.css?v=20260919-workspace-1" />
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/estimates/workspace.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1">
 </head>
 <body class="autobot-page estimate-workspace-page">
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы AutoBot">
-      <a class="topnav-primary is-active" href="/estimates" aria-current="page">Сметы</a>
-      <a class="topnav-primary" href="/tenders">Тендеры</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('estimates') }}
   <main class="estimate-workspace">
     <a class="estimate-back" href="/estimates">← Все сметы</a>
     <header class="estimate-heading">
@@ -45,7 +37,7 @@
       <div class="estimate-metrics">
         <div><span>Позиций в таблице</span><strong>{{ summary.row_count }} <small>из {{ meta.row_count }}</small></strong></div>
         <div><span>{% if q or selected_types %}Сумма выбранных строк{% else %}Сумма сметы{% endif %}</span><strong>{{ summary.total_sum_fmt }}</strong></div>
-        <div class="estimate-check-note"><span>Проверка исходника</span><b>{% if reconciliation.needs_attention %}Есть расхождение — проверьте итог{% elif reconciliation.available %}Сверка доступна ниже{% else %}Сверьте позиции с оригиналом{% endif %}</b></div>
+
       </div>
       <details class="estimate-inspection" {% if reconciliation.needs_attention %}open{% endif %}>
         <summary>Объёмы и сверка сметы</summary>
@@ -75,7 +67,7 @@
       </details>
     </section>
 
-    <details class="estimate-panel estimate-market" id="estimateMarketSettings" {% if not has_market_raw and not has_market_merged %}open{% endif %}>
+    <details class="estimate-panel estimate-market" id="estimateMarketSettings">
       <summary class="estimate-market-summary"><span id="estimateMarketTitle">{{ icon("search") }} Поиск цен у поставщиков</span><span id="marketStatusMain" role="status" aria-live="polite">{% if has_market_raw or has_market_merged %}Сохранённые цены доступны во вкладках.{% else %}Поиск ещё не запускался.{% endif %}</span></summary>
       <div class="estimate-market-heading">
         <div><p class="estimate-muted">Подтверждённые предложения попадут в сравнение. Остальные — в источники для проверки.</p></div>
@@ -104,13 +96,12 @@
         <label for="estimateRowSearch">Найти строку</label>
         <div><input id="estimateRowSearch" type="search" name="q" value="{{ q }}" placeholder="Название работы или материала" /><button class="btn secondary" type="submit">Применить</button>{% if q or selected_types %}<a class="estimate-reset" href="/estimates/{{ meta.id }}">Сбросить</a>{% endif %}</div>
       </form>
+      <details class="estimate-type-details" {% if selected_types %}open{% endif %}><summary>Типы позиций{% if selected_types %} · фильтр включён{% endif %}</summary>
       <fieldset class="estimate-types"><legend>Типы позиций</legend>
         {% for opt in type_options %}<label><input type="checkbox" name="types" value="{{ opt.key }}" form="estimateFilterForm" {% if opt.key in selected_types %}checked{% endif %} /><span>{{ opt.label }}</span><small>{{ opt.count }}</small></label>{% endfor %}
-      </fieldset>
+      </fieldset></details>
       <div class="table-panel" role="tabpanel" id="estimatePanelPositions" aria-labelledby="estimateTabPositions" data-estimate-view-panel="estimate" {% if active_table_view != 'estimate' %}hidden{% endif %}>
-        <div class="table-panel-head">
-          <h2 class="table-panel-title">Позиции сметы</h2>
-        </div>
+
       <div class="table-wrap">
         <div class="table-scroll">
         <table>

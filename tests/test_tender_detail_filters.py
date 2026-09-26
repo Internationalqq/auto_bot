@@ -158,15 +158,11 @@ def test_position_table_omits_search_strategy_and_sources_stay_in_their_column()
     assert "width: 360px" not in styles
 
 
-def test_tender_header_uses_a_back_arrow_to_return_to_the_board():
+def test_tender_header_has_a_named_link_to_return_to_the_board():
     package_dir = Path(tender_detail.__file__).parent
     template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
-
     assert 'href="/tenders" aria-label="Назад к списку тендеров"' in template
-    assert 'class="brand-back"' in template
-    assert 'class="brand-mark"' not in template
-    assert ".brand-back i" in styles
+    assert '← Все тендеры</a>' in template
 
 
 def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp_path, monkeypatch):
@@ -192,7 +188,7 @@ def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp
     assert 'Нет сопоставимой цены' in row.select_one('.col-market').get_text()
     assert 'Ждём цену рынка' in row.select_one('.col-difference').get_text()
     assert row.select_one('a')['href'].startswith('/tenders/' + tid + '/review?position_id=')
-    assert page.select_one('[data-open-workspace="search"]')
+    assert page.select_one('[data-workspace-link="search"]')['href'] == f'/tenders/{tid}#search'
     assert page.select_one('#agentMarketCard').find_parent(attrs={'data-workspace-panel':'search'})
     assert page.select_one('[data-tender-economics]').find_parent(attrs={'data-workspace-panel':'economics'})
 

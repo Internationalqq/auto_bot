@@ -6,20 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Поставщики и цены · AutoBot</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260920-catalog-1">
-  <link rel="stylesheet" href="/tenders/suppliers/catalog.css?v=20260920-catalog-1">
+  <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1">
+  <link rel="stylesheet" href="/tenders/suppliers/catalog.css?v=20260926-minimal-1">
   <script defer src="/tenders/suppliers/catalog.js?v=20260920-catalog-1"></script>
   <script defer src="/static/embed_bridge.js?v=20260824-1"></script>
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1">
 </head>
 <body class="autobot-page supplier-catalog-page">
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates"><span class="brand-mark" aria-hidden="true"><i></i></span><span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span></a>
-    <nav class="topnav" aria-label="Разделы AutoBot">
-      <a href="/estimates">Сметы</a><a href="/tenders">Тендеры</a>
-      <a class="is-active" aria-current="page" href="{{ page_url }}">Поставщики и цены</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('suppliers') }}
   <main class="catalog-page">
     <div class="catalog-heading"><div><h1>Поставщики и цены</h1><p>Товары и услуги из каталогов поставщиков. Цена, ссылка и условия — в одной строке.</p></div>
       {% if view=='sources' %}<button type="button" class="catalog-button primary" data-import-all>Обновить каталоги</button>{% endif %}

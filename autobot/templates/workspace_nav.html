@@ -1,0 +1,11 @@
+{% macro workspace_nav(active) -%}
+<header class="workspace-nav">
+  <a class="workspace-brand" href="/estimates">AutoBot</a>
+  <nav aria-label="Разделы AutoBot">
+    <a href="/estimates"{% if active == 'estimates' %} aria-current="page"{% endif %}>Сметы</a>
+    <a href="/tenders"{% if active == 'tenders' %} aria-current="page"{% endif %}>Тендеры</a>
+    <a href="/tenders/suppliers"{% if active == 'suppliers' %} aria-current="page"{% endif %}>База цен</a>
+    <a href="/research"{% if active == 'research' %} aria-current="page"{% endif %}>Поиск позиции</a>
+  </nav>
+</header>
+{%- endmacro %}

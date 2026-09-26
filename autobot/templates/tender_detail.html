@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260921-price-filters-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tender_detail.css') }}?v=20260926-minimal-1" />
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <link rel="stylesheet" href="/assets/css/tender_economics.css?v=20260915-cashflow-1" />
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
@@ -13,23 +13,15 @@
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
   <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-3" />
   <script defer src="/tenders/buyer.js?v=20260926-3"></script>
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/tenders" aria-label="Назад к списку тендеров">
-      <span class="brand-back" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы">
-      <a class="topnav-primary" href="/estimates">Сметы</a>
-      <a class="topnav-primary is-active" href="/tenders" aria-current="page">Тендеры</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('tenders') }}
 
   <main class="page">
     <nav class="breadcrumbs" aria-label="Навигация">
-      <a href="/tenders">Тендеры</a><span>›</span><b>№ {{ tender.tender_id }}</b>
+      <a href="/tenders" aria-label="Назад к списку тендеров">← Все тендеры</a>
     </nav>
 
     <section class="eis-card" aria-labelledby="tenderTitle">
@@ -44,16 +36,14 @@
           <h1 id="tenderTitle">{{ tender.title }}</h1>
         </div>
         <details class="eis-field customer">
-          <summary>Заказчик</summary>
+          <summary>Сведения о закупке</summary>
           {% if tender.customer_name %}<strong>{{ tender.customer_name }}</strong>{% else %}<em>Заказчик пока не получен из ЕИС</em>{% endif %}
+          <div class="dates"><span>Размещено: {{ tender.publish_date or "—" }}</span><span>Обновлено: {{ tender.updated_date or "—" }}</span></div>
         </details>
       </div>
       <aside class="eis-side">
         <div class="price"><small>Начальная цена</small><strong>{{ tender.price_fmt }}</strong></div>
-        <details class="publication-dates"><summary>Даты публикации</summary><div class="dates">
-          <span><small>Размещено</small><b>{{ tender.publish_date or "—" }}</b></span>
-          <span><small>Обновлено</small><b>{{ tender.updated_date or "—" }}</b></span>
-        </div></details>
+
         <div class="region"><small>Регион</small><b>{{ tender.region or "Не указан" }}</b></div>
       </aside>
     </section>
@@ -66,10 +56,10 @@
     {% endif %}
 
     <nav class="tender-tabs" aria-label="Разделы тендера">
-      <a id="workspaceTabPositions" class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}#positions" data-workspace-link="positions">{{ icon('table') }} Позиции сметы <span>{{ tender.total_positions }}</span></a>
-      <a id="workspaceTabSearch" href="/tenders/{{ tender.tender_id }}#search" data-workspace-link="search">{{ icon('search') }} Поиск цен</a>
-      <a id="workspaceTabEconomics" href="/tenders/{{ tender.tender_id }}#economics" data-workspace-link="economics">{{ icon('calculator') }} Расчёт участия</a>
-      <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">{{ icon('file') }} Документы <span>{{ tender.documents.count }}</span></a>
+      <a id="workspaceTabPositions" class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}#positions" data-workspace-link="positions">Смета <span>{{ tender.total_positions }}</span></a>
+      <a id="workspaceTabSearch" href="/tenders/{{ tender.tender_id }}#search" data-workspace-link="search">Поиск цен</a>
+      <a id="workspaceTabEconomics" href="/tenders/{{ tender.tender_id }}#economics" data-workspace-link="economics">Расчёт участия</a>
+      <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Документы <span>{{ tender.documents.count }}</span></a>
     </nav>
 
     {% if tender.document_parse.blocked and not tender.document_download.blocked %}
@@ -138,9 +128,6 @@
       </div>
     </section>
 
-    <button class="search-snapshot" data-position-context type="button" data-open-workspace="search" aria-label="Открыть результаты поиска цен">
-      {{ icon('search') }}<span><strong id="searchSnapshotTitle">Результаты поиска цен</strong><span id="searchSnapshotStatus">Загружаю последний поиск…</span></span><span class="snapshot-action">Открыть результаты {{ icon('arrow') }}</span>
-    </button>
     <div data-workspace-panel="positions" id="workspacePositions" aria-labelledby="workspaceTabPositions">
     <section class="market-coverage" aria-label="Полнота проверки цен">
       <div><dl><div><dt>Распознано в смете</dt><dd>{{ tender.estimate_total_fmt }}</dd></div><div><dt>Позиций с подтверждённой ценой</dt><dd>{{ tender.counts.verified }} <small>из {{ tender.price_coverage.priceable }}</small></dd></div><div><dt>Проверено по сумме</dt><dd>{{ tender.coverage_cost_fmt }}</dd></div></dl>
@@ -167,6 +154,7 @@
         </label>
       </header>
 
+      <details class="position-filter-details"><summary>Фильтры по цене и типу</summary>
       <div class="price-filters">
         <div class="price-quick-filters" role="group" aria-label="Показать позиции по цене">
           <button type="button" class="price-filter is-active" data-price-filter="all" aria-pressed="true">Все позиции <b>{{ tender.total_positions }}</b></button>
@@ -183,6 +171,7 @@
         <button class="metric" type="button" data-bucket-filter="processed" aria-pressed="false"><small>Поиск выполнен</small><strong>{{ tender.counts.processed }}</strong></button>
         <button class="text-button reset-position-filters" type="button" data-reset-position-filters hidden>Сбросить фильтры</button>
       </div>
+      </details>
       <details class="price-guide"><summary>Как читать цены</summary><div class="price-legend"><span class="legend-estimate">{{ icon('file') }} Смета — исходная цена</span><span class="legend-market">{{ icon('chart') }} Рынок — медиана подтверждённых предложений</span><span>Разница за единицу, без расходов и налогов</span></div></details>
       {% if tender.positions %}
       <div class="table-wrap">
@@ -245,7 +234,7 @@
     </section>
 
     <section class="downloads">
-      <div><h2>Файлы результата</h2><p>Excel остаётся доступен для проверки и ручной работы.</p></div>
+      <div><h2>Скачать Excel</h2></div>
       <div>
         {% if tender.has_estimate %}<a href="/tenders/{{ tender.tender_id }}/estimate.xlsx">Смета <small>{{ tender.estimate_updated }}</small></a>{% endif %}
         {% if tender.has_market %}<a href="/tenders/{{ tender.tender_id }}/market-sources.xlsx">Источники рынка <small>{{ tender.market_updated }}</small></a>{% endif %}
@@ -258,11 +247,14 @@
       <div class="agent-market-head">
         <div>
           <h2>Поиск цен у поставщиков</h2>
-          <span>Выберите строки в смете или ищите по всем позициям без цены. Результаты сохраняются, даже если закрыть страницу.</span>
+          <span>Цены с сайтов поставщиков. Без выбора строк — по всей смете.</span>
         </div>
         <div class="agent-market-actions">
-          <button class="btn ghost" type="button" id="selectVisibleAgentRows">Выбрать 20 видимых</button>
-          <button class="btn ghost" type="button" id="clearAgentRows">Снять выбор</button>
+          <a class="text-button" href="#positions" data-workspace-link="positions">Выбрать позиции</a>
+          <details class="action-more"><summary class="btn ghost">Ещё</summary><div class="action-more-menu">
+            <button type="button" id="selectVisibleAgentRows">Выбрать 20 строк</button>
+            <button type="button" id="clearAgentRows">Снять выбор</button>
+          </div></details>
           <button class="btn ghost" type="button" id="stopAgentMarketBtn" hidden>Остановить поиск</button>
           <button class="btn primary" type="button" id="queueAgentMarketBtn">Найти цены по всей смете</button>
         </div>
@@ -923,12 +915,6 @@
             return '<div class="agent-job is-' + String(job.status || "") + '"><span>' + status + '</span><strong title="' + escapeHtml(job.position_name || "Позиция") + '">' + escapeHtml(job.position_name || "Позиция") + '</strong><small>' + escapeHtml(detail) + '</small></div>';
           }).join("");
         }
-        const snapshotTitle = document.getElementById("searchSnapshotTitle");
-        const snapshotStatus = document.getElementById("searchSnapshotStatus");
-        if (snapshotTitle) snapshotTitle.textContent = total ? (progress.running ? "Поиск цен идёт" : "Последний поиск цен") : "Поиск цен ещё не запускался";
-        if (snapshotStatus) snapshotStatus.textContent = total
-          ? ("Обработано " + processed + " из " + total + " · предложений: " + Number(runView.totals.found || 0) + " · принято: " + Number(runView.totals.verified || 0))
-          : "Откройте поиск, чтобы сравнить смету с предложениями поставщиков";
         const resultRows = runView.results;
         const resultTotals = runView.totals;
         const resultsPanel = document.getElementById("agentResults");
@@ -956,7 +942,6 @@
       } catch (error) {
         agentQueueEnabled = false;
         refreshAgentSelection();
-        if (document.getElementById("searchSnapshotStatus")) document.getElementById("searchSnapshotStatus").textContent = "Не удалось загрузить состояние. Откройте поиск и повторите проверку.";
         if (agentMarketNote) {
           agentMarketNote.textContent = "Не удалось прочитать очередь: " + (error.message || error);
           agentMarketNote.classList.add("is-warning");

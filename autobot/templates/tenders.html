@@ -4,10 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260915-board-jobs-1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260926-minimal-1" />
   <script defer src="{{ url_for('search_profiles_script') }}?v=20260915-2"></script>
   <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
   <title>Тендеры</title>
+  <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1">
 </head>
 <body>
   <div class="tender-navigation-loader" id="tenderNavigationLoader" hidden role="status" aria-live="polite" aria-label="Открываем тендер">
@@ -21,18 +22,8 @@
       <div class="tender-navigation-loader-track" aria-hidden="true"><i></i></div>
     </div>
   </div>
-  <header class="topbar autobot-section-bar">
-    <a class="brand" href="/estimates">
-      <span class="brand-mark" aria-hidden="true"><i></i></span>
-      <span class="brand-copy"><strong>AutoBot</strong><small>Закупки без рутины</small></span>
-    </a>
-    <nav class="topnav" aria-label="Разделы">
-      <a class="topnav-primary" href="/estimates">Сметы</a>
-      <a class="topnav-primary is-active" href="/tenders" aria-current="page">Тендеры</a>
-      <a href="/tenders/suppliers">Поставщики и цены</a>
-      <a href="/research">Поиск позиции</a>
-    </nav>
-  </header>
+  {% from 'workspace_nav.html' import workspace_nav %}
+  {{ workspace_nav('tenders') }}
 
   <main class="page">
     <section class="workspace-head">

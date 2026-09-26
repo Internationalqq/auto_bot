@@ -1,0 +1,25 @@
+/* Shared navigation for every AutoBot workspace. */
+.workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  min-height: 56px;
+  padding: 0 24px;
+  border-bottom: 1px solid #e0e5eb;
+  color: #202c3c;
+  background: #fff;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.workspace-nav a { text-decoration: none; }
+.workspace-nav .workspace-brand { flex: 0 0 auto; color: #202c3c; font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
+.workspace-nav nav { display: flex; gap: 20px; min-width: 0; }
+.workspace-nav nav a { display: flex; align-items: center; min-height: 56px; padding: 0 2px; border-bottom: 2px solid transparent; color: #526174; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.workspace-nav nav a:hover { color: #2258d6; }
+.workspace-nav nav a[aria-current="page"] { color: #2258d6; border-bottom-color: #2258d6; }
+.workspace-nav a:focus-visible { outline: 2px solid #2258d6; outline-offset: 3px; border-radius: 2px; }
+@media (max-width: 600px) {
+  .workspace-nav { display: block; padding: 12px 12px 0; }
+  .workspace-nav .workspace-brand { display: inline-block; margin-bottom: 4px; }
+  .workspace-nav nav { justify-content: space-between; gap: 8px; }
+  .workspace-nav nav a { min-height: 44px; font-size: 13px; }
+}
