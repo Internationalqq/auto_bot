@@ -161,6 +161,22 @@ class OutboxTests(unittest.TestCase):
         with self.assertRaises(BuyerError):
             box.enqueue('123456789012345','draft1',0,'other@example.org',message={**message,'body':'Бюджет 40000 рублей'})
 
+    def test_normal_sends_get_stable_distinct_markers_without_editing_the_draft(self):
+        first=self.enqueue()
+        self.assertEqual(first,self.enqueue())
+        box.enqueue('123456789012345','draft1',0,'other@example.org')
+        rows=box.listing('123456789012345')
+        self.assertEqual(len(rows),2)
+        self.assertRegex(rows[0]['subject'],r'^Щебень М1200 \[AB-RFQ-[0-9A-F]{12}\]$')
+        self.assertNotEqual(rows[0]['subject'],rows[1]['subject'])
+        self.assertEqual(JOB['result']['drafts'][0]['subject'],'Щебень М1200')
+
+    def test_explicit_marker_is_preserved_without_a_second_tag(self):
+        message={k:JOB['result']['drafts'][0][k] for k in ('subject','body')}
+        message['subject']+=' [AB-CAB-1234ABCD]'
+        box.enqueue('123456789012345','draft1',0,'sales@example.org',message=message)
+        self.assertEqual(box.listing('123456789012345')[0]['subject'],message['subject'])
+
     def test_old_blocked_retry_cannot_duplicate_edited_message(self):
         old = self.enqueue(); claim = box.claim('mac')
         box.update(old,'mac',claim['token'],{'status':'blocked','detail':'Не отправлялось','evidence':''})

@@ -39,7 +39,9 @@ class WorkflowTests(unittest.TestCase):
     def result(self,**price):
         q=dict(line=1,price='120,50',unit='м',vat='с НДС',availability='в наличии',delivery='',exact_match=True,quote='Кабель ВВГнг 3х2,5 — 120,50 руб за м, с НДС, в наличии.')
         q.update(price)
-        return dict(status='checked',detail='',messages=[dict(message_id='mail-1',sender='info@tl-electro.ru',received_at=time.time(),text='Кабель ВВГнг 3х2,5 — 120,50 руб за м, с НДС, в наличии.',evidence='sender, subject and message view captured',prices=[q])])
+        outgoing=box.listing(TID)
+        subject='Re: '+outgoing[-1]['subject'] if outgoing else 'Re: Запрос'
+        return dict(status='checked',detail='',messages=[dict(message_id='mail-1',sender='info@tl-electro.ru',subject=subject,received_at=time.time(),text='Кабель ВВГнг 3х2,5 — 120,50 руб за м, с НДС, в наличии.',evidence='sender, subject and message view captured',prices=[q])])
 
     def test_supplier_groups_cross_sections_preserve_keys_and_accounting_is_private(self):
         result=suppliers.prepare(self.source)
@@ -138,12 +140,21 @@ class WorkflowTests(unittest.TestCase):
         replies.request_check(TID,key);third=replies.claim('reader');result['messages'][0]['text']='changed'
         with self.assertRaises(BuyerError): replies.update(key,'reader',third['token'],result)
 
-    def test_foreign_sender_made_up_quote_unknown_line_and_duplicate_line_roll_back(self):
+    def test_made_up_quote_unknown_line_and_duplicate_line_roll_back(self):
         key,claim=self.sent()
-        for mutate in [lambda m:m.update(sender='other@example.org'),lambda m:m['prices'][0].update(quote='invented'),lambda m:m['prices'][0].update(line=9),lambda m:m['prices'].append(m['prices'][0])]:
+        for mutate in [lambda m:m['prices'][0].update(quote='invented'),lambda m:m['prices'][0].update(line=9),lambda m:m['prices'].append(m['prices'][0])]:
             result=self.result();mutate(result['messages'][0])
             with self.assertRaises(BuyerError): replies.update(key,'reader',claim['token'],result)
             self.assertFalse(replies.listing(TID)['messages'])
+
+    def test_legacy_untagged_request_still_rejects_foreign_sender(self):
+        key,claim=self.sent()
+        with closing(box.connect()) as db,db:
+            db.execute('UPDATE outbound SET subject=? WHERE id=?',('Старое обращение без метки',key))
+        result=self.result();result['messages'][0]['sender']='other@example.org'
+        with self.assertRaisesRegex(BuyerError,'другого отправителя'):
+            replies.update(key,'reader',claim['token'],result)
+        self.assertEqual(replies.listing(TID)['messages'],[])
 
     def test_unknown_vat_wrong_unit_alternative_and_wrong_amount_require_review(self):
         for change in [dict(vat='НДС'),dict(unit='шт'),dict(exact_match=False),dict(price='12')]:

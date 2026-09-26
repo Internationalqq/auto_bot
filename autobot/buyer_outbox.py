@@ -59,6 +59,12 @@ def enqueue(tid, job_id, index, recipient, *, message=None):
         raise BuyerError('Укажите один email поставщика')
     recipient = recipient.strip().lower()
     payload, draft = draft_message(tid, job_id, index, message)
+    # Every normal UI/campaign send gets a stable conversation key as well as
+    # the pilot's explicitly supplied markers. Existing queued/sent rows keep
+    # their original immutable text via the duplicate check below.
+    if not re.search(r'\[AB-[A-Z0-9-]{4,60}\]', draft['subject']):
+        marker = hashlib.sha256(encoded([tid, job_id, index, recipient]).encode()).hexdigest()[:12].upper()
+        draft['subject'] = draft['subject'].rstrip() + ' [AB-RFQ-' + marker + ']'
     other_jobs = {j['id']:j for j in buyer_jobs.jobs(tid)}
     party_id = payload.get('supplier', {}).get('id')
     fingerprint = hashlib.sha256(encoded([tid, recipient, draft['subject'], draft['body']]).encode()).hexdigest()
