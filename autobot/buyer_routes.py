@@ -4,13 +4,19 @@ import re
 import sqlite3
 from pathlib import Path
 from flask import Blueprint, jsonify, request, send_from_directory
-from autobot import buyer_jobs as jobs, buyer_outbox as outbox, crm_actor
+from autobot import buyer_jobs as jobs, buyer_outbox as outbox, buyer_campaigns as campaigns, crm_actor
 from autobot.hermes_buyer import BuyerError
 from autobot.uploaded_corrections import CorrectionError
 from autobot.estimate_publication_recovery import consistent_report, PublicationRecoveryRequired
 
 blueprint = Blueprint('buyer', __name__)
 WORKER_API = '/api/agent-market/v1/buyer'
+
+
+@blueprint.record_once
+def resume_campaigns(state):
+    if outbox.DB_PATH.is_file():
+        campaigns.launch()
 
 
 @blueprint.after_request
@@ -77,7 +83,8 @@ def tender_jobs(tid):
         task = job['payload']['draft_task']
         result.append({k: job[k] for k in ('id', 'position_name', 'status', 'error', 'created_at', 'updated_at', 'result')} |
                       {'positions': task['positions'], 'region': task['region'], 'can_send': task.get('schema_version', 1) >= 2})
-    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid))
+    campaigns.launch()
+    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid), campaigns=campaigns.listing(tid))
 
 
 @blueprint.post('/api/tenders/<tid>/buyer/outbox')
@@ -88,8 +95,11 @@ def send_draft(tid):
         raise BuyerError('Ожидаются параметры отправки')
     if data.get('action') == 'retry_blocked':
         job_id = outbox.retry_blocked(tid, data.get('id'))
+    elif data.get('action') == 'find_and_send':
+        key = campaigns.start(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('message'))
+        return jsonify(ok=True, campaign_id=key), 202
     elif data.get('action', 'send') == 'send':
-        job_id = outbox.enqueue(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('recipient'))
+        job_id = outbox.enqueue(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('recipient'), message=data.get('message'))
     else:
         raise BuyerError('Неизвестное действие отправки')
     return jsonify(ok=True, id=job_id), 202

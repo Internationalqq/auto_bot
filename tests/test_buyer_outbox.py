@@ -78,8 +78,35 @@ class OutboxTests(unittest.TestCase):
         first = self.enqueue(); job = box.claim('mac')
         with self.assertRaises(BuyerError):
             box.update(first, 'mac', job['token'], {'status': 'sent', 'detail': '', 'evidence': ''})
-        for key in ('token', 'worker', 'lease_until', 'body'):
+        for key in ('token', 'worker', 'lease_until'):
             self.assertNotIn(key, box.listing('123456789012345')[0])
+        self.assertEqual(box.listing('123456789012345')[0]['body'], JOB['result']['drafts'][0]['body'])
+
+    def test_changed_text_cannot_duplicate_active_or_sent_message(self):
+        key = self.enqueue()
+        altered = {'subject':'Щебень — наличие', 'body':'Добрый день! Есть щебень М1200 20–40 мм, 57,859 м³?'}
+        self.assertEqual(box.enqueue('123456789012345','draft1',0,'sales@example.org',message=altered), key)
+        claim = box.claim('mac')
+        box.update(key,'mac',claim['token'],{'status':'sent','detail':'В отправленных','evidence':'snapshot hash'})
+        self.assertEqual(box.enqueue('123456789012345','draft1',0,'sales@example.org',message=altered), key)
+
+    def test_edited_message_is_validated_and_snapshotted(self):
+        message = {'subject':'Щебень — наличие', 'body':'Добрый день! Есть щебень М1200 20–40 мм, 57,859 м³?'}
+        key = box.enqueue('123456789012345','draft1',0,'sales@example.org',message=message)
+        self.assertEqual(box.listing('123456789012345')[0]['body'], message['body'])
+        with self.assertRaises(BuyerError):
+            box.enqueue('123456789012345','draft1',0,'other@example.org',message={**message,'body':'Бюджет 40000 рублей'})
+
+    def test_old_blocked_retry_cannot_duplicate_edited_message(self):
+        old = self.enqueue(); claim = box.claim('mac')
+        box.update(old,'mac',claim['token'],{'status':'blocked','detail':'Не отправлялось','evidence':''})
+        edited = box.enqueue('123456789012345','draft1',0,'sales@example.org',message={
+            'subject':'Новая формулировка запроса','body':'Добрый день! Нужен щебень М1200.'})
+        self.assertNotEqual(old, edited)
+        for status in ('queued','sending','sent','uncertain'):
+            with closing(box.connect()) as db, db: db.execute('UPDATE outbound SET status=? WHERE id=?',(status,edited))
+            with self.assertRaises(BuyerError):box.retry_blocked('123456789012345',old)
+        self.assertEqual(box.listing('123456789012345')[0]['status'],'blocked')
 
     def test_http_access_and_worker_auth(self):
         app = Flask(__name__); app.register_blueprint(routes.blueprint); c = app.test_client()
