@@ -117,6 +117,62 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(data['emails'],['sales@example.org'])
         self.assertEqual([c['channel'] for c in data['channels']],['phone'])
 
+    def test_privacy_operator_and_site_creator_are_not_supplier_contacts(self):
+        html = '''<h1>Электромонтажные работы</h1>
+        <div><ol><li>Даю согласие оператору на обработку персональных данных,
+        email: info@agency.example</li><li>Остальной текст согласия</li></ol></div>
+        <p>Разработка сайта <a href="mailto:info@studio.example">Студия</a></p>
+        <p><a href="mailto:info@supplier.example">info@supplier.example</a></p>
+        <p>Менеджер: supplier-sales@yandex.ru</p><!-- archived@old.example -->'''
+        facts = discovery.page_facts('https://supplier.example/', html)
+        self.assertEqual(facts['emails'], ['info@supplier.example','supplier-sales@yandex.ru'])
+        old = {'email':'info@agency.example','evidence_pages':[{'url':'https://supplier.example/'}]}
+        with patch.object(discovery,'fetch_html',return_value=('https://supplier.example/',html)):
+            with self.assertRaises(BuyerError): discovery.verify_contact(old)
+
+    def test_explicit_rot13_mailto_is_decoded_without_running_site_script(self):
+        html = '<a href="znvygb:vasb@ryrpgeb-neg.pbz">vasb@ryrpgeb-neg.pbz</a><script>untrusted()</script>'
+        facts = discovery.page_facts('https://electro-art.com/',html)
+        self.assertEqual(facts['emails'],['info@electro-art.com'])
+        self.assertNotIn('vasb@',facts['text'])
+
+    def test_supplier_alias_email_is_not_rejected_only_for_different_domain(self):
+        facts = discovery.page_facts('https://supplier.example/',
+            '<address>E-mail: <a href="mailto:sales@trade.example">sales@trade.example</a></address>')
+        self.assertEqual(facts['emails'],['sales@trade.example'])
+
+    def test_directory_support_is_not_a_supplier_or_verifiable_old_recipient(self):
+        for url in ('https://yar.spravker.ru/kabel/','https://www.rusprofile.ru/id/1',
+                    'https://2gis.ru/yaroslavl/search/electro','https://vsem-podryad.ru/purchase/1'):
+            with self.subTest(url=url):
+                with self.assertRaises(BuyerError):
+                    discovery.page_facts(url,'Кабель. Электромонтажные работы support@portal.example')
+                with patch.object(discovery,'fetch_html',return_value=(url,'Кабель support@portal.example')):
+                    with self.assertRaises(BuyerError): discovery.verify_contact({
+                        'email':'support@portal.example','evidence_pages':[{'url':url}]})
+        self.assertFalse(discovery.directory_source('https://spravker.ru.supplier.example/'))
+
+    def test_search_keeps_ten_supplier_domains_after_excluding_directories(self):
+        found = [SimpleNamespace(url='https://yar.spravker.ru/kabel/',title='Каталог')]
+        found += [SimpleNamespace(url=f'https://supplier{i}.example/',title=str(i)) for i in range(12)]
+        with patch.object(discovery,'search_api',return_value=found):
+            links=discovery.search('кабель')
+        self.assertEqual([x['title'] for x in links],[str(i) for i in range(10)])
+
+    def test_contact_anchor_does_not_refetch_the_same_page(self):
+        facts=discovery.page_facts('https://supplier.example/',
+            '<a href="#contacts">Контакты</a><a href="/contacts">Контакты</a>')
+        self.assertEqual(facts['links'],['https://supplier.example/contacts'])
+
+    def test_contact_redirect_cannot_mix_another_website_into_the_company(self):
+        main='Кабель ВВГнг. sales@supplier.example <a href="/contacts">Контакты</a>'
+        fetch=Mock(side_effect=[('https://supplier.example/',main),
+                               ('https://another.example/','Кабель info@another.example')])
+        candidate=discovery.inspect({'url':'https://supplier.example/','position_keys':['c'],
+            'bucket':'materials','category':'cable'},needs.snapshot(self.source),fetch=fetch)
+        self.assertEqual(candidate['emails'],['sales@supplier.example'])
+        self.assertEqual(len(candidate['evidence_pages']),1)
+
     def test_supplier_identity_and_photo_are_grounded_in_page_metadata(self):
         facts = discovery.page_facts('https://supplier.example/catalog/item', '<meta property="og:site_name" content="Кабельная компания"><meta property="og:image" content="/media/cable.jpg"><h1>Кабель 3х2,5</h1>')
         self.assertEqual(facts['name'],'Кабельная компания')

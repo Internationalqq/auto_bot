@@ -110,6 +110,10 @@ def technical_specs(name: object) -> list[dict[str, str]]:
                 value=_canonical(match.group(1))
                 if re.fullmatch(r'универсальн(?:ый|ая|ое|ые)',value):value='универсальная'
             if kind == 'cable_model':
+                # A numeric weight ("масса кабеля до 1 кг") is not the cable
+                # family КГ. Keep genuine names such as "Кабель КГ 3х2,5".
+                if value == 'кг' and re.search(r'\d\s*$', original[:match.start()]):
+                    continue
                 value = value.replace('а', 'a')
             if kind == 'road_sign_model': value=match.group(1)
             if kind == 'road_sign_size': value=re.search(r'[iv]+',evidence,re.I)[0].lower()

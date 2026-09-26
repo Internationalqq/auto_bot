@@ -3,7 +3,7 @@ import json
 import pytest
 
 from autobot.market_strategy import build_search_plan, check_offer, market_query_name
-from autobot.market_requirements import technical_conflict
+from autobot.market_requirements import technical_conflict, technical_specs
 from autobot.market_price_index import build_price_identity
 from autobot.market_contract import offers_for_row
 
@@ -52,6 +52,32 @@ def test_generic_material_does_not_acquire_unwritten_properties():
     assert 'гранит' not in market_query_name('Щебень из плотных горных пород фракция 20-40 мм')
     assert 'композит' not in market_query_name('Георешетка полиэтиленовая высотой 150 мм')
     assert 'иглопробив' not in market_query_name('Геотекстиль тканый 200 г/м2')
+
+
+@pytest.mark.parametrize('weight', ['1 кг', '2 кг', '6 кг', '1,5 КГ', '0.75\u00a0кг', '2кг'])
+def test_cable_weight_does_not_create_a_false_cable_brand_in_supplier_request(weight):
+    from autobot.buyer_drafts import draft
+    name = f'Кабель до 35 кВ в проложенных трубах, масса 1 м кабеля: до {weight}'
+    specifications = technical_specs(name)
+    assert any(s['kind'] == 'package' for s in specifications)
+    assert not any(s['kind'] == 'cable_model' for s in specifications)
+    payload = {'tender_id': 'volga', 'region': 'Ярославская область', 'positions': [{
+        'position_key': 'cable-work', 'name': name, 'quantity': '6.95',
+        'unit': '100 м', 'type_slug': 'work',
+        'specification': {'requirements': {'specifications': specifications}},
+    }]}
+    body = draft(payload)['drafts'][0]['body']
+    assert 'Марка кабеля' not in body
+    assert '6,95 × 100 м' in body
+    assert name in body
+
+
+def test_genuine_kg_cable_model_survives_a_numeric_weight_in_the_same_name():
+    name = 'Кабель КГ 3х2,5, масса 1 м кабеля 0,25 кг'
+    models = [s for s in technical_specs(name) if s['kind'] == 'cable_model']
+    assert len(models) == 1 and models[0]['value'] == 'кг'
+    assert models[0]['evidence'] == 'КГ'
+    assert technical_conflict(name, name.replace('КГ', 'ПВС'))
 
 
 def test_technical_requirement_at_end_of_long_title_survives_shortening():
