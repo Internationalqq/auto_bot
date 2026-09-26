@@ -26,7 +26,7 @@ const elements={'[data-buyer-list]':list,'[data-buyer-find]':find,'[data-buyer-n
 const root={dataset:{buyer:'123456789012345'},querySelector:s=>elements[s],querySelectorAll:()=>filters};
 const document={createElement:tag=>new Element(tag),querySelector:s=>s==='[data-buyer]'?root:null,querySelectorAll:()=>[],addEventListener(){}};
 let api;
-const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace('  load();\n  setInterval','  capture({companyList, correspondence, renderCompanies});\n  setInterval');
+const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(\);\r?\n  setInterval/,'  capture({companyList, correspondence, renderCompanies});\n  setInterval');
 assert.ok(source.includes('capture({companyList'));
 vm.runInNewContext(source,{document,console,setInterval(){},capture:value=>api=value});
 const position={position_key:'cable',name:'Кабель 4×150',quantity:351.9,unit:'пм'};
