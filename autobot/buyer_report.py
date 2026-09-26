@@ -21,6 +21,9 @@ def build(tid, run_id=None):
             if not request_current: version_note = 'Смета изменилась после запуска; цены относятся к прежнему запросу'
     except (BuyerError, OSError):
         version_note = 'Не удалось проверить актуальность сметы; цены относятся к сохранённому запросу'
+    if run['payload'].get('discovery_version') != store.DISCOVERY_VERSION:
+        request_current = False
+        version_note = 'Правила проверки источников обновились; запустите подбор заново'
     candidates = store.candidates(tid, run_id)
     prepared = json.loads(run['prepared']) if run['prepared'] else {}
     drafts = jobs.jobs(tid)

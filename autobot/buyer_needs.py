@@ -53,6 +53,15 @@ def snapshot(source):
             'rejected': rejected, 'schema_version': 1}
 
 
+def product_identifiers(name):
+    """Written SKU/model and dimensions, shared by discovery and qualification."""
+    from autobot.market_requirements import technical_specs
+    terms = [s['evidence'] for s in technical_specs(name)
+             if s['kind'] in ('hardware_model','cable_model','dimensions','curb_model')]
+    terms += re.findall(r'(?<!\w)[а-яa-z]{1,6}\d{2,}[а-яa-z]?(?!\w)', name, re.I)
+    return list(dict.fromkeys(terms))
+
+
 def queries(payload):
     from autobot.buyer_suppliers import category
     names = {'cable': 'кабель', 'lighting': 'светильники',
@@ -83,20 +92,21 @@ def queries(payload):
         title = names.get(group, group)
         terms = 'подрядчик' if kind == 'works' else 'поставщик'
         result.append({'query': f'{title} {terms} {payload["region"]}'[:380],
-                       'position_keys': keys, 'bucket': kind, 'category': group})
+                       'position_keys': keys, 'bucket': kind, 'category': group, 'intent':'supplier'})
         if kind == 'works':
             result.append({'query': f'site:avito.ru {title} {payload["region"]}'[:380],
-                           'position_keys': keys, 'bucket': kind, 'category': group})
+                           'position_keys': keys, 'bucket': kind, 'category': group, 'intent':'supplier'})
     # Separate exact material queries from supplier-profile queries. A catalogue
     # home page can prove assortment, but cannot prove a particular item's price.
     exact = {}
     for row in payload['positions']:
         if row['type_slug'] not in ('material','product'): continue
-        characteristics = row['specification']['requirements']['specifications']
-        title = row['name']+' '+ ' '.join(str(c.get('value','')) for c in characteristics)
+        from autobot.market_strategy import market_query_name
+        identifiers = product_identifiers(row['name'])
+        title = ' '.join('"'+term.replace('"','')+'"' for term in identifiers) if identifiers else market_query_name(row['name'],row['type_slug'])
         key = (title.strip(), category(row) or row['name'][:100])
         exact.setdefault(key, []).append(row['position_key'])
     for (title, group), keys in exact.items():
         result.append({'query':f'{title[:270]} купить {payload["region"]}'[:380],
-                       'position_keys':keys,'bucket':'materials','category':group})
+                       'position_keys':keys,'bucket':'materials','category':group,'intent':'product'})
     return result

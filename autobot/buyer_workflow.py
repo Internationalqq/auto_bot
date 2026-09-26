@@ -36,8 +36,12 @@ def current_draft(payload):
         return
     with current_source(payload['tender_id'], [p['position_key'] for p in payload['positions']]) as source:
         run_id = supplier.get('source_run_id')
-        if run_id and store.source(payload['tender_id'], run_id)['status'] == 'canceled':
-            raise BuyerError('Подбор остановлен; запрос не отправлен')
+        if run_id:
+            run = store.source(payload['tender_id'], run_id)
+            if run['status'] == 'canceled':
+                raise BuyerError('Подбор остановлен; запрос не отправлен')
+            if run['payload'].get('discovery_version') != store.DISCOVERY_VERSION:
+                raise BuyerError('Правила проверки источников обновились; запустите подбор заново')
         if revision(source) != revision(payload):
             raise BuyerError('Смета изменилась. Старое обращение не отправлено; запустите подбор заново')
         yield
@@ -47,6 +51,8 @@ def prepare_run(tid, run_id):
     run = store.source(tid, run_id)
     if run['status'] == 'canceled': raise BuyerError('Подбор остановлен')
     payload = run['payload']
+    if payload.get('discovery_version') != store.DISCOVERY_VERSION:
+        raise BuyerError('Правила проверки источников обновились; запустите подбор заново')
     candidates = store.candidates(tid, run_id)
     with current_source(tid, [p['position_key'] for p in payload['positions']]) as source:
         if revision(source) != revision(payload):

@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 _DIRECTORY_HOSTS = frozenset({
     '2gis.ru', 'spravker.ru', 'orgsprav.com', 'rusprofile.ru', 'optsbyt.ru',
     'metaprom.ru', 'vsem-podryad.ru', 'ruscable.ru',
+    'wikipedia.org', 'vc.ru', 'dtf.ru',
 })
 _EMAIL = re.compile(r'[\w.%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}')
 
@@ -176,11 +177,13 @@ def search(query):
         except requests.RequestException:
             if not found: raise BuyerError('Поисковики временно недоступны. Поиск сохранён для повтора') from None
     links, seen = [], set()
+    site = re.search(r'(?:^|\s)site:([a-z0-9.-]+)', query, re.I)
     for item in found:
         try: url = public_url(item.url)
         except BuyerError: continue
         if directory_source(url): continue
         host = urlsplit(url).hostname.removeprefix('www.')
+        if site and host != site[1].lower() and not host.endswith('.'+site[1].lower()): continue
         identity = url if host == 'avito.ru' else host
         if identity in seen: continue
         seen.add(identity)
@@ -207,6 +210,14 @@ def page_facts(url, html):
         a.append(unquote(a['href'][7:]).split('?')[0])
     for node in soup(['script', 'style', 'noscript']): node.decompose()
     text = soup.get_text(' ', strip=True)
+    heading = ' '.join(node.get_text(' ',strip=True) for node in soup.select('title,h1'))
+    main = soup.find('main') or soup.find('article') or soup.body or soup
+    content = BeautifulSoup(str(main),'html.parser')
+    for node in content(['header','nav','footer','aside']): node.decompose()
+    content = content.get_text(' ',strip=True)
+    if not heading and len(content) < 600: heading = content
+    editorial = bool(re.search(r'/(?:blog|news|articles?|wiki|forum|flood|computer_technology)(?:/|$)',urlsplit(url).path,re.I)
+                     or re.match(r'\s*(?:как\s|что\s+такое|обзор\b|инструкци|руководство|рейтинг\b)',heading,re.I))
     if re.search(r'подтвердите,? что вы не робот|доступ ограничен|checking your browser', text[:10000], re.I):
         raise BuyerError('Сайт ограничил автоматическую проверку')
     emails = set()
@@ -236,13 +247,14 @@ def page_facts(url, html):
         if not any(re.sub(r'\D','',c['address'])[-10:]==normalized[-10:] for c in channels if c['channel']=='phone'):
             channels.append({'channel':'phone','address':normalized,'source_url':url})
     site_name = soup.find('meta', attrs={'property':'og:site_name'})
-    return {'text':text, 'emails':emails, 'channels':channels, 'links':contact_pages[:3],
+    return {'text':text, 'heading':heading, 'content':content, 'editorial':editorial,
+            'emails':emails, 'channels':channels, 'links':contact_pages[:3],
             'image':image,
             'name':str(site_name['content'])[:180] if site_name and site_name.get('content') else urlsplit(url).hostname.removeprefix('www.')}
 
 
 _CATEGORY_EVIDENCE = {
-    'cable':r'кабел|провод', 'electrical':r'электро|выключател|распределительн|кабел',
+    'cable':r'кабел|провод', 'electrical':r'электроматериал|электротехнич|выключател|распределительн|кабел|сжим|муфт',
     'lighting':r'светильник|освещен|прожектор|ламп', 'gravel':r'щеб', 'sand':r'пес[окч]',
     'soil':r'растительн\w* грунт|плодород|чернозем', 'concrete':r'бетон', 'steel':r'металлопрокат|сталь|стальн',
     'signs':r'дорожн\w* знак|знак\w* дорожн', 'curb':r'бордюр|бортов\w* кам',
@@ -264,6 +276,8 @@ def inspect(task, source, *, fetch=fetch_html):
     from autobot.market_source_adapters import inspect_source_page, source_region_evidence
     url, html = fetch(task['url'])
     facts = page_facts(url, html)
+    if facts['editorial']:
+        raise BuyerError('Статья или инструкция не подтверждает предложение поставщика')
     pages = [(url, html, facts)]
     for target in facts['links']:
         try:
@@ -278,16 +292,30 @@ def inspect(task, source, *, fetch=fetch_html):
     ignored = {'работы','устройство','установка','выполнение','материалы','монтаж','строительные','стоимость','согласно','типом','типа'}
     anchors = {w[:6].casefold() for r in rows for w in re.findall(r'[а-яё]{4,}', r['name'], re.I) if w.casefold() not in ignored}
     pattern = _CATEGORY_EVIDENCE.get(task['category'])
-    relevant = bool(re.search(pattern, combined, re.I)) if pattern else bool(anchors) and sum(a in combined.casefold() for a in anchors) >= min(2,len(anchors))
+    topic = facts['heading']
+    # Navigation, footer and unrelated contact pages cannot prove assortment.
+    if re.search(r'каталог|магазин|товар|материал|постав|продаж|производ', topic, re.I):
+        topic += ' '+facts['content'][:4000]
+    relevant = bool(re.search(pattern, topic, re.I)) if pattern else bool(anchors) and sum(a in topic.casefold() for a in anchors) >= min(2,len(anchors))
     if not relevant:
         raise BuyerError('Страница не подтверждает нужный ассортимент или вид работ')
-    if task['bucket'] == 'works' and not re.search(r'услуг|работ|монтаж|подряд|укладк|прокладк', combined, re.I):
-        raise BuyerError('Не подтверждено выполнение работ')
+    commerce = r'заказ|заявк|вызвать|выполняем|оказываем|услуг|стоимость|прайс|цен[аыу]' if task['bucket']=='works' else r'поставк|продаж|купить|заказ|налич|прайс|каталог|производител|производств|магазин|товар|корзин'
+    host = urlsplit(url).hostname.removeprefix('www.')
+    if not re.search(commerce, facts['heading']+' '+facts['content'][:12000], re.I) and host != 'avito.ru':
+        raise BuyerError('Не подтверждено коммерческое предложение компании')
+    if task.get('intent') == 'product':
+        from autobot.buyer_needs import product_identifiers
+        def comparable(value):
+            value=value.casefold().replace('ё','е').replace('×','х').translate(str.maketrans('abcehkmoptxy','авсенкмортху'))
+            return re.sub(r'[^\w]','',value)
+        product_text = comparable(facts['heading']+' '+facts['content'][:12000])
+        rows = [r for r in rows if all(comparable(term) in product_text for term in product_identifiers(r['name']))]
+        if not rows:
+            raise BuyerError('Страница не подтверждает запрошенную модель или размер товара')
     regional = next((source_region_evidence(p[1], source['region'], task['bucket']) for p in pages
                      if source_region_evidence(p[1], source['region'], task['bucket'])), '')
     emails = list(dict.fromkeys(e for p in pages for e in p[2]['emails']))
     email = emails[0] if emails else ''
-    host = urlsplit(url).hostname.removeprefix('www.')
     if host == 'avito.ru' or host.endswith('.avito.ru'):
         # Platform support contacts are not the advertiser's contacts.
         email, emails = '', []

@@ -159,13 +159,62 @@ class DiscoveryTests(unittest.TestCase):
             links=discovery.search('кабель')
         self.assertEqual([x['title'] for x in links],[str(i) for i in range(10)])
 
+    def test_avito_query_never_accepts_a_providers_unrelated_fallback_results(self):
+        found=[SimpleNamespace(url=url,title='Электрик') for url in (
+            'https://article.example/','https://avito.ru.fake.example/x',
+            'https://www.avito.ru/yaroslavl/electrician_123456789',
+            'https://m.avito.ru/yaroslavl/electrician_123456790')]
+        with patch.object(discovery,'search_api',return_value=found):
+            links=discovery.search('site:avito.ru электромонтаж Ярославль')
+        self.assertEqual(len(links),2)
+        self.assertTrue(all('electrician_' in x['url'] for x in links))
+
+    def test_product_query_uses_written_model_and_qualification_rejects_wrong_model(self):
+        self.source['positions']=[dict(row('clamp','Сжим типа У733М для магистральных и ответвительных проводов и кабелей'),unit='100 шт')]
+        source=needs.snapshot(self.source)
+        task=needs.queries(source)[-1]|{'url':'https://supplier.example/product'}
+        self.assertEqual(task['intent'],'product')
+        self.assertIn('"У733М"',task['query'])
+        self.assertNotIn('для магистральных',task['query'])
+        wrong='<h1>Сжим У734М</h1>Купить товар, в наличии. sales@supplier.example'
+        with self.assertRaisesRegex(BuyerError,'модель'):
+            discovery.inspect(task,source,fetch=lambda url:(url,wrong))
+        correct=wrong.replace('У734М','У733М')
+        self.assertEqual(discovery.inspect(task,source,fetch=lambda url:(url,correct))['position_keys'],['clamp'])
+
+    def test_article_navigation_does_not_prove_a_supplier_profile(self):
+        data=needs.snapshot(self.source);task=needs.queries(data)[0]|{'url':'https://article.example/guide'}
+        html='<title>Драйверы видеокарты</title><h1>Настройки компьютера</h1><main>Новости технологий</main><footer>Продажа кабеля ВВГнг-LS. admin@article.example</footer>'
+        with self.assertRaises(BuyerError): discovery.inspect(task,data,fetch=lambda url:(url,html))
+        with self.assertRaises(BuyerError): discovery.inspect(task,data,fetch=lambda url:(url,'<h1>Кабель</h1>Энциклопедическое определение. admin@article.example'))
+
+    def test_service_instruction_is_not_a_contractor_offer(self):
+        self.source['positions']=[row('work','Монтаж электропроводки','work')]
+        data=needs.snapshot(self.source);task=needs.queries(data)[0]|{'url':'https://article.example/how'}
+        html='<h1>Как смонтировать электропроводку</h1>Электромонтажные работы своими руками, стоимость услуг. admin@article.example'
+        with self.assertRaises(BuyerError): discovery.inspect(task,data,fetch=lambda url:(url,html))
+        offer='<h1>Электромонтажные работы</h1>Оказываем услуги в Москве. Оставьте заявку. office@supplier.example'
+        self.assertEqual(discovery.inspect(task,data,fetch=lambda url:(url,offer))['position_keys'],['work'])
+
+    def test_new_qualification_policy_requires_new_run_and_blocks_old_send(self):
+        run_id=self.pipeline()
+        job=jobs.jobs(self.source['tender_id'])[0]
+        with patch.object(store,'DISCOVERY_VERSION',store.DISCOVERY_VERSION+1):
+            fresh=store.enqueue(self.source)
+            self.assertNotEqual(run_id,fresh)
+            self.assertFalse(report.build(self.source['tender_id'],run_id)['request_current'])
+            with self.assertRaisesRegex(BuyerError,'Правила проверки'):
+                box.enqueue(self.source['tender_id'],job['id'],0,'sales@example.org')
+            with self.assertRaisesRegex(BuyerError,'Правила проверки'):
+                workflow.prepare_run(self.source['tender_id'],run_id)
+
     def test_contact_anchor_does_not_refetch_the_same_page(self):
         facts=discovery.page_facts('https://supplier.example/',
             '<a href="#contacts">Контакты</a><a href="/contacts">Контакты</a>')
         self.assertEqual(facts['links'],['https://supplier.example/contacts'])
 
     def test_contact_redirect_cannot_mix_another_website_into_the_company(self):
-        main='Кабель ВВГнг. sales@supplier.example <a href="/contacts">Контакты</a>'
+        main='<h1>Продажа кабеля</h1>Кабель ВВГнг. sales@supplier.example <a href="/contacts">Контакты</a>'
         fetch=Mock(side_effect=[('https://supplier.example/',main),
                                ('https://another.example/','Кабель info@another.example')])
         candidate=discovery.inspect({'url':'https://supplier.example/','position_keys':['c'],
@@ -201,7 +250,7 @@ class DiscoveryTests(unittest.TestCase):
         from flask import Flask
         from autobot import buyer_routes as routes, buyer_media as media
         from autobot.uploaded_corrections import CorrectionError
-        key=self.pipeline(html='<meta property="og:image" content="/photo.png">Кабель ВВГнг в Москве. sales@example.org')
+        key=self.pipeline(html='<meta property="og:image" content="/photo.png">Продажа кабеля ВВГнг-LS 3х2,5 в Москве. sales@example.org')
         company=report.build(self.source['tender_id'],key)['companies'][0]
         self.assertEqual(company['draft_job_ids'],[jobs.jobs(self.source['tender_id'])[0]['id']])
         path=company['image_url']

@@ -12,6 +12,8 @@ from autobot.business_time import today_iso
 from autobot.hermes_buyer import BuyerError, encoded
 from autobot.buyer_needs import digest, snapshot, queries
 
+DISCOVERY_VERSION = 2
+
 
 def initialize():
     with closing(outbox.connect()) as db:
@@ -37,7 +39,7 @@ def initialize():
 def enqueue(source, *, delivery='draft'):
     if delivery not in ('draft', 'email'):
         raise BuyerError('Поддерживаются подготовка сообщений и отправка email')
-    payload = snapshot(source) | {'delivery': delivery}
+    payload = snapshot(source) | {'delivery': delivery, 'discovery_version': DISCOVERY_VERSION}
     fingerprint = digest(payload)
     initialize()
     with closing(outbox.connect()) as db, db:
