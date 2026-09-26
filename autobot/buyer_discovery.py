@@ -37,7 +37,7 @@ def public_url(value):
         raise BuyerError('Недопустимый адрес источника') from None
 
 
-def fetch_html(url):
+def fetch_public(url, *, image=False):
     """Resolve and pin a public IP, retaining TLS SNI/Host. No ambient proxy/auth."""
     deadline = time.monotonic()+35
     for _ in range(4):
@@ -64,8 +64,9 @@ def fetch_html(url):
             if response.getheader('Content-Encoding', 'identity').lower() != 'identity':
                 raise BuyerError('Источник вернул неподдерживаемое сжатие')
             content_type = response.getheader('Content-Type', '').lower()
-            if not any(kind in content_type for kind in ('text/html', 'application/xhtml+xml')):
-                raise BuyerError('Источник не является HTML-страницей')
+            allowed = ('image/jpeg','image/png','image/webp','image/gif') if image else ('text/html','application/xhtml+xml')
+            if content_type.split(';')[0].strip() not in allowed:
+                raise BuyerError('Неподдерживаемый формат источника')
             chunks, size = [], 0
             while True:
                 chunk = response.read(32768)
@@ -75,6 +76,8 @@ def fetch_html(url):
                     raise BuyerError('Превышен размер или время загрузки источника')
                 chunks.append(chunk)
             body = b''.join(chunks)
+            if image:
+                return url, body, content_type.split(';')[0].strip()
             charset = re.search(r'charset=([\w-]+)', content_type)
             encoding = charset[1] if charset else 'utf-8'
             try: html = body.decode(encoding, errors='replace')
@@ -83,6 +86,10 @@ def fetch_html(url):
         finally:
             connection.close()
     raise BuyerError('Слишком много перенаправлений источника')
+
+
+def fetch_html(url):
+    return fetch_public(url)
 
 
 def search_api(query):
@@ -154,6 +161,11 @@ def search(query):
 
 def page_facts(url, html):
     soup = BeautifulSoup(html, 'html.parser')
+    image_tag = soup.find('meta', attrs={'property':'og:image'}) or soup.find('meta', attrs={'name':'twitter:image'})
+    image = None
+    if image_tag and image_tag.get('content'):
+        try: image = {'url':public_url(urljoin(url,image_tag['content'])), 'source_url':url}
+        except BuyerError: pass
     for node in soup(['script', 'style', 'noscript']): node.decompose()
     text = soup.get_text(' ', strip=True)
     if re.search(r'подтвердите,? что вы не робот|доступ ограничен|checking your browser', text[:10000], re.I):
@@ -177,10 +189,10 @@ def page_facts(url, html):
         normalized = '+7'+re.sub(r'\D','',phone)[1:]
         if not any(re.sub(r'\D','',c['address'])[-10:]==normalized[-10:] for c in channels if c['channel']=='phone'):
             channels.append({'channel':'phone','address':normalized,'source_url':url})
-    name = soup.find('h1') or soup.find('title')
     site_name = soup.find('meta', attrs={'property':'og:site_name'})
     return {'text':text, 'emails':emails, 'channels':channels, 'links':contact_pages[:3],
-            'name':str(site_name['content'])[:180] if site_name and site_name.get('content') else name.get_text(' ',strip=True)[:180] if name else urlsplit(url).hostname}
+            'image':image,
+            'name':str(site_name['content'])[:180] if site_name and site_name.get('content') else urlsplit(url).hostname.removeprefix('www.')}
 
 
 _CATEGORY_EVIDENCE = {
@@ -245,7 +257,7 @@ def inspect(task, source, *, fetch=fetch_html):
             'email':email,'emails':emails,'channels':[c for p in pages for c in p[2]['channels']],
             'position_keys':[r['position_key'] for r in rows], 'categories':[task['category']],
             'region':source['region'], 'region_note':regional or 'Регион поставки или выполнения работ нужно подтвердить',
-            'evidence_pages':evidence_pages,'prices':prices,'discovered':True}
+            'evidence_pages':evidence_pages,'prices':prices,'image':facts['image'],'discovered':True}
 
 
 def verify_contact(supplier):

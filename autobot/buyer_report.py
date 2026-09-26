@@ -1,5 +1,6 @@
 """Small machine-readable result and its plain-text projection. No accounting data."""
 import json
+from urllib.parse import quote
 from decimal import Decimal
 from autobot import buyer_store as store, buyer_jobs as jobs, buyer_outbox as outbox, buyer_replies as replies
 from autobot.buyer_needs import revision
@@ -46,6 +47,8 @@ def build(tid, run_id=None):
         contacts = ([{'channel':'email', 'address':supplier['email'], 'source_url':supplier['url']}] if supplier.get('email') else []) + supplier.get('channels', [])
         status = 'answered' if answers else sent[-1]['status'] if sent else 'prepared' if messages and supplier.get('email') else 'contact_required'
         companies.append({'id':supplier['id'], 'name':supplier['company'], 'source_url':supplier['url'],
+                          'draft_job_ids':[j['id'] for j in matching],
+                          'image_url':f'/api/tenders/{tid}/buyer/image/{quote(supplier["id"], safe="")}?run_id={quote(run_id, safe="")}' if supplier.get('image') else '',
                           'contacts':contacts, 'prices':prices, 'messages':messages, 'status':status,
                           'position_keys':supplier['position_keys'], 'region_note':supplier['region_note'],
                           'outbox_ids':sorted(out_ids), 'reply_count':len(answers),

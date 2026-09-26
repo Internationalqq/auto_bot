@@ -1,6 +1,75 @@
-.buyer-panel { margin-top: 24px; }
-.buyer-panel .agent-market-head { align-items: flex-start; }
-.buyer-panel .agent-market-actions { flex-wrap: wrap; }
+.buyer-panel { margin-top: 20px; min-width: 0; }
+.buyer-panel:focus { outline: none; }
+.buyer-panel ::selection { color: var(--ink); background: #d7e8ff; }
+.buyer-panel a { color: var(--blue); text-underline-offset: 3px; }
+.buyer-panel :is(button, select, input, textarea) { font: inherit; }
+.buyer-panel :is(button, input, select, textarea, a, summary):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.buyer-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; margin-bottom: 20px; }
+.buyer-heading h2 { margin: 0 0 6px; font-size: 21px; font-weight: 650; }
+.buyer-heading p { margin: 0; color: var(--muted); font-size: 14px; }
+.buyer-panel .btn { font-size: 13px; font-weight: 650; min-height: 42px; white-space: normal; }
+.buyer-launch { display: grid; grid-template-columns: minmax(0, 1fr) 230px auto; align-items: end; gap: 16px 24px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.buyer-scope { display: grid; gap: 8px; align-self: center; }
+.buyer-scope strong { font-size: 15px; font-weight: 600; }
+.buyer-scope span { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.buyer-mode, .buyer-tools label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
+.buyer-panel select, .buyer-find input { min-height: 42px; min-width: 0; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: #fff; font-size: 13px; caret-color: var(--blue); }
+.buyer-find input::placeholder { color: var(--muted); }
+.buyer-launch > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 90ch; }
+.buyer-statusbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 8px; }
+.buyer-statusbar p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
+.buyer-statusbar .buyer-error, .buyer-warning { color: var(--red); }
+.buyer-progress { display: flex; align-items: start; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 18px; font-size: 13px; line-height: 1.6; }
+.buyer-progress:empty { display: none; }
+.buyer-progress p { flex-basis: 100%; margin: 0; }
+.buyer-progress details { padding-top: 10px; min-width: 0; overflow-wrap: anywhere; }
+.buyer-progress summary { cursor: pointer; color: var(--muted); }
+.buyer-results-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin: 24px 0 12px; }
+.buyer-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.buyer-filters button { display: flex; gap: 7px; align-items: center; padding: 9px 12px; min-height: 40px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; }
+.buyer-filters button[aria-pressed=true] { color: var(--blue); background: #eaf2ff; border-color: #ccdef9; font-weight: 600; }
+.buyer-filters button:hover { background: #edf1f6; }
+.buyer-filters span { font-variant-numeric: tabular-nums; }
+.buyer-find { width: min(100%, 300px); }
+.buyer-company { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow-wrap: anywhere; }
+.buyer-company-summary { display: grid; grid-template-columns: 64px minmax(0, 1fr) 195px 160px 10px; gap: 14px 20px; align-items: center; padding: 20px; list-style: none; cursor: pointer; }
+.buyer-company-summary::-webkit-details-marker { display: none; }
+.buyer-company-summary::after { content: ''; width: 7px; height: 7px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); }
+.buyer-company[open] > summary::after { transform: rotate(225deg); }
+.buyer-company-summary:hover { background: var(--soft); border-radius: 12px; }
+.buyer-company-media { position: relative; width: 64px; height: 64px; display: grid; place-items: center; border-radius: 8px; overflow: hidden; background: #edf1f6; color: #425b75; font-size: 21px; font-weight: 600; }
+.buyer-company-media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.buyer-company-identity, .buyer-company-offer { min-width: 0; display: grid; gap: 5px; }
+.buyer-company-identity > strong { font-size: 16px; font-weight: 650; line-height: 1.4; }
+.buyer-company-contact, .buyer-company-scope { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.buyer-company-scope { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.buyer-company-offer { font-variant-numeric: tabular-nums; }
+.buyer-company-offer strong { font-size: 15px; font-weight: 600; }
+.buyer-company-offer > span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.buyer-company-offer .buyer-offer-position { color: var(--ink); }
+.buyer-company-state { padding: 7px 10px; border-radius: 6px; background: var(--soft); color: var(--muted); font-size: 12px; line-height: 1.5; justify-self: start; }
+.buyer-company-state:is(.buyer-state-sent, .buyer-state-answered) { color: #12643c; background: var(--green-soft); }
+.buyer-company-state:is(.buyer-state-blocked, .buyer-state-uncertain, .buyer-state-contact_required) { color: #865008; background: var(--amber-soft); }
+.buyer-company-body { border-top: 1px solid var(--line); padding: 20px; }
+.buyer-contacts { display: flex; flex-wrap: wrap; gap: 10px 20px; font-size: 13px; }
+.buyer-region-note { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.buyer-scope-details { font-size: 14px; margin: 16px 0; }
+.buyer-scope-details summary, .buyer-archive > summary, .buyer-tools > summary { cursor: pointer; padding: 10px 0; font-size: 14px; }
+.buyer-scope-details li { padding: 5px 0; line-height: 1.5; }
+.buyer-price-list h3 { font-size: 15px; margin: 24px 0 8px; }
+.buyer-price-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 20px; padding: 14px 0; border-top: 1px solid var(--line); font-size: 14px; line-height: 1.5; }
+.buyer-price-row > span { grid-column: 1 / -1; color: var(--muted); font-size: 13px; }
+.buyer-price-row > a { font-size: 13px; }
+.buyer-company-body .buyer-request { padding-bottom: 0; }
+.buyer-company-body .buyer-request > summary span { font-size: 12px; }
+.buyer-empty { padding: 32px 24px; margin: 20px 0; text-align: center; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.buyer-empty h3 { color: var(--ink); margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+.buyer-empty p { margin: 0 auto; max-width: 65ch; }
+.buyer-tools { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 8px; color: var(--muted); }
+.buyer-tools-content { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 20px; margin-top: 8px; }
+.buyer-tools-content label { max-width: 100%; flex: 1 1 280px; }
+.buyer-tools-content > div { display: flex; gap: 8px; }
+.buyer-archive { margin: 20px 0; }
 .buyer-group { padding: 16px 0; border-top: 1px solid var(--line, #dce2e9); overflow-wrap: anywhere; }
 .buyer-group summary { display: grid; grid-template-columns: minmax(0, 1fr) 12px; gap: 8px 20px; cursor: pointer; padding: 4px 0; }
 .buyer-group summary::after { content: ''; grid-column: 2; grid-row: 1; align-self: center; width: 7px; height: 7px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); }
@@ -24,6 +93,7 @@
 .buyer-send-feedback { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .buyer-send-feedback:empty { display: none; }
 .buyer-draft > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; min-height: 44px; }
+.buyer-draft > button + button { margin-left: 8px; }
 .buyer-edit { margin: 16px 0; max-width: 75ch; }
 .buyer-edit label { display: block; margin: 12px 0 6px; font-weight: 600; }
 .buyer-edit input, .buyer-edit textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; line-height: 1.5; color: var(--text, #182332); background: var(--surface, #fff); border: 1px solid var(--line, #dce2e9); border-radius: 8px; }
@@ -38,12 +108,35 @@
 .buyer-delivery summary .buyer-state-blocked, .buyer-delivery summary .buyer-state-uncertain { color: #90470a; }
 .buyer-delivery h4 { margin: 16px 0 8px; font-size: 14px; }
 .buyer-delivery > button { min-height: 44px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 1000px) {
+  .buyer-launch { grid-template-columns: minmax(0, 1fr) auto; }
+  .buyer-scope { grid-column: 1 / -1; }
+  .buyer-company-summary { grid-template-columns: 56px minmax(0, 1fr) 170px 10px; gap: 10px 16px; }
+  .buyer-company-media { width: 56px; height: 56px; grid-row: 1 / 3; }
+  .buyer-company-state { grid-column: 2 / 4; grid-row: 2; }
+  .buyer-company-summary::after { grid-column: 4; grid-row: 1; }
+}
 @media (max-width: 600px) {
+  .buyer-heading h2 { font-size: 18px; }
+  .buyer-heading p { font-size: 13px; line-height: 1.5; }
+  .buyer-launch { grid-template-columns: minmax(0, 1fr); padding: 16px; gap: 14px; }
+  .buyer-launch > .btn { width: 100%; }
+  .buyer-heading > .btn { padding: 0 12px; }
+  .buyer-company-summary { grid-template-columns: 48px minmax(0, 1fr) 10px; padding: 16px; gap: 10px 12px; }
+  .buyer-company-media { width: 48px; height: 48px; grid-row: 1; align-self: start; font-size: 17px; }
+  .buyer-company-summary::after { grid-column: 3; }
+  .buyer-company-identity > strong { font-size: 15px; }
+  .buyer-company-offer { grid-column: 2; }
+  .buyer-company-state { grid-column: 2; grid-row: 3; }
+  .buyer-company-body { padding: 16px; }
+  .buyer-statusbar { align-items: start; flex-direction: column; }
+  .buyer-filters button { padding: 8px; min-height: 44px; }
+  .buyer-find { width: 100%; }
+  .buyer-price-row { grid-template-columns: minmax(0, 1fr); }
+  .buyer-draft > button + button { margin: 8px 0 0; }
   .buyer-delivery summary { grid-template-columns: minmax(0, 1fr) 12px; }
   .buyer-delivery summary::after { grid-column: 2; }
   .buyer-delivery summary .buyer-delivery-state { grid-column: 1; grid-row: auto; }
   .buyer-send { grid-template-columns: minmax(0, 1fr); }
   .buyer-send button { min-height: 44px; white-space: normal; }
-  .buyer-panel .agent-market-actions { width: 100%; }
-  .buyer-panel .agent-market-actions button { white-space: normal; min-height: 44px; }
 }

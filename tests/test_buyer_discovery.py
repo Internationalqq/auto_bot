@@ -117,6 +117,53 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(data['emails'],['sales@example.org'])
         self.assertEqual([c['channel'] for c in data['channels']],['phone'])
 
+    def test_supplier_identity_and_photo_are_grounded_in_page_metadata(self):
+        facts = discovery.page_facts('https://supplier.example/catalog/item', '<meta property="og:site_name" content="Кабельная компания"><meta property="og:image" content="/media/cable.jpg"><h1>Кабель 3х2,5</h1>')
+        self.assertEqual(facts['name'],'Кабельная компания')
+        self.assertEqual(facts['image'], {'url':'https://supplier.example/media/cable.jpg','source_url':'https://supplier.example/catalog/item'})
+        fallback = discovery.page_facts('https://supplier.example/', '<h1>Купить кабель</h1><meta property="og:image" content="file:///secret">')
+        self.assertEqual(fallback['name'],'supplier.example')
+        self.assertIsNone(fallback['image'])
+
+    def test_image_cache_rejects_markup_even_with_image_content_type(self):
+        from autobot import buyer_media as media
+        media.thumbnail.cache_clear()
+        with patch.object(media,'fetch_public',return_value=('https://supplier.example/x', b'<html>secret</html>','image/png')):
+            self.assertIsNone(media.thumbnail('https://supplier.example/x',0))
+        with patch.object(media,'fetch_public',return_value=('https://supplier.example/p', b'\x89PNG\r\n\x1a\nimage','image/png')) as fetch:
+            self.assertEqual(media.thumbnail('https://supplier.example/p',0)[1],'image/png')
+            media.thumbnail('https://supplier.example/p',0)
+            self.assertEqual(fetch.call_count,1)
+        media.thumbnail.cache_clear()
+
+    def test_images_share_private_network_protection(self):
+        with patch.object(discovery.socket,'getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',80))]),patch.object(discovery.socket,'create_connection') as connect:
+            with self.assertRaises(BuyerError): discovery.fetch_public('http://supplier.example/p.png',image=True)
+            connect.assert_not_called()
+
+    def test_supplier_image_requires_session_saved_candidate_and_correct_tender(self):
+        from flask import Flask
+        from autobot import buyer_routes as routes, buyer_media as media
+        from autobot.uploaded_corrections import CorrectionError
+        key=self.pipeline(html='<meta property="og:image" content="/photo.png">Кабель ВВГнг в Москве. sales@example.org')
+        company=report.build(self.source['tender_id'],key)['companies'][0]
+        self.assertEqual(company['draft_job_ids'],[jobs.jobs(self.source['tender_id'])[0]['id']])
+        path=company['image_url']
+        app=Flask(__name__);app.register_blueprint(routes.blueprint)
+        with app.test_client() as client, patch.object(media,'thumbnail',return_value=(b'\x89PNG\r\n\x1a\nimage','image/png')) as fetch:
+            with patch.object(routes.crm_actor,'resolve',side_effect=CorrectionError('Нет доступа',401)):
+                self.assertEqual(client.get(path).status_code,401)
+                fetch.assert_not_called()
+            with patch.object(routes.crm_actor,'resolve',return_value={}):
+                self.assertEqual(client.get(path.replace(self.source['tender_id'],'99999999999')).status_code,400)
+                self.assertEqual(client.get(path.replace(company['id'],'unknown')).status_code,404)
+                fetch.assert_not_called()
+                response=client.get(path)
+                self.assertEqual(response.status_code,200)
+                self.assertEqual(response.content_type,'image/png')
+                self.assertEqual(response.headers['X-Content-Type-Options'],'nosniff')
+                self.assertEqual(fetch.call_args.args[0],'https://supplier.example/photo.png')
+
     def test_dangerous_urls_rejected(self):
         for url in ('file:///etc/passwd','http://user:pass@example.org','http://example.org:8080/','https://a.example\\@localhost/'):
             with self.subTest(url=url),self.assertRaises(BuyerError): discovery.public_url(url)

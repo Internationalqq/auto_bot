@@ -11,8 +11,8 @@
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
-  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-3" />
-  <script defer src="/tenders/buyer.js?v=20260926-3"></script>
+  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-4" />
+  <script defer src="/tenders/buyer.js?v=20260926-4"></script>
   <link rel="stylesheet" href="/static/workspace_nav.css?v=20260926-minimal-1">
 </head>
 <body>
@@ -58,6 +58,7 @@
     <nav class="tender-tabs" aria-label="Разделы тендера">
       <a id="workspaceTabPositions" class="{{ 'is-active' if tender.active_tab == 'overview' else '' }}" href="/tenders/{{ tender.tender_id }}#positions" data-workspace-link="positions">Смета <span>{{ tender.total_positions }}</span></a>
       <a id="workspaceTabSearch" href="/tenders/{{ tender.tender_id }}#search" data-workspace-link="search">Поиск цен</a>
+      <a id="workspaceTabSuppliers" href="/tenders/{{ tender.tender_id }}#suppliers" data-workspace-link="suppliers">Поставщики</a>
       <a id="workspaceTabEconomics" href="/tenders/{{ tender.tender_id }}#economics" data-workspace-link="economics">Расчёт участия</a>
       <a class="{{ 'is-active' if tender.active_tab == 'files' else '' }}" href="/tenders/{{ tender.tender_id }}?tab=files">Документы <span>{{ tender.documents.count }}</span></a>
     </nav>
@@ -205,7 +206,7 @@
               </td>
               <td class="quantity-cell" data-label="Объём"><b>{{ p.quantity_fmt if p.quantity is not none else "—" }}</b><small>{{ p.unit }}</small></td>
               <td class="money col-estimate" data-label="Цена сметы"><b>{{ p.estimate_unit_fmt }}</b><small>за единицу</small>{% if p.estimate_total is not none %}<span>{{ p.estimate_total_fmt }} всего</span>{% endif %}</td>
-              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% elif p.price_state == 'excluded' %}Отдельная цена не требуется{% elif p.price_state == 'pending' %}Поиск ещё не выполнен{% elif p.price_state == 'candidate' %}Предложения требуют уточнения{% else %}Нет сопоставимой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% for quote in p.buyer_quotes|default([]) %}<small><b>Ответ поставщика: {% if quote.price_kopecks is not none %}{{ "{:,.2f}".format(quote.price_kopecks / 100).replace(",", " ") }} ₽ / {{ quote.unit }}{% else %}без цены{% endif %}</b><br>{{ quote.sender }} · {{ quote.vat or 'НДС не указан' }}{% if quote.state != 'comparable' %}<br>Уточнить: {{ quote.reason }}{% endif %}<br><a href="#search">Открыть переписку и условия</a></small>{% endfor %}</td>
+              <td class="money col-market" data-label="Медиана рынка"><b>{{ p.market_unit_fmt }}</b><small>{% if p.market_unit is not none %}Цен в расчёте: {{ p.calculation_source_count }}{% elif p.price_state == 'excluded' %}Отдельная цена не требуется{% elif p.price_state == 'pending' %}Поиск ещё не выполнен{% elif p.price_state == 'candidate' %}Предложения требуют уточнения{% else %}Нет сопоставимой цены{% endif %}</small>{% if p.market_basis_note %}<span>{{ p.market_basis_note }}</span>{% endif %}{% for quote in p.buyer_quotes|default([]) %}<small><b>Ответ поставщика: {% if quote.price_kopecks is not none %}{{ "{:,.2f}".format(quote.price_kopecks / 100).replace(",", " ") }} ₽ / {{ quote.unit }}{% else %}без цены{% endif %}</b><br>{{ quote.sender }} · {{ quote.vat or 'НДС не указан' }}{% if quote.state != 'comparable' %}<br>Уточнить: {{ quote.reason }}{% endif %}<br><a href="#suppliers">Открыть переписку и условия</a></small>{% endfor %}</td>
               <td class="money col-difference difference-{{ p.difference_tone }}" data-label="Смета − рынок"><b>{{ p.difference_fmt }}</b><small>{{ p.difference_percent_fmt if p.market_unit is not none else "Ждём цену рынка" }}</small></td>
               <td class="sources" data-label="Проверка цены">
                 {% if p.verified_count %}<span class="source-count verified">{{ icon("check") }} {{ p.verified_count }} подтверждено</span>{% endif %}
@@ -311,23 +312,36 @@
       </details>
     </section>
 
-    <section class="agent-market-card buyer-panel" data-buyer="{{ tender.tender_id }}" aria-labelledby="buyerTitle">
-      <div class="agent-market-head">
-        <div><h2 id="buyerTitle">Запросы поставщикам</h2><span>По выбранным строкам; без выбора — по всем позициям без подтверждённой цены. Регион: {{ tender.region or "нужно уточнить" }}.</span></div>
-        <div class="agent-market-actions">
-          <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
-          <button class="btn ghost" type="button" data-buyer-cancel hidden>Отменить задания</button>
-          <button class="btn ghost" type="button" data-buyer-drafts>Обращение без подбора</button>
-          <button class="btn primary" type="button" data-buyer-start>Подобрать поставщиков</button>
-        </div>
-      </div>
-      <p class="agent-market-note">Подбор автоматически соберёт компании, контакты и общие сообщения по списку позиций. Результат доступен текстом и в JSON. Отправки и ответы сохраняются в журнале.</p>
-      <p role="status" aria-live="polite" data-buyer-status>Загружаем задания…</p>
-      <div class="buyer-coverage" data-buyer-coverage role="status"></div>
-      <div data-buyer-discovery aria-label="Поиск компаний и исполнителей"></div>
-      <div data-buyer-list></div>
-    </section>
     </div>
+    <section class="buyer-panel" data-workspace-panel="suppliers" id="workspaceSuppliers" aria-labelledby="workspaceTabSuppliers" hidden>
+      <div data-buyer="{{ tender.tender_id }}">
+        <header class="buyer-heading">
+          <div><h2 id="buyerTitle">Поставщики и исполнители</h2><p>Компании, предложения и переписка по этой смете.</p></div>
+          <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
+        </header>
+        <div class="buyer-launch">
+          <div class="buyer-scope"><strong data-buyer-scope>Все позиции без подтверждённой цены</strong><span>{{ tender.region or "Регион нужно уточнить в данных тендера" }} · <a href="#positions" data-workspace-link="positions">Выбрать позиции в смете</a></span></div>
+          <label class="buyer-mode">После подбора<select data-buyer-mode aria-describedby="buyerModeHint"><option value="draft">Подготовить обращения</option><option value="email">Отправить по email</option></select></label>
+          <button class="btn primary" type="button" data-buyer-start>Подобрать поставщиков</button>
+          <p id="buyerModeHint" data-buyer-mode-hint>Автобот найдёт компании и соберёт общий запрос для каждой. Вы сможете проверить текст перед отправкой.</p>
+        </div>
+        <div class="buyer-statusbar"><p role="status" aria-live="polite" data-buyer-status>Загружаем поставщиков…</p><button class="btn ghost" type="button" data-buyer-cancel hidden>Остановить подбор</button></div>
+        <div data-buyer-discovery aria-label="Состояние подбора"></div>
+        <div class="buyer-results-toolbar" data-buyer-toolbar hidden>
+          <div class="buyer-filters" role="group" aria-label="Показать компании">
+            <button type="button" data-buyer-filter="all" aria-pressed="true">Все <span data-buyer-count="all">0</span></button>
+            <button type="button" data-buyer-filter="priced" aria-pressed="false">С ценами <span data-buyer-count="priced">0</span></button>
+            <button type="button" data-buyer-filter="answered" aria-pressed="false">Ответили <span data-buyer-count="answered">0</span></button>
+            <button type="button" data-buyer-filter="attention" aria-pressed="false">Нужно действие <span data-buyer-count="attention">0</span></button>
+          </div>
+          <label class="buyer-find"><span class="sr-only">Найти компанию или позицию</span><input type="search" data-buyer-find placeholder="Компания, контакт или позиция" /></label>
+        </div>
+        <div data-buyer-list aria-label="Компании и обращения"></div>
+        <p class="buyer-empty" data-buyer-no-results hidden>По этому фильтру компаний нет. Измените фильтр или строку поиска.</p>
+        <div class="buyer-coverage" data-buyer-coverage></div>
+        <details class="buyer-tools"><summary>История и выгрузка</summary><div class="buyer-tools-content"><label>Подбор<select data-buyer-run aria-label="Выбрать подбор"><option value="">Последний подбор</option></select></label><div data-buyer-exports></div><button class="btn ghost" type="button" data-buyer-drafts>Обращение без подбора</button></div></details>
+      </div>
+    </section>
     <section class="economics-workspace" data-workspace-panel="economics" id="workspaceEconomics" aria-labelledby="workspaceTabEconomics" hidden>
       <h2>Расчёт участия</h2><p>Подтверждённые цены — основа закупки. Доставку, налоги, накладные и резерв задайте для этого тендера.</p>
       <div data-tender-economics data-tender-id="{{ tender.tender_id }}" hidden></div>

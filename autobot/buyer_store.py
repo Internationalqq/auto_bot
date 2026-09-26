@@ -106,6 +106,7 @@ def finish(step, *, candidate=None, links=(), prepared=None, error='', retry=Fal
                     db.execute('DELETE FROM buyer_search_candidates WHERE run_id=? AND party_id=?', (step['run_id'], previous['id']))
                     candidate['id'] = previous['id']
                     candidate['company'] = previous['company']
+                    candidate['image'] = previous.get('image') or candidate.get('image')
                     candidate['email'] = previous.get('email') or candidate.get('email', '')
                     for field in ('position_keys', 'categories', 'emails'):
                         candidate[field] = list(dict.fromkeys(previous.get(field, [])+candidate.get(field, [])))

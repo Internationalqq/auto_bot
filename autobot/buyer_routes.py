@@ -33,12 +33,12 @@ def no_cache(response):
 
 def user_route(fn):
     @wraps(fn)
-    def wrapped(tid):
+    def wrapped(tid, **kwargs):
         try:
             crm_actor.resolve(request.headers)
             if not re.fullmatch(r'\d{8,25}', tid):
                 raise BuyerError('Некорректный номер тендера')
-            return fn(tid)
+            return fn(tid, **kwargs)
         except CorrectionError as error:
             return jsonify(ok=False, message=str(error)), error.status
         except BuyerError as error:
@@ -156,6 +156,20 @@ def asset(ext):
     if ext not in {'js', 'css'}:
         return '', 404
     return send_from_directory(Path(__file__).parent / 'static', 'buyer.' + ext)
+
+
+@blueprint.get('/api/tenders/<tid>/buyer/image/<supplier_id>')
+@user_route
+def supplier_image(tid, supplier_id):
+    import time
+    from autobot.buyer_media import thumbnail
+    candidate = next((c for c in sourcing.candidates(tid, request.args.get('run_id')) if c['id'] == supplier_id), None)
+    image = candidate.get('image') if candidate else None
+    if not image: return '', 404
+    result = thumbnail(image['url'], int(time.time() // 3600))
+    if not result: return '', 404
+    return Response(result[0], content_type=result[1], headers={
+        'X-Content-Type-Options':'nosniff', 'Content-Security-Policy':"default-src 'none'; sandbox"})
 
 
 def worker_route(fn):
