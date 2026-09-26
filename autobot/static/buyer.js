@@ -38,7 +38,7 @@
   }
   function render(jobs, outbox = [], campaigns = [], replies = {checks:{},messages:[]}, report = null) {
     const signature = JSON.stringify([jobs, outbox, campaigns, replies, report]);
-    if (signature === last) return;
+    if (signature === last) { updateRelativeTimes(); return; }
     const open = new Set(Array.from(list.querySelectorAll('details[open]')).map(el => el.dataset.key));
     const focusedKey = list.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.key : null;
     const focusedInput = document.activeElement?.dataset?.recipientKey;
@@ -314,11 +314,26 @@
   function shortDate(timestamp) {
     return timestamp ? new Date(timestamp*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
   }
+  function relativeAge(timestamp, now = Date.now()) {
+    if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return '';
+    const minutes = Math.max(0, Math.floor((now - Number(timestamp)*1000) / 60000));
+    if (!minutes) return 'только что';
+    if (minutes < 60) return `${minutes} мин назад`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} ч${minutes % 60 ? ` ${minutes % 60} мин` : ''} назад`;
+    return `${Math.floor(hours / 24)} д${hours % 24 ? ` ${hours % 24} ч` : ''} назад`;
+  }
+  function updateRelativeTimes() {
+    list.querySelectorAll('[data-buyer-sent-at]').forEach(time => {
+      const text = relativeAge(time.dataset.buyerSentAt);
+      if (time.textContent !== text) time.textContent = text;
+    });
+  }
   function renderCompanies(report, jobs, outbox, replies, jobNodes, expanded, mailNodes = new Map()) {
     const companies = companyList(report, jobs, outbox, replies);
     const positionMap = new Map([...jobs.flatMap(j => j.positions), ...(report?.positions || [])].map(p => [p.position_key,p]));
     const used = new Set();
-    const companyStates = {...sendLabels, sent:'Отправлено', answered:'Отправлено', prepared:'Готово к отправке', contact_required:'Нужен контакт'};
+    const companyStates = {...sendLabels, uncertain:'Не подтверждено', answered:'Не подтверждено', prepared:'Готово к отправке', contact_required:'Нужен контакт'};
     companies.forEach(company => {
       const card = node('details', null, 'buyer-company'); card.dataset.key = `company-${company.id}`; card.open = expanded.has(card.dataset.key);
       const positions = company.position_keys.map(key => positionMap.get(key)).filter(Boolean);
@@ -328,46 +343,47 @@
       card.dataset.priced = String(priced); card.dataset.answered = String(!!thread.answer); card.dataset.sent = String(thread.sent); card.dataset.attention = String(attention);
       card.dataset.search = [company.name,...thread.outgoing.map(item => item.recipient),...company.contacts.map(c => c.address),...positions.map(p => p.name)].join(' ').toLocaleLowerCase('ru-RU');
       const summary = node('summary', null, 'buyer-company-summary');
-      const media = node('span', null, 'buyer-company-media'); media.setAttribute('aria-hidden','true');
-      media.append(node('span', (company.name || '?').split(/\s+/).slice(0,2).map(s => s[0]).join('').toUpperCase()));
-      if (company.image_url?.startsWith(`/api/tenders/${encodeURIComponent(root.dataset.buyer)}/buyer/image/`)) {
-        const img = node('img'); img.src = company.image_url; img.alt = ''; img.loading = 'lazy'; img.width = 72; img.height = 72;
-        img.addEventListener('error', () => img.remove()); media.append(img);
-      }
       const identity = node('span', null, 'buyer-company-identity');
       identity.append(node('strong', company.name));
       const recipient = thread.latest?.recipient || company.contacts[0]?.address || 'Контакт пока не найден';
       if (recipient !== company.name) identity.append(node('span', recipient, 'buyer-company-contact'));
-      identity.append(node('span', `${company.previous ? 'Ранее по тендеру · ' : ''}${company.position_keys.length} поз. · ${positions.slice(0,2).map(p => p.name).join(' · ') || 'Состав запроса уточняется'}`, 'buyer-company-scope'));
       const activity = node('span',null,'buyer-company-activity');
       const sendState = thread.latest?.status || company.status;
-      activity.append(node('span',companyStates[sendState] || 'Готовим обращение',`buyer-company-state buyer-state-${sendState}`));
-      if (thread.latest) activity.append(node('span',shortDate(thread.latest.status === 'sent' ? thread.latest.updated_at : thread.latest.created_at),'buyer-company-date'));
-      if (thread.outgoing.length > 1) activity.append(node('span',`Обращений: ${thread.outgoing.length}`,'buyer-company-date'));
+      const sentAt = thread.latest?.status === 'sent' ? thread.latest.updated_at : null;
+      if (relativeAge(sentAt)) {
+        const time = node('time',relativeAge(sentAt),'buyer-sent-age');
+        time.dataset.buyerSentAt = String(sentAt);
+        time.dateTime = new Date(sentAt*1000).toISOString();
+        time.title = `Отправка подтверждена ${new Date(sentAt*1000).toLocaleString('ru-RU')}`;
+        activity.append(node('span','Отправлено ','sr-only'),time);
+      } else {
+        activity.append(node('span',companyStates[sendState] || 'Готовим обращение',`buyer-company-state buyer-state-${sendState}`));
+      }
       const offer = node('span', null, 'buyer-company-offer');
       if (thread.answer) {
-        offer.append(node('span',`Ответ · ${shortDate(thread.answer.received_at)}`,'buyer-reply-label'));
-        const excerpt = thread.answer.raw_text?.trim() || 'Получен ответ без текста';
-        offer.append(node('span',excerpt.length > 240 ? excerpt.slice(0,237).trimEnd()+'…' : excerpt,'buyer-reply-preview'));
+        const received = node('span','Получен','buyer-reply-label');
+        received.title = `Ответ получен ${shortDate(thread.answer.received_at)}`;
+        offer.append(node('span','Ответ: ','sr-only'),received);
       } else {
-        const waiting = thread.blocked ? 'Не удалось проверить ответы' : thread.checking ? 'Проверяем ответы…' : thread.sent ? 'Ожидаем ответ' : thread.latest?.status === 'uncertain' ? 'Ответ пока не отслеживается' : 'Ответа пока нет';
-        offer.append(node('span',waiting,thread.blocked ? 'buyer-inbox-warning' : 'buyer-reply-empty'));
+        const waiting = thread.blocked ? 'Не зафиксирован' : thread.checking ? 'Проверяем…' : thread.sent ? 'Ожидаем' : '—';
+        const replyState = node('span',waiting,'buyer-reply-empty');
+        replyState.title = thread.blocked ? 'Проверка почты недоступна; новый ответ мог ещё не попасть в список' : thread.checkedAt ? `Проверено ${shortDate(thread.checkedAt)}` : !thread.sent ? 'Отправка пока не подтверждена' : '';
+        offer.append(node('span','Ответ: ','sr-only'),replyState);
       }
-      if (thread.blocked) offer.append(node('span',thread.answer ? 'Новые ответы не проверены' : 'Откройте переписку, чтобы повторить проверку','buyer-inbox-warning'));
-      else if (!thread.answer && thread.checkedAt) offer.append(node('span',`Проверено ${shortDate(thread.checkedAt)}`,'buyer-company-date'));
       const price = prices.find(p => p.origin === 'reply' && p.price_kopecks != null) || prices.find(p => p.price_kopecks != null);
       if (price) {
         offer.append(node('strong', `${(price.price_kopecks/100).toLocaleString('ru-RU')} ₽ / ${price.unit || 'ед.'}`));
         if (company.position_keys.length > 1) offer.append(node('span', positionMap.get(price.position_key)?.name || 'Позиция сохранённого запроса', 'buyer-offer-position'));
         offer.append(node('span', `${price.origin === 'website' ? 'Цена с сайта' : 'Из ответа'}${price.state === 'review' ? ' · уточнить' : price.origin === 'website' ? ' · подтвердить' : ''}${prices.length > 1 ? ` · ещё ${prices.length-1}` : ''}`));
       }
-      summary.append(media, identity, activity, offer); card.append(summary);
+      summary.append(identity, activity, offer); card.append(summary);
       const body = node('div', null, 'buyer-company-body');
       if (thread.answer) {
         const answer = node('section',null,'buyer-latest-reply');
         answer.append(node('h3','Последний ответ'),node('p',`${thread.answer.sender || thread.latest?.recipient || company.name} · ${shortDate(thread.answer.received_at)}`,'buyer-company-date'),node('p',thread.answer.raw_text || 'Ответ без текста','buyer-body'));
         body.append(answer);
       }
+      if (thread.blocked) body.append(node('p', 'Не удалось проверить новые ответы. Причина и повтор проверки — в журнале переписки ниже.', 'buyer-inbox-warning'));
       const contactDetails = node('details',null,'buyer-contact-details'); contactDetails.dataset.key = `contacts-${company.id}`; contactDetails.open = expanded.has(contactDetails.dataset.key);
       contactDetails.append(node('summary','Контакты и сайт компании'));
       const contacts = node('div', null, 'buyer-contacts');
@@ -421,7 +437,13 @@
       list.append(empty);
     }
     const toolbar = root.querySelector('[data-buyer-toolbar]'); if (toolbar) toolbar.hidden = !companies.length;
-    const mailNote = root.querySelector('[data-buyer-mail-note]'); if (mailNote) mailNote.hidden = !outbox.some(item => item.status === 'sent');
+    const mailNote = root.querySelector('[data-buyer-mail-note]');
+    if (mailNote) {
+      const sent = outbox.filter(item => item.status === 'sent');
+      const blocked = sent.filter(item => replies.checks?.[item.id]?.status === 'blocked').length;
+      mailNote.hidden = !sent.length;
+      mailNote.textContent = blocked ? `${blocked === sent.length ? 'Проверка ответов недоступна' : 'Часть ответов не удалось проверить'}. В списке — только сохранённые ответы.` : 'Ответы проверяются каждые 10 минут.';
+    }
     applyFilter();
   }
   function applyFilter() {
@@ -434,6 +456,7 @@
       button.querySelector('[data-buyer-count]').textContent = cards.filter(card => kind === 'all' || card.dataset[kind] === 'true').length;
     });
     const empty = root.querySelector('[data-buyer-no-results]'); if (empty) empty.hidden = !cards.length || visible > 0;
+    const head = root.querySelector('[data-buyer-head]'); if (head) head.hidden = !visible;
   }
   function renderCoverage(result, report) {
     if (!coverage) return;
@@ -560,5 +583,6 @@
   if (selectionCount) new MutationObserver(syncSelection).observe(selectionCount, {childList: true, characterData: true, subtree: true});
   syncSelection();
   load();
-  setInterval(() => { if (!document.hidden && !busy) load(); }, 15000);
+  setInterval(() => { if (!document.hidden) { updateRelativeTimes(); if (!busy) load(); } }, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRelativeTimes(); });
 })();

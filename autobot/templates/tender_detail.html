@@ -11,8 +11,8 @@
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
-  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-5" />
-  <script defer src="/tenders/buyer.js?v=20260926-5"></script>
+  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-6" />
+  <script defer src="/tenders/buyer.js?v=20260926-6"></script>
   <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1">
 </head>
 <body>
@@ -340,7 +340,8 @@
           </div>
           <label class="buyer-find"><span class="sr-only">Найти компанию или позицию</span><input type="search" data-buyer-find placeholder="Компания, контакт или позиция" /></label>
         </div>
-        <p class="buyer-mail-note" data-buyer-mail-note hidden>Ответы проверяются автоматически каждые 10 минут. Нажмите на компанию, чтобы открыть переписку.</p>
+        <p class="buyer-mail-note" data-buyer-mail-note hidden></p>
+        <div class="buyer-list-head" data-buyer-head aria-hidden="true" hidden><span>Кому</span><span>Отправлено</span><span>Ответ</span></div>
         <div data-buyer-list aria-label="Компании и обращения"></div>
         <p class="buyer-empty" data-buyer-no-results hidden>По этому фильтру компаний нет. Измените фильтр или строку поиска.</p>
         <div class="buyer-coverage" data-buyer-coverage></div>
