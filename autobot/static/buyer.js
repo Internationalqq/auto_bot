@@ -200,7 +200,7 @@
                   entry.append(row);
                 });
               });
-              (item.attempts || []).forEach(attempt => entry.append(node('p', `Предыдущая попытка: ${attempt.receipt.detail} · Повтор ${new Date(attempt.retried_at*1000).toLocaleString('ru-RU')}`)));
+              (item.attempts || []).forEach(attempt => entry.append(node('p', `Предыдущий результат: ${attempt.receipt.detail} · Зафиксирован ${new Date(attempt.retried_at*1000).toLocaleString('ru-RU')}`)));
               if (item.status === 'blocked') {
                 const retry = node('button', `Повторить для ${item.recipient}`, 'btn ghost');
                 retry.type = 'button'; retry.title = 'После устранения причины. Предыдущая попытка не отправляла письмо.';

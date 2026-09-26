@@ -127,6 +127,9 @@ def execute(job, config, remote):
         state = json.loads(state_path.read_text(encoding='utf-8'))
         if state.get('receipt'):
             return state['receipt']
+        if state.get('transport') == 'mailru_lite':
+            from autobot.buyer_mailru_script import execute as execute_script
+            return execute_script(job, config, remote, folder, state)
         if not state.get('run_id'):
             # An ambiguous POST / legacy CLI attempt must never run again.
             receipt = read_receipt(folder, job)
@@ -134,6 +137,9 @@ def execute(job, config, remote):
             return receipt
     if not state and job['status'] != 'sending':
         return {'status': 'uncertain', 'detail': 'Истекло ожидание исполнителя. Проверьте отправленные на Mac.', 'evidence': ''}
+    if not state and config.get('sender_mode') == 'mailru_lite_script':
+        from autobot.buyer_mailru_script import execute as execute_script
+        return execute_script(job, config, remote, folder, state)
     try:
         client = sender_client(config)
     except (BuyerError, OSError, KeyError, TypeError):

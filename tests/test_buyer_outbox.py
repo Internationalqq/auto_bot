@@ -53,6 +53,59 @@ class OutboxTests(unittest.TestCase):
         self.assertFalse(box.update(first, 'mac', 'wrong'))
         with self.assertRaises(BuyerError): box.retry_blocked('123456789012345', first)
 
+    def test_later_sent_proof_preserves_failure_and_is_idempotent(self):
+        key = self.enqueue(); job = box.claim('mac')
+        previous = {'status': 'uncertain', 'detail': 'Connection error', 'evidence': ''}
+        proof = {'status': 'sent', 'detail': 'Письмо найдено в отправленных', 'evidence': 'sent.txt sha256:abc'}
+        box.update(key, 'mac', job['token'], previous)
+        self.assertFalse(box.update(key, 'mac', job['token'], proof))
+        self.assertTrue(box.reconcile_sent(key, 'mac', job['token'], previous, proof))
+        self.assertTrue(box.reconcile_sent(key, 'mac', job['token'], previous, proof))
+        row = box.listing('123456789012345')[0]
+        self.assertEqual(row['receipt'], proof)
+        self.assertEqual([a['receipt'] for a in row['attempts']], [previous])
+        self.assertIsNone(box.claim('mac'))
+        self.assertEqual(self.enqueue(), key)
+        self.assertFalse(box.update(key, 'mac', job['token'], previous))
+
+    def test_reconciliation_fences_active_unfinished_and_wrong_owner(self):
+        key = self.enqueue(); job = box.claim('mac')
+        previous = {'status': 'uncertain', 'detail': 'Connection error', 'evidence': ''}
+        proof = {'status': 'sent', 'detail': 'Письмо найдено', 'evidence': 'sent.txt sha256:abc'}
+        self.assertFalse(box.reconcile_sent(key, 'mac', job['token'], previous, proof))
+        with closing(box.connect()) as db, db:
+            db.execute('UPDATE outbound SET lease_until=0 WHERE id=?', (key,))
+        box.listing('123456789012345')
+        self.assertFalse(box.reconcile_sent(key, 'mac', job['token'], previous, proof))
+        box.update(key, 'mac', job['token'], previous)
+        for worker, token, expected in [('foreign', job['token'], previous),
+                                        ('mac', 'stale', previous),
+                                        ('mac', job['token'], {**previous, 'detail': 'stale'})]:
+            self.assertFalse(box.reconcile_sent(key, worker, token, expected, proof))
+        with self.assertRaises(BuyerError):
+            box.reconcile_sent(key, 'mac', job['token'], previous, {**proof, 'evidence': ''})
+        with self.assertRaises(BuyerError):
+            box.reconcile_sent(key, 'mac', job['token'], previous, {**proof, 'status': 'blocked'})
+        self.assertEqual(box.listing('123456789012345')[0]['receipt'], previous)
+
+    def test_reconciliation_endpoint_requires_auth_and_lease(self):
+        key = self.enqueue(); job = box.claim('mac')
+        previous = {'status': 'uncertain', 'detail': 'Connection error', 'evidence': ''}
+        proof = {'status': 'sent', 'detail': 'Письмо найдено', 'evidence': 'sent.txt sha256:abc'}
+        box.update(key, 'mac', job['token'], previous)
+        app = Flask(__name__)
+        with patch.object(routes.campaigns, 'launch'):
+            app.register_blueprint(routes.blueprint)
+        client = app.test_client(); url = routes.WORKER_API + '/outbox/' + key + '/reconcile_sent'
+        data = {'worker_id': 'mac', 'lease_token': job['token'], 'previous_receipt': previous, 'receipt': proof}
+        self.assertEqual(client.post(url, json=data).status_code, 401)
+        with patch.dict('os.environ', {'BUYER_WORKER_TOKEN': 'x'*48}):
+            headers = {'Authorization': 'Bearer ' + 'x'*48}
+            self.assertEqual(client.post(url, json={**data, 'lease_token': 'stale'}, headers=headers).status_code, 409)
+            self.assertEqual(client.post(url, json={**data, 'previous_receipt': None}, headers=headers).status_code, 422)
+            self.assertEqual(client.post(url, json=data, headers=headers).status_code, 200)
+            self.assertEqual(client.post(url, json=data, headers=headers).status_code, 200)
+
     def test_shared_browser_sends_sequentially_even_with_two_workers(self):
         first=self.enqueue(); second=self.enqueue('second@example.org')
         claim=box.claim('mac')

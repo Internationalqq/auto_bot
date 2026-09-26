@@ -174,14 +174,18 @@ def update_inbox(data, job_id, action):
 @blueprint.post(WORKER_API + '/outbox/<job_id>/<action>')
 @worker_route
 def update_outbound(data, job_id, action):
-    if action not in ('heartbeat', 'complete'):
+    if action not in ('heartbeat', 'complete', 'reconcile_sent'):
         return jsonify(ok=False), 404
     token = data.get('lease_token')
     if not isinstance(token, str) or not token:
         return jsonify(ok=False), 409
     if action == 'complete' and not isinstance(data.get('receipt'), dict):
         raise BuyerError('Нужно подтверждение отправки')
-    ok = outbox.update(job_id, data['worker_id'], token, data.get('receipt') if action == 'complete' else None)
+    if action == 'reconcile_sent':
+        ok = outbox.reconcile_sent(job_id, data['worker_id'], token,
+                                  data.get('previous_receipt'), data.get('receipt'))
+    else:
+        ok = outbox.update(job_id, data['worker_id'], token, data.get('receipt') if action == 'complete' else None)
     return (jsonify(ok=True), 200) if ok else (jsonify(ok=False), 409)
 
 

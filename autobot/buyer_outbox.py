@@ -150,6 +150,45 @@ def claim(worker):
             'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
 
 
+def validate_receipt(receipt):
+    if not isinstance(receipt, dict) or set(receipt) != {'status', 'detail', 'evidence'}:
+        raise BuyerError('Некорректное подтверждение отправки')
+    if receipt['status'] not in ('sent', 'blocked', 'uncertain'):
+        raise BuyerError('Неизвестный результат отправки')
+    if any(not isinstance(receipt[k], str) or len(receipt[k]) > 2000 for k in ('detail', 'evidence')):
+        raise BuyerError('Некорректное подтверждение отправки')
+    if receipt['status'] == 'sent' and not receipt['evidence'].strip():
+        raise BuyerError('Нет подтверждения из отправленных писем')
+
+
+def reconcile_sent(job_id, worker, token, previous_receipt, receipt):
+    """Record later Sent-folder proof; never authorize a new send or erase failure.
+
+    The owner of the original lease supplies the exact finalized uncertain result.
+    A timeout without a final receipt may still have a running sender and is not
+    eligible. Compare-and-swap prevents stale reconciliation from changing it.
+    """
+    validate_receipt(receipt)
+    validate_receipt(previous_receipt)
+    if receipt['status'] != 'sent' or previous_receipt['status'] != 'uncertain':
+        raise BuyerError('Сверка разрешена только для подтверждённого письма из отправленных')
+    with closing(connect()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM outbound WHERE id=?', (job_id,)).fetchone()
+        if not row or not token or row['worker'] != worker or not secrets.compare_digest(row['token'] or '', token):
+            return False
+        text = encoded(receipt)
+        if row['status'] == 'sent':
+            return row['receipt'] == text  # lost acknowledgement, not another audit row
+        if row['status'] != 'uncertain' or row['receipt'] != encoded(previous_receipt):
+            return False
+        db.execute('INSERT INTO outbound_attempt_history(job_id,previous_result,retried_at) VALUES (?,?,?)',
+                   (job_id, row['receipt'], time.time()))
+        db.execute("UPDATE outbound SET status='sent',receipt=?,lease_until=NULL,updated_at=? WHERE id=?",
+                   (text, time.time(), job_id))
+        return True
+
+
 def update(job_id, worker, token, receipt=None):
     with closing(connect()) as db, db:
         db.execute('BEGIN IMMEDIATE')
@@ -161,14 +200,7 @@ def update(job_id, worker, token, receipt=None):
                 return False
             db.execute('UPDATE outbound SET lease_until=?,updated_at=? WHERE id=?', (time.time()+120, time.time(), job_id))
             return True
-        if not isinstance(receipt, dict) or set(receipt) != {'status', 'detail', 'evidence'}:
-            raise BuyerError('Некорректное подтверждение отправки')
-        if receipt['status'] not in ('sent', 'blocked', 'uncertain'):
-            raise BuyerError('Неизвестный результат отправки')
-        if any(not isinstance(receipt[k], str) or len(receipt[k]) > 2000 for k in ('detail', 'evidence')):
-            raise BuyerError('Некорректное подтверждение отправки')
-        if receipt['status'] == 'sent' and not receipt['evidence'].strip():
-            raise BuyerError('Нет подтверждения из отправленных писем')
+        validate_receipt(receipt)
         text = encoded(receipt)
         if row['receipt']:
             return row['receipt'] == text
