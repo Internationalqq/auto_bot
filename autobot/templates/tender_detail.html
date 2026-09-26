@@ -11,8 +11,8 @@
   <script defer src="/assets/js/tender_economics.js?v=20260915-cashflow-1"></script>
   <script defer src="/tenders/document-jobs.js?v=20260915-jobs-1" data-document-jobs="{{ tender.tender_id }}"></script>
   <title>Тендер № {{ tender.tender_id }} · AutoBot</title>
-  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-2" />
-  <script defer src="/tenders/buyer.js?v=20260926-2"></script>
+  <link rel="stylesheet" href="/tenders/buyer.css?v=20260926-3" />
+  <script defer src="/tenders/buyer.js?v=20260926-3"></script>
 </head>
 <body>
   <header class="topbar">
@@ -329,9 +329,10 @@
           <button class="btn primary" type="button" data-buyer-start>Подобрать поставщиков</button>
         </div>
       </div>
-      <p class="agent-market-note">Проверьте текст, запустите автоподбор поставщиков или укажите email вручную. Письма отправит агент через рабочую почту на Mac. Адресаты и результаты видны в журнале; для найденной цены нужен ответ поставщика.</p>
+      <p class="agent-market-note">Подбор автоматически соберёт компании, контакты и общие сообщения по списку позиций. Результат доступен текстом и в JSON. Отправки и ответы сохраняются в журнале.</p>
       <p role="status" aria-live="polite" data-buyer-status>Загружаем задания…</p>
       <div class="buyer-coverage" data-buyer-coverage role="status"></div>
+      <div data-buyer-discovery aria-label="Поиск компаний и исполнителей"></div>
       <div data-buyer-list></div>
     </section>
     </div>

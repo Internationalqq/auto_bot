@@ -1,12 +1,14 @@
 """CRM-authenticated tender drafts and separately authenticated Mac worker API."""
 from functools import wraps
+import json
 import re
 import sqlite3
 from pathlib import Path
-from flask import Blueprint, jsonify, request, send_from_directory
+from flask import Blueprint, jsonify, request, send_from_directory, Response
 from autobot import buyer_jobs as jobs, buyer_outbox as outbox, buyer_campaigns as campaigns, crm_actor
 from autobot import buyer_suppliers as suppliers
 from autobot import buyer_replies as replies
+from autobot import buyer_store as sourcing
 from autobot.hermes_buyer import BuyerError
 from autobot.uploaded_corrections import CorrectionError
 from autobot.estimate_publication_recovery import consistent_report, PublicationRecoveryRequired
@@ -17,6 +19,8 @@ WORKER_API = '/api/agent-market/v1/buyer'
 
 @blueprint.record_once
 def resume_campaigns(state):
+    from autobot.buyer_discovery import start_worker
+    start_worker()
     if outbox.DB_PATH.is_file():
         campaigns.launch()
 
@@ -52,8 +56,12 @@ def tender_jobs(tid):
         if not isinstance(data, dict):
             raise BuyerError('Ожидается объект параметров')
         if data.get('action') == 'cancel':
+            sourcing.cancel(tid)
             return jsonify(ok=True, canceled=jobs.cancel(tid))
-        if data.get('action', 'start') not in ('start','prepare_suppliers'):
+        if data.get('action') == 'retry_search':
+            sourcing.retry(tid, data.get('run_id'))
+            return jsonify(ok=True), 202
+        if data.get('action', 'start') not in ('start','prepare_suppliers','search_suppliers','prepare_found'):
             raise BuyerError('Неизвестное действие')
         from autobot import web_ui as web
         with consistent_report(web.REPORTS_DIR, tid):
@@ -62,6 +70,12 @@ def tender_jobs(tid):
             metadata = web.load_tender_metadata().get(tid, {})
             tender = web.build_tender_detail(tid, metadata, {})
             keys = data.get('position_keys')
+            found = None
+            if data.get('action') == 'prepare_found':
+                found = sourcing.source(tid, data.get('run_id'))
+                if found['status'] not in ('completed','partial'):
+                    raise BuyerError('Дождитесь завершения проверки источников')
+                keys = [p['position_key'] for p in found['payload']['positions']]
             if keys is not None and (not isinstance(keys, list) or not keys or
                                       any(not isinstance(k, str) for k in keys) or len(keys) > 2000):
                 raise BuyerError('Некорректный список позиций')
@@ -79,6 +93,20 @@ def tender_jobs(tid):
             positions = [{**p, 'specification': {'requirements': p.get('requirements'),
                 'resource_scope': p.get('resource_scope'), 'section_note': p.get('section_note')}} for p in rows]
             source = {'tender_id': tid, 'region': tender.get('region'), 'positions': positions}
+            if found:
+                from autobot.buyer_needs import snapshot, digest
+                current = snapshot(source)
+                # Excluded invalid rows have already been reported; compare the actual request.
+                if digest({k: current[k] for k in ('tender_id','region','positions')}) != digest({k: found['payload'][k] for k in ('tender_id','region','positions')}):
+                    raise BuyerError('Смета изменилась после поиска. Запустите подбор для актуальных позиций')
+                if found['prepared']:
+                    return jsonify(ok=True, **json.loads(found['prepared'])), 202
+                candidates = [c | {'source_run_id': found['id']} for c in sourcing.candidates(tid, found['id'])]
+                result = suppliers.prepare(current, discovered=candidates)
+                sourcing.save_prepared(tid, found['id'], result)
+                return jsonify(ok=True, **result), 202
+            if data.get('action') == 'search_suppliers':
+                return jsonify(ok=True, run_id=sourcing.enqueue(source, delivery=data.get('delivery','draft'))), 202
             if data.get('action') == 'prepare_suppliers':
                 return jsonify(ok=True, **suppliers.prepare(source)), 202
             ids = jobs.enqueue(source)
@@ -89,7 +117,17 @@ def tender_jobs(tid):
         result.append({k: job[k] for k in ('id', 'position_name', 'status', 'error', 'created_at', 'updated_at', 'result')} |
                       {'positions': task['positions'], 'region': task['region'], 'supplier': task.get('supplier'), 'can_send': task.get('schema_version', 1) >= 2})
     campaigns.launch()
-    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid), campaigns=campaigns.listing(tid), replies=replies.listing(tid), coverage=suppliers.coverage(tid))
+    return jsonify(ok=True, jobs=result, outbox=outbox.listing(tid), campaigns=campaigns.listing(tid), replies=replies.listing(tid), coverage=suppliers.coverage(tid), searches=sourcing.listing(tid))
+
+
+@blueprint.get('/api/tenders/<tid>/buyer/report')
+@user_route
+def report(tid):
+    from autobot.buyer_report import build, plain
+    result = build(tid, request.args.get('run_id'))
+    if request.args.get('format') == 'text':
+        return Response(plain(result), content_type='text/plain; charset=utf-8')
+    return jsonify(ok=True, **result)
 
 
 @blueprint.post('/api/tenders/<tid>/buyer/outbox')

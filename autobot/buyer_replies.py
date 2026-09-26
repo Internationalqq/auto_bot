@@ -48,14 +48,21 @@ def claim(worker):
     with closing(connect()) as db, db:
         db.execute('BEGIN IMMEDIATE')
         now = time.time()
+        if db.execute("SELECT 1 FROM outbound WHERE status IN ('sending','uncertain') AND receipt IS NULL LIMIT 1").fetchone():
+            return None  # First recover the potentially submitted message.
+        active = db.execute("SELECT * FROM buyer_inbox_checks WHERE status='checking' LIMIT 1").fetchone()
+        if active and active['worker'] != worker:
+            return None  # The same signed-in browser is still occupied.
         # Only already-authorized, successfully sent RFQs. Never inspect unrelated mail.
         db.execute("""INSERT OR IGNORE INTO buyer_inbox_checks(outbound_id,status,next_at)
             SELECT id,'waiting',updated_at+300 FROM outbound WHERE status='sent' AND created_at>?""",(now-7*86400,))
-        row = db.execute("""SELECT o.* FROM buyer_inbox_checks c JOIN outbound o ON o.id=c.outbound_id
-            WHERE o.status='sent' AND c.next_at<=? AND
-            (c.status<>'checking' OR c.lease_until<?) ORDER BY c.next_at LIMIT 1""",(now,now)).fetchone()
+        row = (db.execute('SELECT * FROM outbound WHERE id=?', (active['outbound_id'],)).fetchone() if active else
+               db.execute("""SELECT o.* FROM buyer_inbox_checks c JOIN outbound o ON o.id=c.outbound_id
+                  WHERE o.status='sent' AND c.next_at<=? AND c.status<>'checking'
+                  ORDER BY c.next_at LIMIT 1""",(now,)).fetchone())
         if row is None: return None
-        token = secrets.token_urlsafe(32)
+        # Resume the same local journal/run after a lost connection or restart.
+        token = active['token'] if active else secrets.token_urlsafe(32)
         db.execute("UPDATE buyer_inbox_checks SET status='checking',worker=?,token=?,lease_until=?,error='' WHERE outbound_id=?",
                    (worker,token,now+120,row['id']))
         out = {k:row[k] for k in ('id','recipient','subject','body','created_at')}

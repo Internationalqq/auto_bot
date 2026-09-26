@@ -157,7 +157,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(replies.update(key,'reader','wrong',self.result()))
         with closing(replies.connect()) as db,db: db.execute('UPDATE buyer_inbox_checks SET lease_until=0')
         self.assertFalse(replies.update(key,'reader',claim['token'],self.result()))
-        new=replies.claim('reader');self.assertNotEqual(new['token'],claim['token'])
+        self.assertIsNone(replies.claim('another-reader'))
+        new=replies.claim('reader');self.assertEqual(new['token'],claim['token'])
+        self.assertTrue(replies.update(key,'reader',new['token'],self.result()))
+
+    def test_reader_and_sender_do_not_share_the_browser_at_the_same_time(self):
+        key,claim=self.sent()
+        draft=next(j for j in jobs.jobs(TID) if j['payload']['draft_task'].get('supplier',{}).get('id')=='ruselectrica')
+        second=box.enqueue(TID,draft['id'],0,'other@example.org')
+        self.assertIsNone(box.claim('mac'))
+        replies.update(key,'reader',claim['token'],dict(status='checked',messages=[],detail='Ответа пока нет'))
+        sending=box.claim('mac');self.assertEqual(sending['id'],second)
+        replies.request_check(TID,key)
+        self.assertIsNone(replies.claim('reader'))
 
     def test_no_reply_does_not_create_price_and_no_worker_secrets_returned(self):
         key,claim=self.sent();replies.update(key,'reader',claim['token'],dict(status='checked',messages=[],detail='Ответа пока нет'))

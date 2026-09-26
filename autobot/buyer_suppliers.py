@@ -114,8 +114,8 @@ def source_for(key):
     return next((dict(s) for s in REGISTRY if s['id'] == key), None)
 
 
-def prepare(source):
-    if not re.search('ярослав', str(source.get('region','')), re.I):
+def prepare(source, *, discovered=None):
+    if discovered is None and not re.search('ярослав', str(source.get('region','')), re.I):
         raise BuyerError('В реестре пока поставщики Ярославской области. Другие регионы ещё не подключены.')
     # Keep authoritative position IDs and quantities even across estimate sections.
     payload = task_payload({**source, 'positions':source['positions'][:100]})
@@ -147,16 +147,18 @@ def prepare(source):
             contacts.add(item['recipient'])
             covered.update(keys)
             if item['draft_job_id'] not in ids: ids.append(item['draft_job_id'])
-    for supplier in REGISTRY:
+    for supplier in REGISTRY if discovered is None else discovered:
+        if not supplier.get('email') and discovered is None:
+            continue
         rows = [p for p in payload['positions'] if p['position_key'] not in invalid
-                and p['position_key'] not in protected.get(supplier['email'],set())
-                and category(p) in supplier['categories']]
+                and p['position_key'] not in protected.get(supplier.get('email',''),set())
+                and (p['position_key'] in supplier['position_keys'] if discovered is not None else category(p) in supplier['categories'])]
         if not rows: continue
         selected = {**payload, 'positions':rows, 'supplier':supplier}
         result = draft(selected)
         fingerprint = hashlib.sha256(encoded(selected).encode()).hexdigest()
         prepared.append((supplier, selected, result, fingerprint))
-        contacts.add(supplier['email'])
+        contacts.add(supplier.get('email') or supplier['id'])
         covered.update(p['position_key'] for p in rows)
     with closing(jobs.queue._connect(jobs.DB_PATH)) as db, db:
         db.execute('BEGIN IMMEDIATE')
@@ -177,7 +179,7 @@ def prepare(source):
             ids.append(key)
         result = {'job_ids':ids, 'supplier_count':len(contacts), 'position_count':len(covered), 'updated_at':time.time(),
                   'uncovered':[{'position_key':p['position_key'],'name':p['name'],
-                               'reason':invalid.get(p['position_key'],'В реестре пока нет подходящего поставщика или подрядчика')}
+                               'reason':invalid.get(p['position_key'],'Не найден подходящий поставщик с опубликованным email' if discovered is not None else 'В реестре пока нет подходящего поставщика или подрядчика')}
                               for p in payload['positions'] if p['position_key'] not in covered]}
         db.execute('INSERT OR REPLACE INTO buyer_supplier_plans VALUES (?,?,?)',(source['tender_id'],encoded(result),result['updated_at']))
     return result

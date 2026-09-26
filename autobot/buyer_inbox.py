@@ -50,7 +50,7 @@ def execute(job, config, remote):
                              headers={'Idempotency-Key':'buyer-inbox-'+job['id']+'-'+folder.name})
         state['run_id'] = run['run_id'];save(state_path,state)
     if not state.get('run_id'):
-        return {'status':'blocked','detail':'Не подтверждён запуск проверки. Новая проверка будет отдельной попыткой.','messages':[]}
+        raise BuyerError('Не подтверждён запуск проверки ответов. Отправка приостановлена до сверки прежнего запуска на Mac.')
     while True:
         remote.request('/inbox/'+job['id']+'/heartbeat',lease_token=job['token'])
         run = client.request('GET','/v1/runs/'+state['run_id'])

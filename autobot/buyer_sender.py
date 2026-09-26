@@ -185,6 +185,24 @@ def execute(job, config, remote):
     return receipt
 
 
+def process_next(config, remote, *, prefer_inbox=False):
+    """Alternate directions; a long outbox must not starve scheduled replies."""
+    order = ('inbox', 'outbox') if prefer_inbox else ('outbox', 'inbox')
+    for kind in order:
+        if kind == 'inbox' and config.get('collect_replies') is not True: continue
+        job = remote.request('/'+kind+'/claim').get('job')
+        if not job: continue
+        if kind == 'outbox':
+            receipt = execute(job, config, remote)
+            remote.request('/outbox/'+job['id']+'/complete', lease_token=job['token'], receipt=receipt)
+            return kind, receipt['status']
+        from autobot import buyer_inbox
+        result = buyer_inbox.execute(job, config, remote)
+        remote.request('/inbox/'+job['id']+'/complete', lease_token=job['token'], result=result)
+        return kind, str(result.get('status'))
+    return '', 'idle'
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=Path, required=True)
@@ -196,22 +214,15 @@ def main():
     import fcntl
     with (root / 'sender.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        prefer_inbox = True
         while True:
             try:
-                job = remote.request('/outbox/claim').get('job')
-                if job:
-                    receipt = execute(job, config, remote)
-                    remote.request('/outbox/' + job['id'] + '/complete', lease_token=job['token'], receipt=receipt)
-                    print(receipt['status'], flush=True)
-                elif config.get('collect_replies') is True:
-                    from autobot import buyer_inbox
-                    inbox_job = remote.request('/inbox/claim').get('job')
-                    if inbox_job:
-                        result = buyer_inbox.execute(inbox_job, config, remote)
-                        remote.request('/inbox/'+inbox_job['id']+'/complete', lease_token=inbox_job['token'], result=result)
-                        print('inbox '+str(result.get('status')), flush=True)
+                direction, status = process_next(config, remote, prefer_inbox=prefer_inbox)
+                prefer_inbox = direction != 'inbox'
+                if direction: print(direction+' '+status, flush=True)
             except BuyerError as error:
                 print(str(error), flush=True)
+                prefer_inbox = not prefer_inbox
             if args.once: break
             time.sleep(10)
 

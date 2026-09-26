@@ -10,11 +10,12 @@
   const refresh = root.querySelector('[data-buyer-refresh]');
   const legacyDrafts = root.querySelector('[data-buyer-drafts]');
   const coverage = root.querySelector('[data-buyer-coverage]');
+  const discovery = root.querySelector('[data-buyer-discovery]');
   let busy = false, last = '', active = false;
   const recipients = new Map();
   const messages = new Map();
   const campaignLabels = {queued:'Проверка ожидает запуска', checking:'Проверяем сайты поставщиков', completed:'Проверка сайтов завершена', failed:'Проверка остановлена'};
-  const sendLabels = {queued: 'Ожидает Mac', sending: 'Агент отправляет', sent: 'Агент подтвердил отправку', blocked: 'Не отправлено', uncertain: 'Нужна проверка отправки'};
+  const sendLabels = {queued: 'В очереди отправки', sending: 'Отправляем', sent: 'Отправка подтверждена', blocked: 'Не отправлено', uncertain: 'Нужна проверка отправки'};
   const labels = {queued: 'В очереди', leased: 'Готовится', completed: 'Черновики готовы', failed: 'Не удалось подготовить', canceled: 'Отменено'};
   const errors = {submission_uncertain: 'Связь прервалась при запуске. Нужна проверка агента, повтор заблокирован.', invalid_result: 'Агент вернул неполный ответ. Нужна проверка задания.'};
   function node(tag, text, className) {
@@ -261,8 +262,36 @@
     }
   }
   async function load() {
-    try { const data = await api(); render(data.jobs, data.outbox, data.campaigns, data.replies); renderCoverage(data.coverage); }
+    try { const data = await api(); render(data.jobs, data.outbox, data.campaigns, data.replies); renderCoverage(data.coverage); renderSearches(data.searches || [], data.jobs.length); }
     catch (error) { status.textContent = error.message; }
+  }
+  let lastSearches = '';
+  function renderSearches(runs, jobCount) {
+    if (!discovery) return;
+    if (runs.some(run => run.status === 'searching')) cancel.hidden = false;
+    if (runs.length && !jobCount) status.textContent = runs.some(run => run.status === 'searching')
+      ? 'Подбор выполняется. Сообщения по компаниям появятся автоматически.'
+      : 'Результат подбора — в текстовом отчёте или JSON ниже.';
+    const signature = JSON.stringify(runs);
+    if (signature === lastSearches) return;
+    lastSearches = signature;
+    const names = {searching:'Ищем и проверяем источники',completed:'Поиск завершён',partial:'Поиск завершён, часть источников недоступна',canceled:'Поиск остановлен'};
+    discovery.replaceChildren();
+    runs.forEach(run => {
+      const section = node('div', null, 'buyer-group');
+      const ready = run.steps.filter(s => s.status === 'completed').length;
+      section.append(node('p', `${names[run.status]} · Проверок: ${ready}/${run.steps.length} · Компаний: ${run.candidates.length}`));
+      ['text','json'].forEach(format => {
+        const link = node('a', format === 'text' ? 'Текстовый результат' : 'JSON', 'btn ghost');
+        link.href = url.replace(/jobs$/, 'report')+`?run_id=${encodeURIComponent(run.id)}&format=${format}`;
+        link.target = '_blank'; link.rel = 'noopener noreferrer'; section.append(link);
+      });
+      if (['partial','canceled'].includes(run.status)) {
+        const retry = node('button','Повторить незавершённые проверки','btn ghost'); retry.type = 'button';
+        retry.addEventListener('click', () => mutate({action:'retry_search',run_id:run.id})); section.append(retry);
+      }
+      discovery.append(section);
+    });
   }
   async function mutate(body) {
     if (busy) return;
@@ -276,7 +305,7 @@
   }
   start.addEventListener('click', () => {
     const keys = Array.from(document.querySelectorAll('[data-agent-position]:checked')).map(el => el.value);
-    mutate(keys.length ? {action:'prepare_suppliers',position_keys: keys} : {action:'prepare_suppliers'});
+    mutate(keys.length ? {action:'search_suppliers',position_keys: keys} : {action:'search_suppliers'});
   });
   legacyDrafts?.addEventListener('click',() => {
     const keys = Array.from(document.querySelectorAll('[data-agent-position]:checked')).map(el => el.value);

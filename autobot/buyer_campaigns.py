@@ -1,7 +1,6 @@
-"""Recheck regional supplier sites and enqueue one approved RFQ per company.
+"""Recheck published contacts and enqueue one authorized RFQ per company.
 
-The first registry covers gravel in Yaroslavl. No paid search, inferred emails,
-or claimed stock/prices. Network targets are fixed public supplier URLs.
+The original registry remains compatible; discovered sites use public-IP pinning.
 """
 from contextlib import closing
 import hashlib
@@ -34,6 +33,8 @@ def selected_sources(tid, job_id):
     job = next((j for j in outbox.buyer_jobs.jobs(tid) if j['id'] == job_id), None)
     supplier = (job or {}).get('payload', {}).get('draft_task', {}).get('supplier')
     if supplier:
+        if supplier.get('discovered') is True:
+            return (supplier,)
         source = suppliers.source_for(supplier.get('id'))
         if source is None: raise BuyerError('Поставщик больше не подключён')
         return (source,)
@@ -60,7 +61,10 @@ def start(tid, job_id, index, message=None):
     payload, draft = outbox.draft_message(tid, job_id, index, message)
     sources = selected_sources(tid, job_id)
     positions = [p for p in payload['positions'] if p['position_key'] in draft['position_keys']]
-    if payload.get('supplier'):
+    if payload.get('supplier', {}).get('discovered') is True:
+        if not positions or not all(p['position_key'] in sources[0]['position_keys'] for p in positions):
+            raise BuyerError('Позиции не соответствуют найденному поставщику')
+    elif payload.get('supplier'):
         if not positions or any(suppliers.category(p) not in sources[0]['categories'] for p in positions) or not re.search('ярослав', str(payload.get('region','')), re.I):
             raise BuyerError('Поставщик не соответствует позициям или региону')
     elif (not positions or any('щебень' not in p['name'].casefold() or p.get('type_slug') not in
@@ -98,6 +102,9 @@ def extract_contact(source, html):
 
 
 def fetch_contact(source):
+    if source.get('discovered') is True:
+        from autobot.buyer_discovery import verify_contact
+        return verify_contact(source)
     # No arbitrary caller URL or redirected/private network destination.
     if source not in SOURCES and source not in suppliers.REGISTRY: raise BuyerError('Неизвестный источник')
     with requests.get(source['url'], timeout=(4,8), allow_redirects=False, stream=True,

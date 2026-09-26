@@ -58,18 +58,23 @@ def enqueue(tid, job_id, index, recipient, *, message=None):
             not re.fullmatch(r'[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}', recipient.strip())):
         raise BuyerError('Укажите один email поставщика')
     recipient = recipient.strip().lower()
-    _, draft = draft_message(tid, job_id, index, message)
-    other_drafts = {j['id']:j.get('result') for j in buyer_jobs.jobs(tid)}
+    payload, draft = draft_message(tid, job_id, index, message)
+    other_jobs = {j['id']:j for j in buyer_jobs.jobs(tid)}
+    party_id = payload.get('supplier', {}).get('id')
     fingerprint = hashlib.sha256(encoded([tid, recipient, draft['subject'], draft['body']]).encode()).hexdigest()
-    with closing(connect()) as db, db:
+    from autobot.buyer_workflow import current_draft
+    with current_draft(payload), closing(connect()) as db, db:
         db.execute('BEGIN IMMEDIATE')
         existing = db.execute("""SELECT id FROM outbound WHERE tender_id=? AND draft_job_id=?
             AND draft_index=? AND recipient=? AND status IN ('queued','sending','sent','uncertain')
             ORDER BY created_at LIMIT 1""", (tid, job_id, index, recipient)).fetchone()
         if existing:
             return existing['id']
-        for other in db.execute("SELECT * FROM outbound WHERE tender_id=? AND recipient=? AND draft_job_id<>? AND status IN ('queued','sending','sent','uncertain')", (tid,recipient,job_id)):
-            result = other_drafts.get(other['draft_job_id']) or {}
+        for other in db.execute("SELECT * FROM outbound WHERE tender_id=? AND status IN ('queued','sending','sent','uncertain')", (tid,)):
+            other_job = other_jobs.get(other['draft_job_id']) or {}
+            other_party = other_job.get('payload', {}).get('draft_task', {}).get('supplier', {}).get('id')
+            if other['recipient'] != recipient and not (party_id and party_id == other_party): continue
+            result = other_job.get('result') or {}
             entries = result.get('drafts', [])
             if other['draft_index'] < len(entries) and set(entries[other['draft_index']]['position_keys']) & set(draft['position_keys']):
                 raise BuyerError('Этому поставщику уже создан запрос с такими позициями. Проверьте существующую переписку.')
@@ -128,26 +133,49 @@ def listing(tid):
 
 
 def claim(worker):
-    with closing(connect()) as db, db:
-        db.execute('BEGIN IMMEDIATE')
-        expire(db)
-        # Reattach only to the SAME attempt, for local journal reconciliation.
-        row = db.execute("SELECT * FROM outbound WHERE worker=? AND status IN ('sending','uncertain') AND receipt IS NULL ORDER BY created_at LIMIT 1", (worker,)).fetchone()
-        if row:
-            return dict(row) | {'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
-        # All workers share the same signed-in browser. A slow or disconnected
-        # attempt must finish/reconcile before another letter uses that window.
-        if db.execute("SELECT 1 FROM outbound WHERE status IN ('sending','uncertain') AND receipt IS NULL LIMIT 1").fetchone():
-            return None
-        row = db.execute("SELECT * FROM outbound WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
-        if not row:
-            return None
-        token = secrets.token_urlsafe(32)
-        now = time.time()
-        db.execute("UPDATE outbound SET worker=?,token=?,status='sending',lease_until=?,updated_at=? WHERE id=?",
-                   (worker, token, now+120, now, row['id']))
-        return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone()) | {
-            'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
+    # Read candidate without holding the buyer lock while reading the report.
+    # Recheck everything transactionally afterwards: publication -> buyer DB.
+    for _ in range(20):
+        with closing(connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            expire(db)
+            existing = _inflight(db, worker)
+            if existing is not False: return existing
+            row = db.execute("SELECT * FROM outbound WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
+            if row is None: return None
+            candidate = dict(row)
+        from autobot.buyer_workflow import current_draft
+        try:
+            payload, _ = draft_message(candidate['tender_id'], candidate['draft_job_id'], candidate['draft_index'])
+            with current_draft(payload), closing(connect()) as db, db:
+                db.execute('BEGIN IMMEDIATE')
+                expire(db)
+                existing = _inflight(db, worker)
+                if existing is not False: return existing
+                row = db.execute("SELECT * FROM outbound WHERE id=? AND status='queued'", (candidate['id'],)).fetchone()
+                if row is None: continue
+                token, now = secrets.token_urlsafe(32), time.time()
+                db.execute("UPDATE outbound SET worker=?,token=?,status='sending',lease_until=?,updated_at=? WHERE id=?",
+                           (worker, token, now+120, now, row['id']))
+                return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone()) | {
+                    'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
+        except BuyerError as error:
+            with closing(connect()) as db, db:
+                receipt = encoded({'status':'blocked','detail':str(error),'evidence':''})
+                db.execute("UPDATE outbound SET status='blocked',receipt=?,updated_at=? WHERE id=? AND status='queued'",
+                           (receipt,time.time(),candidate['id']))
+    return None
+
+
+def _inflight(db, worker):
+    """False means no occupied transport; None means occupied by another worker."""
+    row = db.execute("SELECT * FROM outbound WHERE worker=? AND status IN ('sending','uncertain') AND receipt IS NULL ORDER BY created_at LIMIT 1", (worker,)).fetchone()
+    if row:
+        return dict(row) | {'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
+    if db.execute("SELECT 1 FROM outbound WHERE status IN ('sending','uncertain') AND receipt IS NULL LIMIT 1").fetchone(): return None
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_inbox_checks'").fetchone():
+        if db.execute("SELECT 1 FROM buyer_inbox_checks WHERE status='checking' LIMIT 1").fetchone(): return None
+    return False
 
 
 def validate_receipt(receipt):
