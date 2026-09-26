@@ -4,3 +4,4 @@ description: Serialize desktop workflows across Hermes profiles on one Mac.
 platforms: [macos, linux]
 hooks:
   - on_session_end
+  - on_turn_exit

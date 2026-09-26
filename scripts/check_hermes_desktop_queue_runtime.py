@@ -37,4 +37,25 @@ with tempfile.TemporaryDirectory(prefix='hermes-desktop-check-') as temp:
         invoke_hook('on_session_end', task_id=task, session_id=task, completed=True, interrupted=False)
         assert queue.owner is None
         assert tool._backend is None
-    print('PASS: actual Hermes discovery, tool override, two tasks, finalizer hook and backend teardown')
+    # Exercise the actual forwarder, including failure paths that bypass the
+    # normal finalizer. No model request or constructor/account access needed.
+    from run_agent import AIAgent
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    for outcome in ('completed', 'early-failure', 'exception'):
+        subject = SimpleNamespace(session_id=outcome, _current_task_id=outcome)
+        def turn(*args, **kwargs):
+            registry.dispatch('computer_use', {'action':'list_apps'}, task_id=outcome)
+            assert queue.owner == outcome
+            if outcome == 'exception':
+                raise RuntimeError('provider failure')
+            return {'failed': outcome == 'early-failure'}
+        with patch('agent.conversation_loop.run_conversation', side_effect=turn):
+            try:
+                result = AIAgent.run_conversation(subject, 'check', task_id=outcome)
+                assert result == {'failed': outcome == 'early-failure'}
+            except RuntimeError as exc:
+                assert outcome == 'exception' and str(exc) == 'provider failure'
+        assert queue.owner is None, 'Lease leaked after ' + outcome
+        assert tool._backend is None
+    print('PASS: real Hermes discovery/override, two sessions, finally cleanup for success/early failure/exception')

@@ -114,6 +114,7 @@ def register(ctx):
                       schema=get_computer_use_schema(), handler=queue.dispatch,
                       check_fn=check_computer_use_requirements, override=True)
     ctx.register_hook('on_session_end', queue.finish)
+    ctx.register_hook('on_turn_exit', queue.finish)
     queue.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     queue._event('registered', '')
     atexit.register(queue.close)
