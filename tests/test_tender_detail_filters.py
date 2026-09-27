@@ -183,6 +183,17 @@ def test_tender_keeps_shared_navigation_to_the_board_without_duplicate_breadcrum
     assert '← Все тендеры</a>' not in template
 
 
+def test_source_controller_uses_the_proxied_tender_route():
+    from autobot import web_ui
+    template = (Path(tender_detail.__file__).parent / 'templates' / 'tender_detail.html').read_text(encoding='utf-8')
+    assert 'src="/tenders/sources.js?' in template
+    with web_ui.app.test_client() as client:
+        response = client.get('/tenders/sources.js')
+    assert response.status_code == 200
+    assert response.mimetype in ('application/javascript', 'text/javascript')
+    assert b'dialog.showModal()' in response.data
+
+
 def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp_path, monkeypatch):
     from bs4 import BeautifulSoup
     from autobot import web_ui

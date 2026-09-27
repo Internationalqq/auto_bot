@@ -4665,6 +4665,11 @@ def tender_document_jobs_client():
     return app.send_static_file('document_jobs.js')
 
 
+@app.get('/tenders/sources.js')
+def tender_sources_client():
+    return app.send_static_file('tender_sources.js')
+
+
 @app.get('/api/tenders/<tender_id>/economics-source')
 def tender_economics_source(tender_id: str):
     if not re.fullmatch(r'[0-9]{8,25}', tender_id):
