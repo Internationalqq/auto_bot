@@ -80,6 +80,16 @@
 .buyer-message-source p { margin: 6px 0 0; }
 .buyer-chat-info { padding: 8px 20px 20px; overflow-wrap: anywhere; }
 .buyer-chat-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 12px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.5; }
+.buyer-chat-bottom { min-width: 0; }
+.buyer-chat-composer { display: grid; gap: 8px; padding: 0 20px 14px; }
+.buyer-chat-composer textarea { box-sizing: border-box; width: 100%; min-height: 64px; max-height: 150px; resize: vertical; border: 1px solid #7b8fa8; border-radius: 8px; padding: 10px 12px; background: #fff; color: var(--ink); font: inherit; font-size: 13px; line-height: 1.5; caret-color: var(--blue); }
+.buyer-chat-composer textarea::placeholder { color: #526984; }
+.buyer-chat-composer textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.buyer-chat-composer textarea:read-only { background: #f3f6fa; }
+.buyer-composer-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
+.buyer-composer-actions .buyer-message-send { min-height: 40px; padding: 8px 14px; margin-left: auto; }
+.buyer-composer-hint, .buyer-composer-note, .buyer-composer-feedback { margin: 0; color: #526984; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.buyer-composer-feedback { color: #805009; }
 .buyer-chat-placeholder { display: grid; align-content: center; justify-items: center; height: 100%; width: 100%; box-sizing: border-box; padding: 32px 20px; color: var(--muted); text-align: center; font-size: 13px; line-height: 1.6; }
 .buyer-chat-placeholder h3 { margin: 0 0 8px; color: var(--ink); font-size: 16px; font-weight: 600; }
 .buyer-chat-placeholder p { margin: 0; max-width: 34ch; }
@@ -176,6 +186,10 @@
   .buyer-chat-timeline, .buyer-chat-info { padding: 14px 12px; }
   .buyer-message { max-width: 92%; padding: 10px 12px; }
   .buyer-chat-footer { padding: 10px 12px; }
+  .buyer-chat-composer { padding: 0 12px 12px; }
+  .buyer-chat-composer textarea { font-size: 16px; }
+  .buyer-composer-hint { display: none; }
+  .buyer-composer-actions .buyer-message-send { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .buyer-company { transition: none; }

@@ -34,7 +34,10 @@ def connect():
 
 def positions(outbound):
     payload, draft = box.draft_message(outbound['tender_id'],outbound['draft_job_id'],outbound['draft_index'])
-    return [{**p,'_request_edited':outbound['body']!=draft['body'],'_request_region':payload.get('region')}
+    with closing(box.connect()) as db:
+        manual = db.execute('''SELECT 1 FROM buyer_manual_messages m JOIN outbound o ON o.id=m.outbound_id
+            WHERE m.parent_outbound_id=? AND o.status IN ('sent','sending','uncertain') LIMIT 1''', (outbound['id'],)).fetchone()
+    return [{**p,'_request_edited':bool(manual) or outbound['body']!=draft['body'],'_request_region':payload.get('region')}
             for p in payload['positions'] if p['position_key'] in draft['position_keys']]
 
 
@@ -42,6 +45,8 @@ def request_check(tid, key):
     with closing(connect()) as db, db:
         row = db.execute("SELECT * FROM outbound WHERE id=? AND tender_id=? AND status='sent'",(key,tid)).fetchone()
         if row is None: raise BuyerError('Ответы проверяются только у подтверждённой отправки')
+        from autobot.buyer_messages import root_message
+        key = root_message(db, tid, key)['id']
         db.execute("INSERT OR IGNORE INTO buyer_inbox_checks(outbound_id,status,next_at) VALUES (?,'waiting',0)",(key,))
         db.execute("UPDATE buyer_inbox_checks SET next_at=0 WHERE outbound_id=? AND status<>'checking'",(key,))
 
@@ -60,7 +65,11 @@ def claim(worker):
         # Only already-authorized, successfully sent RFQs. Never inspect unrelated mail.
         db.execute("""INSERT OR IGNORE INTO buyer_inbox_checks(outbound_id,status,next_at)
             SELECT id,'waiting',updated_at+? FROM outbound WHERE status='sent' AND created_at>?
-            AND id NOT IN (SELECT outbound_id FROM buyer_followups WHERE outbound_id IS NOT NULL)""",(CHECK_INTERVAL_SECONDS,now-7*86400))
+            AND id NOT IN (SELECT outbound_id FROM buyer_followups WHERE outbound_id IS NOT NULL)
+            AND id NOT IN (SELECT outbound_id FROM buyer_manual_messages)""",(CHECK_INTERVAL_SECONDS,now-7*86400))
+        db.execute("""INSERT OR IGNORE INTO buyer_inbox_checks(outbound_id,status,next_at)
+            SELECT m.parent_outbound_id,'waiting',o.updated_at+? FROM buyer_manual_messages m
+            JOIN outbound o ON o.id=m.outbound_id WHERE o.status='sent' AND o.updated_at>?""",(CHECK_INTERVAL_SECONDS,now-7*86400))
         row = (db.execute('SELECT * FROM outbound WHERE id=?', (active['outbound_id'],)).fetchone() if active else
                db.execute("""SELECT o.* FROM buyer_inbox_checks c JOIN outbound o ON o.id=c.outbound_id
                   WHERE o.status='sent' AND c.next_at<=? AND c.status<>'checking'

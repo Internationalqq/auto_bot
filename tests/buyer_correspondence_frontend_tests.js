@@ -4,6 +4,8 @@ const vm = require('node:vm');
 
 class Element {
   constructor(tag='div') { this.tag=tag; this.children=[]; this.dataset={}; this.events={}; this.value=''; this.hidden=false; this.attrs={}; this.className=''; this.ownText=''; this.scrollTop=0; this.clientHeight=200; this.scrollHeight=1000; this.classList={add:value=>{this.className+=' '+value;}}; }
+  get tagName() { return this.tag.toUpperCase(); }
+  setSelectionRange(start,end) { this.selectionStart=start; this.selectionEnd=end; }
   set textContent(text) { this.ownText=String(text); this.children=[]; }
   get textContent() { return this.ownText+this.children.map(child=>child.textContent).join(' '); }
   append(...children) { children.forEach(child=>{ if(child.parent) child.parent.children=child.parent.children.filter(c=>c!==child); child.parent=this; this.children.push(child); }); }
@@ -37,6 +39,7 @@ const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(
 assert.ok(source.includes('capture({companyList'));
 const storage=new Map();
 const context={document,console,Date:Clock,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch(){throw new Error('Offline test');},capture:value=>api=value};
+context.crypto=require('node:crypto').webcrypto;
 vm.runInNewContext(source,context);
 const position={position_key:'cable',name:'Кабель 4×150',quantity:351.9,unit:'пм'};
 const company={id:'supplier',name:'Поставщик',contacts:[{channel:'email',address:'old@example.org'}],prices:[],position_keys:['cable'],draft_job_ids:['current'],status:'sent'};
@@ -198,4 +201,51 @@ assert.equal(storage.has('autobot:buyer-chat:123456789012345'),false);
 render({checks:{},messages:[]},{companies:[]},[]);
 assert.equal(toolbar.hidden,true); assert.equal(mailNote.hidden,true);
 assert.match(list.textContent,/Компании пока не найдены/);
-console.log('Buyer chats: recipient isolation, chronology, automatic replies, safe text, statuses, filters, elapsed time, selection persistence, scroll continuity and empty state passed.');
+(async () => {
+  const parent={...outbox[1],body:'Исходный запрос',subject:'Кабель [AB-RFQ-ABCDE]',updated_at:stamp};
+  const draftJob=job('current','new@example.org');
+  draftJob.result.questions=[];
+  let outgoing=[parent], responses={checks:{},messages:[]}, requests=[], pending;
+  let handler=() => new Promise(resolve=>pending=resolve);
+  context.fetch=async (url,options) => {
+    if (options?.method==='POST') { requests.push(JSON.parse(options.body)); return handler(); }
+    return {ok:true,json:async()=>url.includes('/report') ? report : {ok:true,jobs:[draftJob],outbox:outgoing,replies:responses,campaigns:[],searches:[]}};
+  };
+  const paint=()=>api.render([draftJob],outgoing,[],responses,report);
+  const form=()=>list.querySelector('.buyer-chat-composer');
+  const input=()=>form().querySelector('textarea');
+  const button=()=>form().querySelector('button');
+  const submit=()=>form().events.submit({preventDefault(){}});
+  paint();
+  assert.equal(button().disabled,true);
+  input().value='Ручной текст\nСо следующей строкой'; input().events.input(); input().focus(); input().setSelectionRange(3,8);
+  responses={checks:{'new-mail':{status:'checked',checked_at:stamp+10}},messages:[]}; paint();
+  assert.equal(input().value,'Ручной текст\nСо следующей строкой');
+  assert.equal(document.activeElement,input()); assert.equal(input().selectionStart,3);
+  vm.runInNewContext(source,context); paint();
+  assert.equal(input().value,'Ручной текст\nСо следующей строкой','F5 restores draft');
+  const sending=submit(); await submit();
+  assert.equal(requests.length,1,'Double click cannot queue another operation');
+  responses={checks:{'new-mail':{status:'checked',checked_at:stamp+20}},messages:[]}; paint();
+  assert.equal(button().disabled,true); assert.equal(input().readOnly,true,'Polling retains pending state');
+  outgoing.push({...parent,id:'manual',manual:true,parent_outbound_id:parent.id,request_id:requests[0].request_id,status:'queued',body:requests[0].body,created_at:stamp+25});
+  pending({ok:true,status:202,json:async()=>({ok:true,id:'manual'})}); await sending;
+  assert.equal(input().value,''); assert.equal(input().readOnly,false);
+  assert.match(list.querySelector('.buyer-chat-timeline').textContent,/Ручной текст/);
+  assert.match(list.querySelector('.buyer-chat-timeline').textContent,/В очереди отправки/);
+  assert.equal(requests[0].parent_id,parent.id); assert.equal(requests[0].recipient,undefined);
+  input().value='Текст при потере связи'; input().events.input();
+  handler=async()=>{ throw new Error('Lost acknowledgment'); }; await submit();
+  assert.equal(input().value,'Текст при потере связи'); assert.equal(input().readOnly,true);
+  assert.equal(button().textContent,'Проверить отправку');
+  const lost=requests.at(-1).request_id;
+  vm.runInNewContext(source,context); paint();
+  assert.equal(button().textContent,'Проверить отправку','Reload never creates a new intent after an uncertain response');
+  handler=async()=>({ok:true,status:202,json:async()=>({ok:true,id:'recovered'})}); await submit();
+  assert.equal(requests.at(-1).request_id,lost); assert.equal(input().value,'');
+  input().value='Попробую после входа'; input().events.input();
+  handler=async()=>({ok:false,status:401,json:async()=>({ok:false,message:'Сессия истекла'})}); await submit();
+  assert.equal(input().readOnly,false); assert.equal(input().value,'Попробую после входа');
+  assert.match(form().textContent,/Сессия истекла/);
+  console.log('Buyer chats and manual messages: isolation, chronology, safe text, statuses, persistence, polling, focus, duplicate submit, lost acknowledgment, restart and rejected request passed.');
+})().catch(error=>{console.error(error); process.exitCode=1;});

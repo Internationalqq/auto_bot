@@ -76,6 +76,15 @@ class FollowupTests(unittest.TestCase):
             db.execute('UPDATE buyer_followups SET next_at=0')
         follow.process_pending();self.assertEqual(len(box.listing(TID)),1)
 
+    def test_manual_reply_prevents_an_extra_automatic_address_reply(self):
+        from autobot.buyer_messages import enqueue
+        self.doc('contract.docx',['Место выполнения работ: '+ADDRESS]); self.seed()
+        enqueue(TID,'parent','Адрес уточняю, напишу позже.','manual-request-123456',7)
+        follow.process_pending()
+        self.assertEqual(len(box.listing(TID)),2)
+        self.assertEqual(follow.listing(TID)[0]['status'],'review')
+        self.assertIn('Пользователь уже написал',follow.listing(TID)[0]['reason'])
+
     def test_proven_unsent_reply_can_retry_without_resending_parent(self):
         self.doc('contract.docx',['Место выполнения работ: '+ADDRESS]);self.seed();follow.process_pending()
         child=next(row for row in box.listing(TID) if row['id']!='parent')['id']

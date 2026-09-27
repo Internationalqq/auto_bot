@@ -3,7 +3,7 @@
 An expired send is never reclaimed for execution. It becomes uncertain until
 the original worker can report its receipt; a repeat click returns that row.
 """
-from contextlib import closing
+from contextlib import closing, nullcontext
 import hashlib
 import json
 import re
@@ -31,6 +31,11 @@ def connect():
         created_at REAL NOT NULL, updated_at REAL NOT NULL)''')
     db.execute('''CREATE TABLE IF NOT EXISTS outbound_attempt_history (
         id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, previous_result TEXT NOT NULL, retried_at REAL NOT NULL)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS buyer_manual_messages (
+        outbound_id TEXT PRIMARY KEY, parent_outbound_id TEXT NOT NULL,
+        actor_id INTEGER NOT NULL, request_id TEXT NOT NULL, created_at REAL NOT NULL,
+        UNIQUE(actor_id,request_id))''')
+    db.execute('CREATE INDEX IF NOT EXISTS buyer_manual_parent ON buyer_manual_messages(parent_outbound_id)')
     db.commit()
     return db
 
@@ -109,6 +114,13 @@ def retry_blocked(tid, job_id):
             return job_id  # double-click on retry
         if row['status'] != 'blocked' or not row['receipt']:
             raise BuyerError('Повтор разрешён только после подтверждения, что письмо не отправлялось')
+        from autobot.buyer_messages import validate as manual_message
+        if manual_message(db, row):
+            db.execute('INSERT INTO outbound_attempt_history(job_id,previous_result,retried_at) VALUES (?,?,?)',
+                       (job_id, row['receipt'], time.time()))
+            db.execute("UPDATE outbound SET status='queued',receipt=NULL,worker=NULL,token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                       (time.time(), job_id))
+            return job_id
         # A reply is a separate message from its already-sent question. Exempt
         # only that verified parent; all other duplicate guards remain active.
         parent_id = job_id
@@ -139,8 +151,13 @@ def retry_blocked(tid, job_id):
 def listing(tid):
     with closing(connect()) as db, db:
         expire(db)
+        manual = {r['outbound_id']: r for r in db.execute('''SELECT m.* FROM buyer_manual_messages m
+            JOIN outbound o ON o.id=m.outbound_id WHERE o.tender_id=?''', (tid,))}
         return [{k: row[k] for k in ('id', 'draft_job_id', 'draft_index', 'recipient', 'subject', 'body', 'status', 'created_at', 'updated_at')} |
                 {'channel': 'email', 'receipt': json.loads(row['receipt']) if row['receipt'] else None,
+                 'manual': row['id'] in manual,
+                 'parent_outbound_id': manual[row['id']]['parent_outbound_id'] if row['id'] in manual else None,
+                 'request_id': manual[row['id']]['request_id'] if row['id'] in manual else None,
                  'attempts': [{'retried_at': a['retried_at'], 'receipt': json.loads(a['previous_result'])}
                     for a in db.execute('SELECT previous_result,retried_at FROM outbound_attempt_history WHERE job_id=? ORDER BY id', (row['id'],))]}
                 for row in db.execute('SELECT * FROM outbound WHERE tender_id=? ORDER BY created_at', (tid,))]
@@ -164,8 +181,11 @@ def claim(worker):
         try:
             from autobot.buyer_followups import validate_source
             validate_source(candidate)
-            payload, _ = draft_message(candidate['tender_id'], candidate['draft_job_id'], candidate['draft_index'])
-            with current_draft(payload), closing(connect()) as db, db:
+            from autobot.buyer_messages import validate as manual_message
+            with closing(connect()) as db:
+                manual = manual_message(db, candidate)
+            guard = nullcontext() if manual else current_draft(draft_message(candidate['tender_id'], candidate['draft_job_id'], candidate['draft_index'])[0])
+            with guard, closing(connect()) as db, db:
                 db.execute('BEGIN IMMEDIATE')
                 expire(db)
                 existing = _inflight(db, worker)

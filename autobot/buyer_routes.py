@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from flask import Blueprint, jsonify, request, send_from_directory, Response, make_response, current_app
+from flask import Blueprint, jsonify, request, send_from_directory, Response, make_response, current_app, g
 from autobot import buyer_jobs as jobs, buyer_outbox as outbox, buyer_campaigns as campaigns, crm_actor
 from autobot import buyer_suppliers as suppliers
 from autobot import buyer_replies as replies
@@ -35,7 +35,7 @@ def user_route(fn):
     @wraps(fn)
     def wrapped(tid, **kwargs):
         try:
-            crm_actor.resolve(request.headers)
+            g.buyer_actor = crm_actor.resolve(request.headers)
             if not re.fullmatch(r'\d{8,25}', tid):
                 raise BuyerError('Некорректный номер тендера')
             response = make_response(fn(tid, **kwargs))
@@ -175,6 +175,9 @@ def send_draft(tid):
     elif data.get('action') == 'find_and_send':
         key = campaigns.start(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('message'))
         return jsonify(ok=True, campaign_id=key), 202
+    elif data.get('action') == 'message':
+        from autobot.buyer_messages import enqueue
+        job_id = enqueue(tid, data.get('parent_id'), data.get('body'), data.get('request_id'), g.buyer_actor['id'])
     elif data.get('action', 'send') == 'send':
         job_id = outbox.enqueue(tid, data.get('draft_job_id'), data.get('draft_index'), data.get('recipient'), message=data.get('message'))
     else:

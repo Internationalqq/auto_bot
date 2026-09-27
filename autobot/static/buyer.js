@@ -23,6 +23,7 @@
   const chatStorageKey = `autobot:buyer-chat:${root.dataset.buyer}`;
   let selectedChat = '', chatOpened = false, chatEntries = [], chatShell, chatHost;
   const chatScroll = new Map(), chatInfo = new Set();
+  const chatDrafts = new Map();
   try { selectedChat = sessionStorage.getItem(chatStorageKey) || ''; chatOpened = !!selectedChat; } catch (_) { /* Storage may be disabled. */ }
   const campaignLabels = {queued:'Проверка ожидает запуска', checking:'Проверяем сайты поставщиков', completed:'Проверка сайтов завершена', failed:'Проверка остановлена'};
   const sendLabels = {queued: 'В очереди отправки', sending: 'Отправляем', sent: 'Отправка подтверждена', blocked: 'Не отправлено', uncertain: 'Нужна проверка отправки'};
@@ -48,6 +49,7 @@
     const focusedInput = document.activeElement?.dataset?.recipientKey;
     const selection = focusedInput ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     const focusedChatControl = document.activeElement?.dataset?.buyerChatControl;
+    const chatSelection = document.activeElement?.tagName === 'TEXTAREA' ? [document.activeElement.selectionStart,document.activeElement.selectionEnd] : null;
     const contactScroll = list.querySelector('.buyer-chat-list')?.scrollTop || 0;
     rememberChatScroll();
     list.replaceChildren();
@@ -280,7 +282,11 @@
     });
     renderCompanies(report, jobs, outbox, replies, jobNodes, open, mailNodes, campaigns);
     const contacts = list.querySelector('.buyer-chat-list'); if (contacts) contacts.scrollTop = contactScroll;
-    if (focusedChatControl) Array.from(list.querySelectorAll('[data-buyer-chat-control]')).find(el => el.dataset.buyerChatControl === focusedChatControl)?.focus({preventScroll:true});
+    if (focusedChatControl) {
+      const control = Array.from(list.querySelectorAll('[data-buyer-chat-control]')).find(el => el.dataset.buyerChatControl === focusedChatControl);
+      control?.focus({preventScroll:true});
+      if (control?.tagName === 'TEXTAREA' && chatSelection?.[0] != null) control.setSelectionRange(...chatSelection);
+    }
     if (focusedKey) {
       const group = Array.from(list.querySelectorAll('details')).find(el => el.dataset.key === focusedKey);
       const input = focusedInput ? Array.from(group?.querySelectorAll('input, textarea') || []).find(el => el.dataset.recipientKey === focusedInput) : null;
@@ -420,7 +426,7 @@
       bubble.dataset.messageId = event.id;
       const sender = incoming && event.item.sender && event.item.sender !== thread.latest?.recipient ? `${name} · ${event.item.sender}` : name;
       bubble.append(node('span',incoming ? sender : event.followup ? 'Автобот · адрес объекта' : 'Вы','buyer-message-author'));
-      if (event.item.subject && !event.followup) bubble.append(node('h4',event.item.subject,'buyer-message-subject'));
+      if (event.item.subject && !event.followup && !event.item.manual) bubble.append(node('h4',event.item.subject,'buyer-message-subject'));
       bubble.append(node('p',(incoming ? event.item.raw_text : event.item.body) || 'Сообщение без текста','buyer-message-text'));
       const meta = node('footer',null,'buyer-message-meta');
       if (date) {
@@ -433,7 +439,7 @@
         const age = node('span',relativeAge(stamp)); age.dataset.buyerSentAt = String(stamp); meta.append(age);
       }
       bubble.append(meta);
-      if (!incoming && !sent && event.item.receipt?.detail) bubble.append(node('p','Подробности отправки и доступные действия — в сведениях.','buyer-message-reason'));
+      if (!incoming && !sent && event.item.receipt?.detail) bubble.append(node('p',event.item.manual ? event.item.receipt.detail : 'Подробности отправки и доступные действия — в сведениях.','buyer-message-reason'));
       if (event.followup?.source?.document) {
         const source = node('details',null,'buyer-message-source'); source.dataset.key = `source-${event.id}`; source.open = expanded.has(source.dataset.key);
         source.append(node('summary','Адрес из документа'),node('p',event.followup.source.document)); bubble.append(source);
@@ -446,6 +452,83 @@
       timeline.append(empty);
     }
     return timeline;
+  }
+  function chatDraft(parentId) {
+    if (!chatDrafts.has(parentId)) {
+      let saved;
+      try { saved = JSON.parse(sessionStorage.getItem(`${chatStorageKey}:draft:${parentId}`)); } catch (_) {}
+      const valid = saved && typeof saved.text === 'string' && saved.text.length <= 10000;
+      const draft = valid ? saved : {text:''};
+      draft.busy = false;
+      chatDrafts.set(parentId,draft);
+    }
+    return chatDrafts.get(parentId);
+  }
+  function saveChatDraft(parentId,draft) {
+    try { sessionStorage.setItem(`${chatStorageKey}:draft:${parentId}`,JSON.stringify({text:draft.text,attempt:draft.attempt,feedback:draft.feedback,queuedId:draft.queuedId})); } catch (_) {}
+  }
+  function renderComposer(thread,replies,companyId) {
+    const form = node('form',null,'buyer-chat-composer');
+    const latest = thread.outgoing.find(item => item.status === 'sent');
+    if (!latest) {
+      form.append(node('p','Написать сюда можно после подтверждения отправки первого запроса. Первый запрос — в «Сведениях».','buyer-composer-note'));
+      return form;
+    }
+    const parentId = latest.parent_outbound_id || replies.followups?.find(item => item.outbound_id === latest.id)?.parent_outbound_id || latest.id;
+    const draft = chatDraft(parentId);
+    if (!draft.busy && draft.attempt && thread.outgoing.some(item => item.request_id === draft.attempt.request_id)) {
+      draft.text = ''; draft.attempt = null; draft.feedback = ''; saveChatDraft(parentId,draft);
+    }
+    if (draft.queuedId && thread.outgoing.some(item => item.id === draft.queuedId)) {
+      draft.queuedId = null; draft.feedback = ''; saveChatDraft(parentId,draft);
+    }
+    const label = node('label',`Сообщение для ${latest.recipient}`,'sr-only');
+    const input = node('textarea'); input.id = `buyer-message-input-${companyId}`; label.htmlFor = input.id;
+    input.rows = 2; input.maxLength = 10000; input.placeholder = 'Написать сообщение…'; input.value = draft.text;
+    input.dataset.buyerChatControl = `compose-${companyId}`;
+    const actions = node('div',null,'buyer-composer-actions');
+    const hint = node('span','Ctrl / ⌘ + Enter — отправить','buyer-composer-hint');
+    const send = node('button','Отправить','btn primary buyer-message-send'); send.type = 'submit';
+    send.dataset.buyerChatControl = `send-${companyId}`;
+    const feedback = node('p',draft.feedback || '', 'buyer-composer-feedback'); feedback.setAttribute('role','status');
+    function sync() {
+      if (input.value !== draft.text) input.value = draft.text;
+      input.readOnly = draft.busy || !!draft.attempt;
+      send.disabled = draft.busy || !draft.text.trim();
+      send.textContent = draft.busy ? 'Отправляем…' : draft.attempt ? 'Проверить отправку' : 'Отправить';
+      feedback.textContent = draft.feedback || ''; feedback.hidden = !draft.feedback;
+    }
+    draft.sync = sync;
+    input.addEventListener('input',() => { draft.text = input.value; draft.feedback = ''; saveChatDraft(parentId,draft); sync(); });
+    async function submit(event) {
+      event.preventDefault();
+      if (draft.busy || !draft.text.trim()) return;
+      if (!draft.attempt) {
+        draft.attempt = {action:'message',parent_id:parentId,body:draft.text,request_id:crypto.randomUUID()};
+      }
+      draft.busy = true; draft.feedback = ''; saveChatDraft(parentId,draft); sync();
+      let rejected = false;
+      try {
+        const response = await fetch(url.replace(/jobs$/,'outbox'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(draft.attempt)});
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          rejected = response.status >= 400 && response.status < 500;
+          throw new Error(data.message || 'Не удалось подтвердить отправку');
+        }
+        draft.text = ''; draft.attempt = null; draft.queuedId = data.id; draft.feedback = 'В очереди отправки. Подтверждение появится в истории.';
+        input.value = ''; chatScroll.set(companyId,{top:0,bottom:true});
+      } catch (error) {
+        if (rejected) draft.attempt = null;
+        draft.feedback = rejected ? error.message : 'Нет подтверждения от сервера. Нажмите «Проверить отправку» — повторного письма не будет.';
+      } finally {
+        draft.busy = false; saveChatDraft(parentId,draft); draft.sync();
+      }
+      await load();
+    }
+    form.addEventListener('submit',submit);
+    input.addEventListener('keydown',event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) submit(event); });
+    actions.append(hint,send); form.append(label,input,actions,feedback); sync();
+    return form;
   }
   function renderCompanies(report, jobs, outbox, replies, jobNodes, expanded, mailNodes = new Map(), campaigns = []) {
     chatEntries = [];
@@ -509,12 +592,15 @@
       const timeline = renderTimeline(thread,replies,name,expanded);
       timeline.dataset.buyerChatControl = `history-${company.id}`;
       const body = node('div', null, 'buyer-chat-info'); body.id = `buyer-chat-info-${index}`;
+      const composer = renderComposer(thread,replies,company.id);
       body.hidden = !chatInfo.has(company.id); timeline.hidden = !body.hidden;
+      composer.hidden = !body.hidden;
       info.setAttribute('aria-expanded',String(!body.hidden)); info.setAttribute('aria-controls',body.id);
       info.textContent = body.hidden ? 'Сведения' : 'Переписка';
       info.addEventListener('click',() => {
         if (body.hidden) { rememberChatScroll(); chatInfo.add(company.id); } else chatInfo.delete(company.id);
         body.hidden = !body.hidden; timeline.hidden = !body.hidden;
+        composer.hidden = !body.hidden;
         info.textContent = body.hidden ? 'Сведения' : 'Переписка'; info.setAttribute('aria-expanded',String(!body.hidden));
         if (body.hidden) { const saved = chatScroll.get(company.id); timeline.scrollTop = !saved || saved.bottom ? timeline.scrollHeight : saved.top; }
       });
@@ -522,7 +608,8 @@
       footer.append(node('span',state,thread.blocked ? 'buyer-inbox-warning' : ''));
       if (thread.blocked) footer.append(node('span','Причина и повтор проверки — в сведениях.'));
       else footer.append(node('span',thread.checkedAt ? `Проверено ${shortDate(thread.checkedAt)} · Email` : 'Переписка по email'));
-      panel.append(header,timeline,body,footer); chatHost.append(panel);
+      const bottom = node('div',null,'buyer-chat-bottom'); bottom.append(footer,composer);
+      panel.append(header,timeline,body,bottom); chatHost.append(panel);
       chatEntries.push({company,button:card,panel,timeline,title});
       card.addEventListener('click',() => selectChat(company.id,{open:true,focus:true}));
       const contactDetails = node('details',null,'buyer-contact-details'); contactDetails.dataset.key = `contacts-${company.id}`; contactDetails.open = expanded.has(contactDetails.dataset.key);

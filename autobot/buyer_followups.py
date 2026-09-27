@@ -97,6 +97,11 @@ def process_pending():
             prior = db.execute("SELECT 1 FROM buyer_followups WHERE parent_outbound_id=? AND outbound_id IS NOT NULL AND reply_id<>?", (reply['outbound_id'], reply['id'])).fetchone()
             if prior and is_question:
                 source = None; status = 'review'; reason = 'Адрес уже направлен; повторный вопрос требует проверки'
+            manual = db.execute('''SELECT 1 FROM buyer_manual_messages m JOIN outbound o ON o.id=m.outbound_id
+                WHERE m.parent_outbound_id=? AND m.created_at>=? AND o.status IN ('queued','sending','sent','uncertain') LIMIT 1''',
+                (reply['outbound_id'],reply['received_at'])).fetchone()
+            if manual and is_question:
+                source = None; status = 'review'; reason = 'Пользователь уже написал в эту переписку после ответа поставщика'
             key = None
             if source:
                 subject = 'Re: '+re.sub(r'^(?:Re:\s*)+', '', reply['subject'], flags=re.I)
