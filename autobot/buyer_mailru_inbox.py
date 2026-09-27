@@ -121,19 +121,47 @@ def unquoted(body):
 
 
 def prices(body,positions):
-    if len(positions)!=1: return []
-    matches=list(re.finditer(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?)\s*(?:руб(?:\.|лей|ля)?|₽|RUB)\s*(?:/|за)\s*(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)',body,re.I))
-    if len(matches)!=1: return []
-    match=matches[0]
-    start=body.rfind('\n',0,match.start())+1
-    end=body.find('\n',match.end());quote=body[start:end if end>=0 else len(body)]
-    vat=re.search(r'без\s+НДС|с\s+НДС|включая\s+НДС|НДС\s+(?:включ[её]н|не\s+облагается)',body,re.I)
-    availability=re.search(r'[^\n]*\b(?:в наличии|под заказ|нет в наличии)[^\n]*',body,re.I)
+    """Keep literal unit prices; map grouped replies only by explicit identity.
+
+    Numbered replies refer to the saved request, never to the order of prices
+    in the answer. Alternatives and totals remain in the raw message. Even a
+    mapped price needs the existing server-side specification/unit review.
+    """
+    if not positions: return []
+    body=unquoted(body)
+    pattern=re.compile(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?)\s*(?:руб(?:\.|лей|ля)?|₽|RUB)\s*(?:/|за)\s*(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)',re.I)
+    vat_pattern=re.compile(r'без\s+НДС|с\s+НДС|включая\s+НДС|НДС\s+(?:включ[её]н|не\s+облагается)',re.I)
+    def normalized(value):
+        return re.sub(r'[^\w]+','',value.casefold().replace('ё','е').replace('×','х'))
+    by_line={p.get('line',i):p for i,p in enumerate(positions,1)}
+    lines=body.splitlines()
+    shared='\n'.join(line for line in lines if re.fullmatch(
+        r'\s*(?:(?:все\s+)?цены\s+(?:(?:указаны|приведены)\s+)?)?(?:'+vat_pattern.pattern+r')\s*[.!]?\s*',line,re.I))
+    shared_vat=list(vat_pattern.finditer(shared))
+    global_vat=shared_vat[0][0] if len({m[0].casefold() for m in shared_vat})==1 else ''
     delivery=re.search(r'[^\n]*доставк[^\n]*',body,re.I)
-    return [{'line':1,'price':match[1],'unit':match[2].replace(' ',''),'vat':vat[0] if vat else '',
+    candidates={}
+    for quote in lines:
+        matches=list(pattern.finditer(quote))
+        if not matches or len(quote)>4000: continue
+        if re.search(r'\b(?:итого|общая стоимость|за весь|за комплекс|доставк\w*)\b',quote[:matches[0].start()],re.I): continue
+        marker=re.match(r'^\s*(?:(?:поз(?:иция)?\.?|№)\s*)?(\d+)\s*[.):—-](?!\d)\s*',quote,re.I)
+        named=[number for number,p in by_line.items() if normalized(p.get('name','')) and normalized(p['name']) in normalized(quote[:matches[0].start()])]
+        number=int(marker[1]) if marker else named[0] if len(named)==1 else next(iter(by_line)) if len(positions)==1 else None
+        if number not in by_line or marker and named and number not in named: continue
+        # Repeated or alternative prices for one position cannot be chosen.
+        if number in candidates or len(matches)!=1:
+            candidates[number]=None
+            continue
+        match=matches[0]
+        vats=list(vat_pattern.finditer(quote))
+        vat=vats[0][0] if len({m[0].casefold() for m in vats})==1 else global_vat if not vats else ''
+        availability=re.search(r'[^\n]*\b(?:в наличии|под заказ|нет в наличии)[^\n]*',quote if len(positions)>1 else body,re.I)
+        candidates[number]={'line':number,'price':match[1],'unit':match[2].replace(' ',''),'vat':vat,
              'availability':availability[0][:400] if availability else '',
              'delivery':delivery[0][:600] if delivery else '',
-             'exact_match':False,'quote':quote}]
+             'exact_match':False,'quote':quote}
+    return [item for item in candidates.values() if item is not None]
 
 
 def message(snapshot,job,account,now,timezone):

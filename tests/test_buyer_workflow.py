@@ -133,6 +133,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(rows[0]['buyer_quotes'][0]['price_kopecks'],12050)
         self.assertEqual(rows[0]['estimate_unit'],12345678);self.assertFalse(rows[1]['buyer_quotes'])
 
+    def test_script_grouped_prices_roundtrip_by_position_and_repeat_without_duplicates(self):
+        from autobot.buyer_mailru_inbox import prices
+        key,claim=self.sent()
+        self.assertEqual([p['name'] for p in claim['positions']],['Кабель ВВГнг 3х2,5','Светильник 40 Вт'])
+        raw='2. Светильник 40 Вт — 3000 руб/шт, без НДС\n1. Кабель ВВГнг 3х2,5 — 120,50 руб/м, с НДС'
+        result=self.result();result['messages'][0].update(text=raw,prices=prices(raw,claim['positions']))
+        self.assertTrue(replies.update(key,'reader',claim['token'],result))
+        replies.request_check(TID,key);again=replies.claim('reader')
+        self.assertTrue(replies.update(key,'reader',again['token'],result))
+        data=replies.listing(TID)
+        self.assertEqual(len(data['messages']),1)
+        self.assertEqual(len(data['messages'][0]['prices']),2)
+        rows=copy.deepcopy(self.source['positions']);replies.annotate(TID,rows)
+        self.assertEqual([r['buyer_quotes'][0]['price_kopecks'] for r in rows[:2]],[12050,300000])
+        self.assertTrue(all(r['buyer_quotes'][0]['state']=='review' for r in rows[:2]))
+        self.assertTrue(all(r['estimate_unit']==12345678 for r in rows))
+        self.assertFalse(rows[2]['buyer_quotes'])
+
     def test_same_reply_is_not_inserted_twice_and_changed_message_rejected(self):
         key,claim=self.sent();result=self.result();replies.update(key,'reader',claim['token'],result)
         replies.request_check(TID,key);second=replies.claim('reader');replies.update(key,'reader',second['token'],result)

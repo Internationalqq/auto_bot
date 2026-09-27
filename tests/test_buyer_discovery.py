@@ -283,6 +283,20 @@ class DiscoveryTests(unittest.TestCase):
         for url in ('file:///etc/passwd','http://user:pass@example.org','http://example.org:8080/','https://a.example\\@localhost/'):
             with self.subTest(url=url),self.assertRaises(BuyerError): discovery.public_url(url)
 
+    def test_contact_network_failure_is_not_an_absent_email(self):
+        supplier={'email':'sales@example.org','evidence_pages':[{'url':'https://supplier.example/'}]}
+        with patch.object(discovery,'fetch_html',side_effect=TimeoutError('read timed out')):
+            with self.assertRaisesRegex(BuyerError,'временно недоступна'):discovery.verify_contact(supplier)
+        with patch.object(discovery,'fetch_html',return_value=('https://supplier.example/','Контакты info@example.org')):
+            with self.assertRaisesRegex(BuyerError,'больше не подтверждается'):discovery.verify_contact(supplier)
+        with patch.object(discovery,'fetch_html',return_value=('https://ruscable.ru/','Контакты sales@example.org')):
+            with self.assertRaisesRegex(BuyerError,'Справочник или площадка'):discovery.verify_contact(supplier)
+
+    def test_contact_can_be_proven_by_another_page_after_a_timeout(self):
+        supplier={'email':'sales@example.org','evidence_pages':[{'url':'https://supplier.example/'},{'url':'https://supplier.example/contacts'}]}
+        with patch.object(discovery,'fetch_html',side_effect=[TimeoutError(),('https://supplier.example/contacts','<a href="mailto:sales@example.org">Отдел продаж</a>')]):
+            self.assertEqual(discovery.verify_contact(supplier),'sales@example.org')
+
     def test_private_dns_never_connects(self):
         with patch.object(discovery.socket,'getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',80))]),patch.object(discovery.socket,'create_connection') as connect:
             with self.assertRaises(BuyerError):discovery.fetch_html('http://supplier.example')

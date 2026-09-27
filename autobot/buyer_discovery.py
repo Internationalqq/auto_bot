@@ -339,11 +339,17 @@ def inspect(task, source, *, fetch=fetch_html):
 def verify_contact(supplier):
     email = supplier.get('email')
     if not email: raise BuyerError('Нет опубликованного email')
+    failures = []
     for page in supplier.get('evidence_pages', [])[:4]:
         try:
             url, html = fetch_html(page['url'])
             if email in page_facts(url, html)['emails']: return email
-        except (BuyerError, OSError): continue
+        except OSError:
+            failures.append('часть страниц сайта временно недоступна; повторите проверку позже')
+        except BuyerError as error:
+            failures.append(str(error))
+    if failures:
+        raise BuyerError('Не удалось проверить email: ' + '; '.join(dict.fromkeys(failures)))
     raise BuyerError('Email больше не подтверждается на сайте')
 
 

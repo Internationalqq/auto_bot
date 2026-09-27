@@ -99,6 +99,50 @@ class InboxScriptTests(unittest.TestCase):
         old=view();old['elements'][6]['label']='Вчера, 18:30'
         with self.assertRaises(BuyerError):inbox.message(old,JOB,'buyer@mail.ru',NOW,'Europe/Moscow')
 
+    def test_grouped_reply_keeps_request_numbers_and_partial_results(self):
+        positions=[{'line':1,'name':'Кабель ВВГнг 3х2,5'},{'line':2,'name':'Муфта концевая КВТ'},{'line':3,'name':'Монтаж светильника'}]
+        body='3. Монтаж светильника — 350 руб/шт, без НДС\n1. Кабель ВВГнг 3х2,5 — 120,50 ₽/м, с НДС\n2. Муфта концевая КВТ — нет в наличии'
+        result=inbox.prices(body,positions)
+        self.assertEqual([p['line'] for p in result],[3,1])
+        self.assertEqual([p['vat'] for p in result],['без НДС','с НДС'])
+        self.assertTrue(all(p['quote'] in body and p['exact_match'] is False for p in result))
+
+    def test_grouped_reply_requires_number_or_unique_full_name(self):
+        positions=[{'line':1,'name':'Кабель АВБбШв 4х150'},{'line':2,'name':'Муфта КВТ'}]
+        self.assertEqual(inbox.prices('500 руб/м\n600 руб/шт',positions),[])
+        result=inbox.prices('Муфта КВТ: 600 руб/шт\nКабель АВБбШв 4х150: 500 руб/м',positions)
+        self.assertEqual([p['line'] for p in result],[2,1])
+        self.assertEqual(inbox.prices('1. Муфта КВТ — 600 руб/шт',positions),[])
+        self.assertEqual(inbox.prices('9. Что-то другое — 600 руб/шт',positions),[])
+
+    def test_grouped_alternatives_do_not_hide_other_unambiguous_prices(self):
+        positions=[{'line':1,'name':'Кабель'},{'line':2,'name':'Муфта'}]
+        body='1. Кабель 500 руб/м\n1. Другой вариант 600 руб/м\n2. Муфта 800 руб/шт'
+        self.assertEqual([p['line'] for p in inbox.prices(body,positions)],[2])
+        self.assertEqual(inbox.prices('1. Кабель 500 руб/м или 600 руб/м',positions),[])
+
+    def test_grouped_vat_is_not_borrowed_from_another_position(self):
+        positions=[{'line':1,'name':'Кабель'},{'line':2,'name':'Муфта'}]
+        result=inbox.prices('1. Кабель 500 руб/м с НДС\n2. Муфта 600 руб/шт',positions)
+        self.assertEqual([p['vat'] for p in result],['с НДС',''])
+        result=inbox.prices('Все цены с НДС\n1. Кабель 500 руб/м\n2. Муфта 600 руб/шт',positions)
+        self.assertEqual([p['vat'] for p in result],['с НДС','с НДС'])
+        result=inbox.prices('1. Кабель 500 руб/м\n2. Муфта: стоимость уточним, без НДС\nДоставка с НДС',positions)
+        self.assertEqual([p['vat'] for p in result],[''])
+
+    def test_totals_delivery_and_quoted_prices_never_become_item_prices(self):
+        positions=[{'line':1,'name':'Кабель'},{'line':2,'name':'Муфта'}]
+        self.assertEqual(inbox.prices('Итого за комплекс 1000 руб/шт\nДоставка 200 руб/м\n> 1. Кабель 500 руб/м',positions),[])
+        self.assertEqual(inbox.prices('Доставка 200 руб/м',JOB['positions']),[])
+        result=inbox.prices('500.25 руб/м. Доставка завтра.',JOB['positions'])
+        self.assertEqual(result[0]['price'],'500.25')
+
+    def test_edited_grouped_request_retains_reply_but_no_price_mapping(self):
+        job={**JOB,'mapping_trusted':False,'positions':JOB['positions']*2}
+        result=inbox.message(view(body='1. Кабель 500 руб/м\n2. Муфта 100 руб/шт'),job,'buyer@mail.ru',NOW,'Europe/Moscow')
+        self.assertEqual(result['prices'],[])
+        self.assertIn('Муфта',result['text'])
+
     def test_exact_calendar_date_and_unknown_date(self):
         self.assertEqual(inbox.received_time('26 сентября 2026, 18:30',NOW,'Europe/Moscow'),NOW)
         with self.assertRaises(BuyerError):inbox.received_time('Неизвестно',NOW,'Europe/Moscow')
