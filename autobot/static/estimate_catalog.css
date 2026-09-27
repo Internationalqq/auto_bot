@@ -41,8 +41,9 @@ body.estimates-index-page { margin: 0; background: #fff; --ab-muted: #596b80; --
 .estimate-card { border-bottom: 1px solid var(--ab-line); }.estimate-card:last-child { border-bottom: 0; }
 .estimate-card:hover { background: #fafcff; }.estimate-card.is-selected { background: #f1f6fd; }
 .estimate-select { display: flex; align-items: center; }.estimate-select input { width: 17px; height: 17px; accent-color: #2563eb; }
-.estimate-card-name { display: flex; gap: 12px; min-width: 0; align-items: start; }
-
+.estimate-card-name { display: flex; gap: 12px; min-width: 0; align-items: center; }
+.estimate-card-name > .ui-icon { color: #4575a7; }
+.estimate-card-name > div { min-width: 0; }
 .estimate-card-name h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .estimate-card-name h3 a { color: #163453; text-decoration: none; }.estimate-card-name h3 a:hover { color: #2563eb; text-decoration: underline; }
 .estimate-card-name p { margin: 4px 0; font-size: 12px; line-height: 1.4; color: var(--ab-muted); overflow-wrap: anywhere; }
