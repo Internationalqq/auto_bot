@@ -35,7 +35,7 @@
 .buyer-find { width: min(100%, 300px); }
 .buyer-mail-note { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 12px; }
 .buyer-last-attempt { margin: 8px 0 12px; font-size: 12px; line-height: 1.5; color: #865008; }
-.buyer-chats { display: grid; grid-template-columns: minmax(240px, 31%) minmax(0, 1fr); height: clamp(500px, 74vh, 740px); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; }
+.buyer-chats { display: grid; grid-template-columns: minmax(240px, 31%) minmax(0, 1fr); height: clamp(500px, 74vh, 740px); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; scroll-margin-top: 72px; }
 .buyer-chats [hidden] { display: none; }
 .buyer-chat-list, .buyer-chat-timeline, .buyer-chat-info { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #a5b2c2 transparent; }
 .buyer-chat-list { border-right: 1px solid var(--line); padding: 6px; }
