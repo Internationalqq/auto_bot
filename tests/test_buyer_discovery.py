@@ -196,6 +196,14 @@ class DiscoveryTests(unittest.TestCase):
         offer='<h1>Электромонтажные работы</h1>Оказываем услуги в Москве. Оставьте заявку. office@supplier.example'
         self.assertEqual(discovery.inspect(task,data,fetch=lambda url:(url,offer))['position_keys'],['work'])
 
+    def test_unknown_directory_heading_cannot_publish_its_support_contacts(self):
+        for heading in ('Лучшие компании по электромонтажным работам в Ярославле: 73 адресов, телефоны и отзывы',
+                        'Каталог строительных компаний Ярославля'):
+            with self.subTest(heading=heading),self.assertRaisesRegex(BuyerError,'контакты площадки'):
+                discovery.page_facts('https://unknown.example/',f'<h1>{heading}</h1>Оказываем услуги. support@unknown.example')
+        facts=discovery.page_facts('https://supplier.example/','<h1>Компания Спектр: электромонтаж, отзывы</h1>Оказываем услуги. office@supplier.example')
+        self.assertEqual(facts['emails'],['office@supplier.example'])
+
     def test_new_qualification_policy_requires_new_run_and_blocks_old_send(self):
         run_id=self.pipeline()
         job=jobs.jobs(self.source['tender_id'])[0]

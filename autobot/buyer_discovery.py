@@ -245,6 +245,10 @@ def page_facts(url, html):
     for node in soup(['script', 'style', 'noscript']): node.decompose()
     text = soup.get_text(' ', strip=True)
     heading = ' '.join(node.get_text(' ',strip=True) for node in soup.select('title,h1'))
+    if re.search(r'(?:каталог|справочник|рейтинг|список)\s+(?:\w+\s+){0,3}(?:компани|организаци|фирм|мастер|исполнител)|'
+                 r'лучши[еех]\s+(?:компани|организаци|мастер|исполнител)|'
+                 r'\b\d+\s+(?:адресов|компаний|организаций|фирм|мастеров)\b.{0,120}(?:отзыв|телефон|рейтинг)',heading,re.I):
+        raise BuyerError('Справочник или подборка компаний: контакты площадки не являются контактами поставщика')
     main = soup.find('main') or soup.find('article') or soup.body or soup
     content = BeautifulSoup(str(main),'html.parser')
     for node in content(['header','nav','footer','aside']): node.decompose()
