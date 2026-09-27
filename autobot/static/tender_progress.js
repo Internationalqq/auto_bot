@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const current = location.pathname.match(/^\/tenders\/(\d{8,25})$/)?.[1];
+  const current = location.pathname.match(/^\/(?:autobot\/)?tenders\/(\d{8,25})$/)?.[1];
   function record(tid, action) {
     fetch(`/api/tenders/${tid}/activity`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action}),keepalive:true}).catch(() => {});
   }

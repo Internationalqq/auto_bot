@@ -152,7 +152,9 @@ def message(snapshot,job,account,now,timezone):
     if len(set(subjects))!=1: raise BuyerError('Тема письма не подтверждает метку обращения')
     subject=subjects[0]
     if not re.search(r'\[AB-',job['subject']) and senders[0]!=job['recipient'].lower():
-        raise BuyerError('У старого обращения не совпадает отправитель')
+        # Legacy requests share a subject across suppliers. This is another
+        # conversation, not a reply from the requested recipient.
+        return None
     if account.casefold() not in content[to+1].casefold():
         raise BuyerError('Письмо адресовано другому ящику')
     received=received_time(content[to+2],now,timezone)

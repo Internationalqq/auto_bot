@@ -71,6 +71,12 @@ class InboxScriptTests(unittest.TestCase):
     def test_outgoing_is_never_counted_as_a_supplier_reply(self):
         self.assertIsNone(inbox.message(view(sender='buyer@mail.ru'),JOB,'buyer@mail.ru',NOW,'Europe/Moscow'))
 
+    def test_legacy_shared_subject_does_not_mix_supplier_conversations(self):
+        job={**JOB,'subject':'Щебень 20–40 — наличие и цена'}
+        self.assertIsNone(inbox.message(view(sender='other@example.org',subject=job['subject']),job,'buyer@mail.ru',NOW,'Europe/Moscow'))
+        reply=inbox.message(view(subject=job['subject']),job,'buyer@mail.ru',NOW,'Europe/Moscow')
+        self.assertEqual(reply['sender'],JOB['recipient'])
+
     def test_reply_preserves_header_date_and_literal_price_with_review(self):
         result=inbox.message(view(),JOB,'buyer@mail.ru',NOW,'Europe/Moscow')
         self.assertEqual(result['received_at'],NOW)

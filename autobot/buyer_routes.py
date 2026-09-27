@@ -189,6 +189,13 @@ def asset(ext):
     return send_from_directory(Path(__file__).parent / 'static', 'buyer.' + ext)
 
 
+@blueprint.get('/tenders/progress.<ext>')
+def progress_asset(ext):
+    if ext not in {'js', 'css'}:
+        return '', 404
+    return send_from_directory(Path(__file__).parent / 'static', 'tender_progress.' + ext)
+
+
 @blueprint.get('/api/tenders/<tid>/buyer/image/<supplier_id>')
 @user_route
 def supplier_image(tid, supplier_id):
