@@ -35,10 +35,10 @@ const document={hidden:false,createElement:tag=>new Element(tag),querySelector:s
 let api;
 let now=1700000000000;
 class Clock extends Date { static now() { return now; } }
-const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(\);\r?\n  setInterval/,'  capture({companyList, correspondence, renderCompanies, relativeAge, render, conversationEvents, chatState});\n  setInterval');
+const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(\);\r?\n  setInterval/,'  capture({companyList, correspondence, renderCompanies, relativeAge, render, conversationEvents, chatState, draftState});\n  setInterval');
 assert.ok(source.includes('capture({companyList'));
 const storage=new Map();
-const context={document,console,Date:Clock,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch(){throw new Error('Offline test');},capture:value=>api=value};
+const context={document,console,URL,Date:Clock,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch(){throw new Error('Offline test');},capture:value=>api=value};
 context.crypto=require('node:crypto').webcrypto;
 vm.runInNewContext(source,context);
 const position={position_key:'cable',name:'Кабель 4×150',quantity:351.9,unit:'пм'};
@@ -50,6 +50,16 @@ const outbox=[{id:'old-mail',draft_job_id:'old',recipient:'new@example.org',crea
   {id:'legacy-mail',draft_job_id:'legacy',recipient:'legacy@example.org',created_at:50,updated_at:60,status:'uncertain'}];
 const reply={id:'reply',outbound_id:'new-mail',received_at:300,sender:'manager@example.org',raw_text:'Уточните адрес доставки. <img src=x onerror=alert(1)>',prices:[]};
 const replies={checks:{'new-mail':{status:'checked',checked_at:310}},messages:[reply]};
+const archived={...job('archived','sales@example.org'),can_send:true,supplier:{id:'found',email:'sales@example.org',url:'https://regional.example.org/'},result:{drafts:[{position_keys:['cable']}],questions:[]}};
+assert.match(api.draftState(archived,[archived],[],[],{messages:[]}).label,/отправка не запускалась/);
+assert.match(api.draftState({...archived,supplier:{url:'https://2gis.ru/city',email:''}},[],[],[],{messages:[]}).label,/Справочник/);
+assert.match(api.draftState({...archived,supplier:{email:''}},[],[],[],{messages:[]}).label,/Нужен email/);
+assert.match(api.draftState(archived,[],[],[{draft_job_id:'archived',status:'completed',contacts:[{error:'Email не подтверждается'}]}],{messages:[]}).detail,/Email не подтверждается/);
+const previous={...archived,id:'previous',supplier:{id:'old',url:'https://example.org/',email:'sales+old@example.org'}};
+const previousSend={id:'sent-request',draft_job_id:'previous',draft_index:0,status:'sent',recipient:'sales+old@example.org'};
+assert.equal(api.draftState(archived,[archived,previous],[previousSend],[],{messages:[]}).related,'sent-request','A regional website and rotating email alias do not disguise the existing request');
+assert.equal(api.draftState({...archived,positions:[{position_key:'other'}]},[previous],[previousSend],[],{messages:[]}).related,undefined,'A different position remains a new draft');
+assert.equal(api.draftState(archived,[{...previous,supplier:{id:'different',url:'https://another.org'}}],[previousSend],[],{messages:[]}).related,undefined,'Different company must not be marked a duplicate');
 // Matching uses the sent recipient, not a stale contact from the supplier website.
 const actualReport={...report,companies:[{...company,contacts:[{channel:'email',address:'new@example.org'}]}]};
 const original=JSON.stringify(actualReport);

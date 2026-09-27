@@ -41,6 +41,35 @@
     if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось получить задания. Нажмите «Обновить».');
     return data;
   }
+  function draftState(job, jobs, outbox, campaigns, replies) {
+    const own = outbox.filter(item => item.draft_job_id === job.id);
+    const latest = own.at(-1);
+    if ((replies.messages || []).some(reply => own.some(item => item.id === reply.outbound_id))) return {label:'Ответ получен'};
+    if (latest) return {label:sendLabels[latest.status] || 'Статус уточняется', detail:latest.receipt?.detail || ''};
+    if (!job.result) return {label:labels[job.status] || 'Обращение не подготовлено'};
+    const campaign = campaigns.find(item => item.draft_job_id === job.id);
+    if (campaign && ['queued','checking'].includes(campaign.status)) return {label:'Проверяем контакт…'};
+    const failure = campaign?.contacts?.find(contact => !contact.outbox_id && contact.error)?.error || campaign?.error;
+    if (failure) return {label:'Контакт не прошёл проверку', detail:failure};
+    if (!job.can_send) return {label:'Старый формат обращения', detail:'Выберите позиции и подготовьте обращение заново.'};
+    const supplier = job.supplier || {};
+    const host = address => { try { return new URL(address).hostname.toLowerCase().replace(/^www\./,''); } catch (_) { return ''; } };
+    const domain = host(supplier.url);
+    const directory = ['2gis.ru','spravker.ru','orgsprav.com','rusprofile.ru','optsbyt.ru','metaprom.ru','vsem-podryad.ru','ruscable.ru'].some(value => domain === value || domain.endsWith('.'+value));
+    if (directory) return {label:'Справочник · нужен контакт компании', detail:'Сохранена страница справочника. Для отправки нужен email самого поставщика.'};
+    const keys = job.positions.map(p => p.position_key);
+    const duplicate = outbox.find(item => {
+      if (!['queued','sending','sent','uncertain'].includes(item.status)) return false;
+      const other = jobs.find(candidate => candidate.id === item.draft_job_id);
+      const otherSupplier = other?.supplier || {}, otherDomain = host(otherSupplier.url);
+      const same = supplier.email && supplier.email === item.recipient || supplier.id && supplier.id === otherSupplier.id || domain && otherDomain && (domain === otherDomain || domain.endsWith('.'+otherDomain) || otherDomain.endsWith('.'+domain));
+      const requested = other?.result?.drafts?.[item.draft_index]?.position_keys || [];
+      return same && keys.length && keys.every(key => requested.includes(key));
+    });
+    if (duplicate) return {label:duplicate.status === 'sent' ? 'Такие позиции уже отправлены' : 'Уже есть запрос · '+sendLabels[duplicate.status], detail:'Для этой компании есть запрос по всем позициям этого текста. Проверьте существующую переписку.', related:duplicate.id};
+    if (job.supplier && !supplier.email) return {label:'Нужен email поставщика', detail:'Текст подготовлен, но адрес для отправки не найден.'};
+    return {label:'Черновик · отправка не запускалась', detail:'Текст сохранён. Проверка контакта и отправка запускаются кнопкой внутри обращения.'};
+  }
   function render(jobs, outbox = [], campaigns = [], replies = {checks:{},messages:[]}, report = null) {
     const signature = JSON.stringify([jobs, outbox, campaigns, replies, report]);
     if (signature === last) { updateRelativeTimes(); return; }
@@ -62,12 +91,19 @@
       const summary = node('summary');
       const ownOutbox = outbox.filter(item => item.draft_job_id === job.id);
       const latestSend = ownOutbox.at(-1);
-      const hasReply = (replies.messages || []).some(reply => ownOutbox.some(item => item.id === reply.outbound_id));
-      const latestCampaign = campaigns.find(c => c.draft_job_id === job.id);
-      const contactFailure = latestCampaign?.contacts?.find(c => !c.outbox_id && c.error)?.error;
-      const supplierState = hasReply ? 'Ответ получен' : latestSend ? sendLabels[latestSend.status] : contactFailure ? `Не отправлено: ${contactFailure}` : latestCampaign && ['queued','checking'].includes(latestCampaign.status) ? 'Проверяем контакт…' : 'Запрос готов';
-      summary.append(node('strong', job.position_name), node('span', `${job.supplier ? supplierState+' · Email · '+(latestSend?.recipient || job.supplier.email) : labels[job.status] || 'Неизвестное состояние'} · Позиций: ${job.positions.length}`));
+      const readiness = draftState(job,jobs,outbox,campaigns,replies);
+      const contact = latestSend?.recipient || job.supplier?.email;
+      summary.append(node('strong', job.position_name), node('span', [readiness.label,contact,`Позиций: ${job.positions.length}`].filter(Boolean).join(' · ')));
       group.append(summary);
+      if (readiness.detail) group.append(node('p',readiness.detail,'buyer-send-feedback'));
+      if (readiness.related) {
+        const existing = node('button','Открыть переписку','btn ghost'); existing.type = 'button';
+        existing.addEventListener('click', () => {
+          const entry = chatEntries.find(item => item.company.correspondence_ids?.includes(readiness.related));
+          if (entry) { selectChat(entry.company.id,{open:true,focus:true}); chatShell.scrollIntoView({block:'start',behavior:'instant'}); }
+        });
+        group.append(existing);
+      }
       if (job.result) {
         job.result.drafts.forEach((draft, index) => {
           const key = `${job.id}-${index}`;
@@ -655,7 +691,7 @@
     if (remaining.length) {
       const archive = node('details',null,'buyer-archive'); archive.dataset.key = 'previous'; archive.open = expanded.has('previous');
       archive.append(node('summary',`Архив подготовленных обращений (${remaining.length})`));
-      archive.append(node('p','Тексты из прошлых подборов. Это не очередь отправки: часть обращений повторяется или требует проверки контакта.', 'buyer-send-feedback'));
+      archive.append(node('p','Тексты из прошлых подборов. У каждого указано, отправлялся ли запрос и что нужно для отправки.', 'buyer-send-feedback'));
       remaining.forEach(([,group]) => archive.append(group)); list.append(archive);
     }
     if (!companies.length && !remaining.length) {

@@ -64,14 +64,15 @@
 .buyer-chat-back { display: none; align-items: center; gap: 6px; border: 0; padding: 8px 0; min-height: 44px; background: transparent; color: var(--blue); cursor: pointer; font-size: 13px; }
 .buyer-chat-back::before { content: ''; width: 7px; height: 7px; border-left: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
 .buyer-chat-timeline { display: flex; flex-direction: column; align-items: start; gap: 14px; padding: 20px; background: #f3f6fa; min-height: 0; }
-.buyer-chat-day { align-self: center; margin: 4px 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; }
+.buyer-chat-day { align-self: center; margin: 8px 0; padding: 5px 12px; color: #45617e; background: #fff; border-radius: 6px; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: center; }
 .buyer-message { flex: 0 0 auto; min-width: 0; max-width: min(88%, 70ch); box-sizing: border-box; padding: 12px 14px; border-radius: 12px 12px 12px 3px; background: #fff; overflow-wrap: anywhere; }
 .buyer-message-out { align-self: end; border-radius: 12px 12px 3px 12px; background: #e1edfc; }
 .buyer-message-pending { background: #fff5e5; }
 .buyer-message-author { display: block; color: #3a526e; font-size: 11px; font-weight: 650; margin-bottom: 6px; }
 .buyer-message-subject { margin: 0 0 8px; font-size: 13px; line-height: 1.45; font-weight: 650; }
 .buyer-message-text { margin: 0; white-space: pre-wrap; user-select: text; font-size: 13px; line-height: 1.6; }
-.buyer-message-meta { display: flex; justify-content: end; flex-wrap: wrap; gap: 4px 8px; color: #45617e; font-size: 10px; line-height: 1.5; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.buyer-message-meta { display: flex; justify-content: end; flex-wrap: wrap; gap: 5px 10px; color: #45617e; font-size: 13px; line-height: 1.5; margin-top: 12px; font-variant-numeric: tabular-nums; }
+.buyer-message-meta time { font-weight: 600; }
 .buyer-message-in .buyer-message-meta { color: var(--muted); }
 .buyer-message-pending :is(.buyer-message-meta, .buyer-message-author, .buyer-message-reason) { color: #805009; }
 .buyer-message-reason, .buyer-message-source { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }

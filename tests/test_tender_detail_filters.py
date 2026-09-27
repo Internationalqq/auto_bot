@@ -165,23 +165,22 @@ def test_found_price_filter_requires_a_positive_offer_on_a_priceable_row(tmp_pat
     assert page.select_one('[data-bucket-filter="processed"]')
 
 
-def test_position_table_omits_search_strategy_and_sources_stay_in_their_column():
+def test_position_offers_open_a_dialog_and_keep_source_evidence():
     package_dir = Path(tender_detail.__file__).parent
     template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    styles = (package_dir / "static" / "tender_detail.css").read_text(encoding="utf-8")
-
     assert 'class="strategy"' not in template
     assert "Как ищем цену" not in template
-    assert 'class="source-details"' in template
-    assert ".source-list { width: 100%; min-width: 0;" in styles
-    assert "width: 360px" not in styles
+    assert 'data-position-offers' in template and 'aria-haspopup="dialog"' in template
+    assert '<dialog class="source-preview-drawer"' in template
+    assert 'data-source-evidence="{{ source.evidence }}"' in template
+    assert 'data-source-audit="{{ source.audit_record_path }}"' in template
 
 
-def test_tender_header_has_a_named_link_to_return_to_the_board():
+def test_tender_keeps_shared_navigation_to_the_board_without_duplicate_breadcrumb():
     package_dir = Path(tender_detail.__file__).parent
     template = (package_dir / "templates" / "tender_detail.html").read_text(encoding="utf-8")
-    assert 'href="/tenders" aria-label="Назад к списку тендеров"' in template
-    assert '← Все тендеры</a>' in template
+    assert "workspace_nav('tenders')" in template
+    assert '← Все тендеры</a>' not in template
 
 
 def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp_path, monkeypatch):
@@ -199,11 +198,15 @@ def test_price_columns_have_accessible_labels_and_preserve_position_identity(tmp
         html = web_ui.render_template('tender_detail.html', tender=detail)
     page = BeautifulSoup(html, 'html.parser')
     table = page.select_one('#positions table')
-    assert len(table.select('thead th')) == 8
+    assert len(table.select('thead th')) == 9
     row = table.select_one('[data-position-row]')
-    assert len(row.select(':scope > td')) == 8
+    assert len(row.select(':scope > td')) == 9
     assert row.select_one('input[data-agent-position]')['value'] == detail['positions'][0]['position_key']
     assert '100 ₽' in row.select_one('.col-estimate').get_text()
+    assert '200 ₽' in row.select_one('.col-total').get_text()
+    assert '200 ₽' not in row.select_one('.col-estimate').get_text()
+    assert page.select_one('.position-filters').find_parent('details') is None
+    assert page.select_one('.customer').name != 'details'
     assert 'Нет сопоставимой цены' in row.select_one('.col-market').get_text()
     assert 'Ждём цену рынка' in row.select_one('.col-difference').get_text()
     assert row.select_one('a')['href'].startswith('/tenders/' + tid + '/review?position_id=')
