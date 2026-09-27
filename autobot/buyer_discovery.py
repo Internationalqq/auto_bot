@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 _DIRECTORY_HOSTS = frozenset({
     '2gis.ru', 'spravker.ru', 'orgsprav.com', 'rusprofile.ru', 'optsbyt.ru',
     'metaprom.ru', 'vsem-podryad.ru', 'ruscable.ru',
+    'profi.ru', 'zoon.ru', 'mir76.ru', 'bizorg.su', 'prom.ua',
     'wikipedia.org', 'vc.ru', 'dtf.ru',
 })
 _EMAIL = re.compile(r'[\w.%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}')
@@ -155,41 +156,74 @@ def search_api(query):
         raise BuyerError('Search API вернул некорректный ответ') from None
 
 
+def search_relevant(item, query):
+    """Discard off-topic engine fallbacks; snippets never prove a price."""
+    from autobot.real_market_scraper import _search_tokens
+    def canonical(value):
+        value=value.casefold().replace('ё','е').replace('×','х').translate(str.maketrans('abcehkmoptxyu','авсенкмортхуу'))
+        return re.sub(r'[^\w]','',value)
+    identity=item.title+' '+unquote(item.url)
+    exact=re.findall(r'"([^"]+)"',query)
+    if exact:
+        # A snippet may contain a site's entire product menu. A different
+        # product title must not pass just because the menu mentions our SKU.
+        return all(canonical(term) in canonical(identity) for term in exact)
+    evidence=identity+' '+getattr(item,'snippet','')
+    topic=re.sub(r'(?:^|\s)site:\S+','',query,flags=re.I)
+    topic=re.split(r'\b(?:купить|поставщик|подрядчик)\b',topic,maxsplit=1,flags=re.I)[0]
+    wanted={word[:5] for word in _search_tokens(topic) if len(word)>=4 and word not in ('работ','работы','услуг','услуги')}
+    found={word[:5] for word in _search_tokens(evidence)}
+    return not wanted or bool(wanted & found)
+
+
 def search(query):
     # Reuse the bounded provider lock, but retain search order, not price sorting.
     from autobot.real_market_scraper import _ddgs_text, _parse_bing_rss
     import requests
-    found, error = search_api(query), ''
-    official = found is not None
-    if found is None:
-        found = []
+    links, seen = [], set()
+    unrelated = False
+    site = re.search(r'(?:^|\s)site:([a-z0-9.-]+)', query, re.I)
+    def accept(found):
+        nonlocal unrelated
+        for item in found:
+            if len(links) >= 10: break
+            try: url = public_url(item.url)
+            except BuyerError: continue
+            if directory_source(url): continue
+            host = urlsplit(url).hostname.removeprefix('www.')
+            if site and host != site[1].lower() and not host.endswith('.'+site[1].lower()): continue
+            if not search_relevant(item,query):
+                unrelated = True
+                continue
+            identity = url if host == 'avito.ru' or host.endswith('.avito.ru') else host
+            if identity in seen: continue
+            seen.add(identity)
+            links.append({'url': url, 'title': item.title[:240]})
+
+    found = search_api(query)
+    if found is not None:
+        accept(found)
+        return links
+    # Count usable distinct sources, not raw hits: directories, duplicate
+    # domains and ignored site: restrictions must not suppress the fallback.
+    error = ''
+    for backend in ('brave', 'yandex'):
+        if len(links) >= 10: return links
         try:
             from ddgs import DDGS
-            items = _ddgs_text(DDGS, query, timeout=12, region='ru-ru', max_results=20, backend='brave')
-            found = [SimpleNamespace(url=item.get('href') or item.get('url') or '', title=item.get('title') or '') for item in items]
+            items = _ddgs_text(DDGS, query, timeout=8, region='ru-ru', max_results=20, backend=backend)
+            accept(SimpleNamespace(url=item.get('href') or item.get('url') or '', title=item.get('title') or '',snippet=item.get('body') or item.get('snippet') or '') for item in items)
         except Exception:
-            error = 'резервный поисковик не ответил'
-    if len(found) < 10 and not official:
+            error = 'часть бесплатных поисковиков не ответила'
+    if len(links) < 10:
         try:
             response = requests.get('https://www.bing.com/search', params={'format':'rss','q':query}, timeout=(4, 8))
             response.raise_for_status()
-            found.extend(_parse_bing_rss(response.text[:1_000_000], max_results=20))
+            accept(_parse_bing_rss(response.text[:1_000_000], max_results=20))
         except requests.RequestException:
-            if not found: raise BuyerError('Поисковики временно недоступны. Поиск сохранён для повтора') from None
-    links, seen = [], set()
-    site = re.search(r'(?:^|\s)site:([a-z0-9.-]+)', query, re.I)
-    for item in found:
-        try: url = public_url(item.url)
-        except BuyerError: continue
-        if directory_source(url): continue
-        host = urlsplit(url).hostname.removeprefix('www.')
-        if site and host != site[1].lower() and not host.endswith('.'+site[1].lower()): continue
-        identity = url if host == 'avito.ru' else host
-        if identity in seen: continue
-        seen.add(identity)
-        links.append({'url': url, 'title': item.title[:240]})
-        if len(links) >= 10: break
-    if not links and error: raise BuyerError('Поиск временно недоступен: '+error[:250])
+            error = 'часть бесплатных поисковиков не ответила'
+    if not links and (error or unrelated):
+        raise BuyerError('Поиск временно недоступен: '+(error or 'поисковики вернули страницы не по запросу'))
     return links
 
 

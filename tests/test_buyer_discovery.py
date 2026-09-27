@@ -154,10 +154,10 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_search_keeps_ten_supplier_domains_after_excluding_directories(self):
         found = [SimpleNamespace(url='https://yar.spravker.ru/kabel/',title='Каталог')]
-        found += [SimpleNamespace(url=f'https://supplier{i}.example/',title=str(i)) for i in range(12)]
+        found += [SimpleNamespace(url=f'https://supplier{i}.example/',title='Кабель '+str(i)) for i in range(12)]
         with patch.object(discovery,'search_api',return_value=found):
             links=discovery.search('кабель')
-        self.assertEqual([x['title'] for x in links],[str(i) for i in range(10)])
+        self.assertEqual([x['title'] for x in links],['Кабель '+str(i) for i in range(10)])
 
     def test_avito_query_never_accepts_a_providers_unrelated_fallback_results(self):
         found=[SimpleNamespace(url=url,title='Электрик') for url in (
@@ -318,11 +318,70 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_ten_distinct_sources_and_no_snippet_price(self):
         from autobot import real_market_scraper as scraper
-        offers=[{'href':f'https://s{i}.example/product','title':f'Supplier {i}','body':'Цена 1 руб'} for i in range(12)]
+        offers=[{'href':f'https://s{i}.example/product','title':f'Кабель Supplier {i}','body':'Цена 1 руб'} for i in range(12)]
         with patch.object(scraper,'_ddgs_text',return_value=offers),patch.dict('os.environ',{'BUYER_SEARCH_API_KEY':'','BUYER_SEARCH_FOLDER_ID':''}):
             links=discovery.search('кабель Москва')
         self.assertEqual(len(links),10)
         self.assertNotIn('price',links[0])
+
+    def test_free_fallback_counts_distinct_suppliers_after_filtering(self):
+        from autobot import real_market_scraper as scraper
+        import requests
+        duplicates=[{'href':'https://same.example/product'+str(i),'title':'Кабель'} for i in range(15)]
+        directories=[{'href':'https://rusprofile.ru/id/'+str(i),'title':'Справочник'} for i in range(5)]
+        extra=[{'href':f'https://s{i}.example/product','title':'Кабель'} for i in range(12)]
+        with patch.object(discovery,'search_api',return_value=None),patch.object(scraper,'_ddgs_text',side_effect=[duplicates+directories,extra]) as ddgs,patch.object(requests,'get') as rss:
+            links=discovery.search('кабель Ярославль')
+        self.assertEqual(len(links),10)
+        self.assertEqual(links[0]['url'],'https://same.example/product0')
+        self.assertEqual([c.kwargs['backend'] for c in ddgs.call_args_list],['brave','yandex'])
+        self.assertTrue(all(c.kwargs['timeout']==8 for c in ddgs.call_args_list))
+        rss.assert_not_called()
+
+    def test_free_fallback_preserves_site_filter_across_engines(self):
+        from autobot import real_market_scraper as scraper
+        import requests
+        unrelated=[{'href':f'https://s{i}.example/','title':'Статья'} for i in range(20)]
+        avito=[{'href':f'https://m.avito.ru/yaroslavl/electrician_{i}','title':'Электрик'} for i in range(3)]
+        response=Mock(text='rss');response.raise_for_status.return_value=None
+        with patch.object(discovery,'search_api',return_value=None),patch.object(scraper,'_ddgs_text',side_effect=[unrelated,avito]),patch.object(requests,'get',return_value=response),patch.object(scraper,'_parse_bing_rss',return_value=[SimpleNamespace(url='https://avito.ru.fake.example/',title='Fake')]):
+            links=discovery.search('site:avito.ru электрик Ярославль')
+        self.assertEqual(len(links),3)
+        self.assertTrue(all(link['url'].startswith('https://m.avito.ru/') for link in links))
+
+    def test_free_provider_failure_uses_the_next_engine_and_keeps_its_order(self):
+        from autobot import real_market_scraper as scraper
+        import requests
+        extra=[{'href':f'https://s{i}.example/','title':'Кабель'} for i in range(10)]
+        with patch.object(discovery,'search_api',return_value=None),patch.object(scraper,'_ddgs_text',side_effect=[TimeoutError('private details'),extra]),patch.object(requests,'get') as rss:
+            links=discovery.search('кабель')
+        self.assertEqual([p['url'] for p in links],[p['href'] for p in extra])
+        rss.assert_not_called()
+
+    def test_free_no_sources_after_network_failures_is_retryable_not_empty_success(self):
+        from autobot import real_market_scraper as scraper
+        import requests
+        unrelated=[{'href':'https://unrelated.example/','title':'Статья'}]*20
+        with patch.object(discovery,'search_api',return_value=None),patch.object(scraper,'_ddgs_text',side_effect=[unrelated,TimeoutError('private details')]),patch.object(requests,'get',side_effect=requests.ConnectionError('private details')):
+            with self.assertRaisesRegex(BuyerError,'временно недоступен') as caught:discovery.search('site:avito.ru электрик')
+        self.assertNotIn('private details',str(caught.exception))
+
+    def test_free_irrelevant_hits_cannot_fill_the_quota_or_prove_absence(self):
+        from autobot import real_market_scraper as scraper
+        import requests
+        unrelated=[{'href':f'https://s{i}.example/','title':'Как дела — текст песни'} for i in range(20)]
+        correct=[{'href':'https://supplier.example/','title':'Услуги электриков, монтаж проводки'}]
+        response=Mock(text='rss');response.raise_for_status.return_value=None
+        with patch.object(discovery,'search_api',return_value=None),patch.object(scraper,'_ddgs_text',side_effect=[unrelated,correct]),patch.object(requests,'get',return_value=response),patch.object(scraper,'_parse_bing_rss',return_value=[]):
+            self.assertEqual(discovery.search('электромонтажные работы подрядчик Ярославская область'),[{'url':correct[0]['href'],'title':correct[0]['title']}])
+        with patch.object(discovery,'search_api',return_value=None),patch.object(scraper,'_ddgs_text',return_value=unrelated),patch.object(requests,'get',return_value=response),patch.object(scraper,'_parse_bing_rss',return_value=[]):
+            with self.assertRaisesRegex(BuyerError,'не по запросу'):discovery.search('электромонтажные работы подрядчик Ярославская область')
+
+    def test_model_relevance_uses_title_or_url_not_an_unrelated_menu_in_snippet(self):
+        wrong=SimpleNamespace(title='Перчатки диэлектрические',url='https://shop.example/product',snippet='Меню: Сжим У733М')
+        self.assertFalse(discovery.search_relevant(wrong,'"У733М" купить Ярославская область'))
+        self.assertTrue(discovery.search_relevant(SimpleNamespace(title='Сжим U733M',url=wrong.url),'"У733М" купить Ярославская область'))
+        self.assertTrue(discovery.search_relevant(SimpleNamespace(title='Сжим',url='https://shop.example/У733М'),'"У733М" купить Ярославская область'))
 
     def test_unrelated_site_rejected(self):
         data=needs.snapshot(self.source);task=needs.queries(data)[0]|{'url':'https://example.org'}
@@ -460,7 +519,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_configured_search_api_keeps_order_and_does_not_expose_key(self):
         import base64,requests
-        xml='<yandexsearch><response><results><grouping>'+''.join(f'<group><doc><url>https://s{i}.example/</url><title>Компания {i}</title></doc></group>' for i in range(12))+'</grouping></results></response></yandexsearch>'
+        xml='<yandexsearch><response><results><grouping>'+''.join(f'<group><doc><url>https://s{i}.example/</url><title>Кабель: компания {i}</title></doc></group>' for i in range(12))+'</grouping></results></response></yandexsearch>'
         response=Mock(status_code=200)
         response.iter_content.return_value=[json.dumps({'rawData':base64.b64encode(xml.encode()).decode()}).encode()]
         context=Mock();context.__enter__=Mock(return_value=response);context.__exit__=Mock(return_value=False)
