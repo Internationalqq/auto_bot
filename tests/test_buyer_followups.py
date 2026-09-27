@@ -47,6 +47,8 @@ class FollowupTests(unittest.TestCase):
     def test_question_in_quoted_history_is_not_a_new_request(self):
         self.assertFalse(follow.address_question('Спасибо, цена 2000 руб.\n> Уточните адрес объекта, куда везти'))
         self.assertTrue(follow.address_question('Куда везти?'))
+        self.assertFalse(follow.address_question('Адрес объекта получен, спасибо!'))
+        self.assertFalse(follow.address_question('Адрес доставки: Рыбинск, набережная. Цена 2000 руб.'))
 
     def test_restart_and_repeated_collection_enqueue_only_one_reply(self):
         self.doc('contract.docx',['Место выполнения работ: '+ADDRESS]);self.seed()

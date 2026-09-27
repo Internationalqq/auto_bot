@@ -3,7 +3,6 @@ from contextlib import closing
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import time
 import uuid
@@ -32,7 +31,10 @@ def address_question(raw):
     text = re.split(r'с уважением|_{3,}|-{3,}', text)[0].strip()
     if len(text) > 1200 or re.search(r'автоматическ|auto.?reply|out of office|mailer.daemon', text):
         return False
-    return bool(re.search(r'адрес.{0,100}(объект|достав|везти)|(?:объект|достав).{0,100}адрес|куда.{0,40}(везти|привезти|достав)', text, re.S))
+    if re.search(r'адрес.{0,40}(получен|уже указан|нам известен)|не (?:нужен|нужно|требуется).{0,30}адрес',text):
+        return False
+    request = re.search(r'скаж|уточн|укаж|пришл|сообщ|нужен|нужн|какой|каков|куда|\?',text)
+    return bool(request and re.search(r'адрес.{0,100}(объект|достав|везти)|(?:объект|достав).{0,100}адрес|куда.{0,40}(везти|привезти|достав)', text, re.S))
 
 
 def delivery_address(tid):
