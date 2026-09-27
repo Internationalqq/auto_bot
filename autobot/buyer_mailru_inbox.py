@@ -192,28 +192,36 @@ class Mailbox(FirefoxLight):
         self.call({'action':'set_value','element':field['index'],'value':query})
         _,button=search_controls(self.capture())
         self.click(button)
-        for attempt in range(4):
+        last_error=None
+        for attempt in range(5):
             state=self.capture()
-            if state['window_title'].startswith('Поиск - '+query+' - '):
-                if not search_address(state,query).get('q_folder'): return state
-                links=unique([e for e in state['elements'] if e['role']=='AXLink' and e['label']=='Найдено во всех папках'])
-                if len(links)!=1: raise BuyerError('Нельзя подтвердить поиск во всех папках')
-                self.click(links[0])
-            if attempt<3: self.call({'action':'wait','seconds':1})
-        raise BuyerError('Поиск в почте не завершился')
+            try:
+                if state['window_title'].startswith('Поиск - '+query+' - '):
+                    if not search_address(state,query).get('q_folder'):
+                        search_folders(state,query)
+                        return state
+                    links=unique([e for e in state['elements'] if e['role']=='AXLink' and e['label']=='Найдено во всех папках'])
+                    if len(links)!=1: raise BuyerError('Нельзя подтвердить поиск во всех папках')
+                    self.click(links[0])
+            except BuyerError as error: last_error=error
+            if attempt<4: self.call({'action':'wait','seconds':1})
+        raise last_error or BuyerError('Поиск в почте не завершился')
 
     def in_folder(self,query,name,count):
         state=self.search(query)
         matches=[f for f in search_folders(state,query) if f['name']==name and f['count']==count]
         if len(matches)!=1: raise BuyerError('Список писем изменился во время проверки')
         self.click(matches[0]['element'])
-        for attempt in range(4):
+        last_error=None
+        for attempt in range(5):
             state=self.capture()
-            if search_address(state,query).get('q_folder'):
-                if len(search_rows(state,query))!=count: raise BuyerError('Неполный результат поиска в папке')
-                return state
-            if attempt<3: self.call({'action':'wait','seconds':1})
-        raise BuyerError('Почта не подтвердила выбор папки')
+            try:
+                if search_address(state,query).get('q_folder'):
+                    if len(search_rows(state,query))!=count: raise BuyerError('Неполный результат поиска в папке')
+                    return state
+            except BuyerError as error: last_error=error
+            if attempt<4: self.call({'action':'wait','seconds':1})
+        raise last_error or BuyerError('Почта не подтвердила выбор папки')
 
 
 def execute(job,config,remote,folder,*,browser_factory=Mailbox):

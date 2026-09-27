@@ -39,6 +39,15 @@ def results(count=1,folder='Отправленные'):
 
 
 class InboxScriptTests(unittest.TestCase):
+    def test_matching_url_is_not_enough_until_search_counts_render(self):
+        browser=object.__new__(inbox.Mailbox)
+        complete=results(1)
+        incomplete=results(1);incomplete['elements']=[e for e in incomplete['elements'] if e.get('label')!='1 письмо']
+        browser.capture=Mock(side_effect=[complete,complete,incomplete,complete]);browser.click=Mock();browser.call=Mock()
+        with patch.object(inbox,'search_controls',return_value=({'index':1},{'index':2})):
+            self.assertEqual(browser.search('AB-CAB-ABCDEF01'),complete)
+        self.assertIn(unittest.mock.call({'action':'wait','seconds':1}),browser.call.call_args_list)
+
     def test_blank_read_page_recovers_once_without_touching_a_composer(self):
         browser=object.__new__(inbox.Mailbox)
         blank={'window_title':'Поиск - old - buyer@mail.ru - Почта Mail.ru','elements':[{'index':30,'role':'AXButton','label':'Обновить','bounds':[10,10,20,20]}]}
