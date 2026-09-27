@@ -173,7 +173,22 @@ class Mailbox(FirefoxLight):
         state=self.capture()
         if state['window_title'].startswith('Новое письмо'):
             raise BuyerError('В почте открыт черновик: чтение не меняет и не закрывает его')
-        field,_=search_controls(state)
+        try:
+            field,_=search_controls(state)
+        except BuyerError:
+            # Mail.ru occasionally retains an AX tree while rendering a blank
+            # page. Reload the observed read-only tab once; never a composer.
+            reloads=unique([e for e in state['elements'] if e['role']=='AXButton' and e.get('label')=='Обновить'])
+            if len(reloads)!=1: raise
+            self.click(reloads[0])
+            for attempt in range(4):
+                state=self.capture()
+                try:
+                    field,_=search_controls(state)
+                    break
+                except BuyerError:
+                    if attempt==3: raise
+                    self.call({'action':'wait','seconds':1})
         self.call({'action':'set_value','element':field['index'],'value':query})
         _,button=search_controls(self.capture())
         self.click(button)

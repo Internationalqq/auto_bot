@@ -1,11 +1,12 @@
 <!doctype html>
 <html lang="ru">
 <head>
+  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Проверка позиции · {{ meta.title }}</title>
   <link rel="stylesheet" href="/static/autobot-ui.css?v=20260915-upload-1">
   <link rel="stylesheet" href="/estimates/review.css?v=20260915-1">
-  <script src="/static/embed_bridge.js?v=20260903-bundle-1"></script>
+  <script src="/static/embed_bridge.js?v=20260927-location-1"></script>
 </head>
 <body class="autobot-page estimate-review-page">
 {% set workspace_url = workspace_url|default('/estimates/' ~ estimate_id) %}

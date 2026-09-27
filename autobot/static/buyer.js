@@ -54,7 +54,9 @@
       const ownOutbox = outbox.filter(item => item.draft_job_id === job.id);
       const latestSend = ownOutbox.at(-1);
       const hasReply = (replies.messages || []).some(reply => ownOutbox.some(item => item.id === reply.outbound_id));
-      const supplierState = hasReply ? 'Ответ получен' : latestSend ? sendLabels[latestSend.status] : 'Запрос готов';
+      const latestCampaign = campaigns.find(c => c.draft_job_id === job.id);
+      const contactFailure = latestCampaign?.contacts?.find(c => !c.outbox_id && c.error)?.error;
+      const supplierState = hasReply ? 'Ответ получен' : latestSend ? sendLabels[latestSend.status] : contactFailure ? `Не отправлено: ${contactFailure}` : latestCampaign && ['queued','checking'].includes(latestCampaign.status) ? 'Проверяем контакт…' : 'Запрос готов';
       summary.append(node('strong', job.position_name), node('span', `${job.supplier ? supplierState+' · Email · '+(latestSend?.recipient || job.supplier.email) : labels[job.status] || 'Неизвестное состояние'} · Позиций: ${job.positions.length}`));
       group.append(summary);
       if (job.result) {
@@ -112,7 +114,8 @@
                   body:JSON.stringify({action:'find_and_send',draft_job_id:job.id,draft_index:index,message:messages.get(key) || message})});
                 const data = await response.json();
                 if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось запустить проверку');
-                autoFeedback.textContent = 'Запрос сохранён. Проверка сайтов и результаты отправки — в журнале ниже.';
+                autoFeedback.textContent = 'Проверяем контакт. После проверки здесь появится отправка или причина остановки.';
+                group.open = true;
                 await load();
               } catch(error) { autoFeedback.textContent = error.message; }
               finally { busy = false; automatic.disabled = false; }
@@ -156,6 +159,15 @@
             });
             if (!job.supplier?.email) article.append(form);
             const ownCampaigns = campaigns.filter(c => c.draft_job_id === job.id && c.draft_index === index);
+            const latestContactFailure = ownCampaigns[0]?.contacts?.find(c => !c.outbox_id && c.error);
+            if (latestContactFailure && !ownOutbox.length) {
+              autoFeedback.textContent = `Не отправлено: ${latestContactFailure.error}. Можно указать проверенный email вручную.`;
+              automatic.textContent = 'Повторить проверку контакта';
+              article.append(form);
+            } else if (ownCampaigns.some(c => ['queued','checking'].includes(c.status))) {
+              autoFeedback.textContent = 'Проверяем контакт на сайте…';
+              automatic.disabled = true;
+            }
             ownCampaigns.forEach(c => {
               article.append(node('p', `${campaignLabels[c.status] || c.status} · ${c.region}${c.error ? '. '+c.error : ''}`, 'buyer-send-feedback'));
               c.contacts.filter(contact => !contact.outbox_id).forEach(contact => {
@@ -202,6 +214,12 @@
               }
               (replies.messages || []).filter(reply => reply.outbound_id === item.id).forEach(reply => {
                 entry.append(node('h4',`Ответ ${new Date(reply.received_at*1000).toLocaleString('ru-RU')}`),node('p',reply.raw_text,'buyer-body'));
+                const followup = replies.followups?.find(f => f.reply_id === reply.id);
+                if (followup) {
+                  const sent = outbox.find(o => o.id === followup.outbound_id);
+                  entry.append(node('p', sent?.status === 'sent' ? 'Автобот ответил: адрес объекта из документов отправлен.' : sent ? `Ответ с адресом: ${sendLabels[sent.status] || sent.status}` : followup.reason, 'buyer-send-feedback'));
+                  if (followup.source?.address) entry.append(node('p',`${followup.source.address} · Источник: ${followup.source.document}`, 'buyer-send-feedback'));
+                }
                 if (!reply.prices.length) entry.append(node('p','В ответе пока нет построчных цен.'));
                 reply.prices.forEach(price => {
                   const position = job.positions.find(p => p.position_key === price.position_key);
@@ -253,7 +271,7 @@
       }
       jobNodes.set(job.id, group);
     });
-    renderCompanies(report, jobs, outbox, replies, jobNodes, open, mailNodes);
+    renderCompanies(report, jobs, outbox, replies, jobNodes, open, mailNodes, campaigns);
     if (focusedKey) {
       const group = Array.from(list.querySelectorAll('details')).find(el => el.dataset.key === focusedKey);
       const input = focusedInput ? Array.from(group?.querySelectorAll('input, textarea') || []).find(el => el.dataset.recipientKey === focusedInput) : null;
@@ -329,7 +347,9 @@
       if (time.textContent !== text) time.textContent = text;
     });
   }
-  function renderCompanies(report, jobs, outbox, replies, jobNodes, expanded, mailNodes = new Map()) {
+  function renderCompanies(report, jobs, outbox, replies, jobNodes, expanded, mailNodes = new Map(), campaigns = []) {
+    const stopped = campaigns[0]?.contacts?.filter(c => !c.outbox_id && c.error) || [];
+    if (stopped.length) list.append(node('p', `Последняя попытка — не отправлено. ${stopped.map(c => `${c.company}: ${c.error}`).join(' · ')}`, 'buyer-send-feedback'));
     const companies = companyList(report, jobs, outbox, replies);
     const positionMap = new Map([...jobs.flatMap(j => j.positions), ...(report?.positions || [])].map(p => [p.position_key,p]));
     const used = new Set();
@@ -382,6 +402,14 @@
         const answer = node('section',null,'buyer-latest-reply');
         answer.append(node('h3','Последний ответ'),node('p',`${thread.answer.sender || thread.latest?.recipient || company.name} · ${shortDate(thread.answer.received_at)}`,'buyer-company-date'),node('p',thread.answer.raw_text || 'Ответ без текста','buyer-body'));
         body.append(answer);
+        const followup = replies.followups?.find(f => f.reply_id === thread.answer.id);
+        if (followup) {
+          const letter = outbox.find(o => o.id === followup.outbound_id);
+          const text = letter?.status === 'sent' ? `Автобот отправил адрес объекта ${relativeAge(letter.updated_at)}.` : letter ? `Ответ с адресом: ${sendLabels[letter.status] || letter.status}.` : followup.reason;
+          answer.append(node('p', text, 'buyer-send-feedback'));
+          if (letter) answer.append(node('p', letter.body, 'buyer-body'));
+          if (followup.source?.document) answer.append(node('p',`Источник адреса: ${followup.source.document}`, 'buyer-company-date'));
+        }
       }
       if (thread.blocked) body.append(node('p', 'Не удалось проверить новые ответы. Причина и повтор проверки — в журнале переписки ниже.', 'buyer-inbox-warning'));
       const contactDetails = node('details',null,'buyer-contact-details'); contactDetails.dataset.key = `contacts-${company.id}`; contactDetails.open = expanded.has(contactDetails.dataset.key);
@@ -427,7 +455,8 @@
     const remaining = [...jobNodes.entries()].filter(([id]) => !used.has(id));
     if (remaining.length) {
       const archive = node('details',null,'buyer-archive'); archive.dataset.key = 'previous'; archive.open = expanded.has('previous');
-      archive.append(node('summary',`${report ? 'Другие обращения по тендеру' : 'Обращения без выбранной компании'} (${remaining.length})`));
+      archive.append(node('summary',`Архив подготовленных обращений (${remaining.length})`));
+      archive.append(node('p','Тексты из прошлых подборов. Это не очередь отправки: часть обращений повторяется или требует проверки контакта.', 'buyer-send-feedback'));
       remaining.forEach(([,group]) => archive.append(group)); list.append(archive);
     }
     if (!companies.length && !remaining.length) {

@@ -39,6 +39,20 @@ def results(count=1,folder='Отправленные'):
 
 
 class InboxScriptTests(unittest.TestCase):
+    def test_blank_read_page_recovers_once_without_touching_a_composer(self):
+        browser=object.__new__(inbox.Mailbox)
+        blank={'window_title':'Поиск - old - buyer@mail.ru - Почта Mail.ru','elements':[{'index':30,'role':'AXButton','label':'Обновить','bounds':[10,10,20,20]}]}
+        ready=results(0)
+        browser.capture=Mock(side_effect=[blank,ready,ready,ready]);browser.click=Mock();browser.call=Mock()
+        controls=({'index':1},{'index':2})
+        with patch.object(inbox,'search_controls',side_effect=[BuyerError('blank'),controls,controls]):
+            self.assertEqual(browser.search('AB-CAB-ABCDEF01'),ready)
+        self.assertEqual(browser.click.call_args_list[0].args[0]['label'],'Обновить')
+        browser.capture=Mock(return_value={'window_title':'Новое письмо','elements':[]})
+        browser.click.reset_mock()
+        with self.assertRaises(BuyerError):browser.search('anything')
+        browser.click.assert_not_called()
+
     def test_search_deduplicates_native_mirrors_and_requires_all_results(self):
         self.assertEqual(len(inbox.search_rows(results(),'AB-CAB-ABCDEF01')),1)
         with self.assertRaises(BuyerError):inbox.search_rows(results(2),'AB-CAB-ABCDEF01')

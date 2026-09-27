@@ -1,13 +1,16 @@
 <!doctype html>
 <html lang="ru">
 <head>
+  <meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ url_for('static', filename='tenders.css') }}?v=20260926-minimal-1" />
   <script defer src="{{ url_for('search_profiles_script') }}?v=20260915-2"></script>
-  <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260824-1"></script>
+  <script defer src="{{ url_for('static', filename='embed_bridge.js') }}?v=20260927-location-1"></script>
   <title>Тендеры</title>
+  <link rel="stylesheet" href="/static/tender_progress.css?v=20260927-1">
+  <script defer src="/static/tender_progress.js?v=20260927-1"></script>
   <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1">
 </head>
 <body>
@@ -121,6 +124,7 @@
         </button>
       <label class="tender-sort">Порядок:
         <select id="tenderSort">
+          <option value="recent">Недавно в работе</option>
           <option value="workflow">Следующему действию</option>
           <option value="updated-desc">Дате обновления</option>
           <option value="published-desc">Дате размещения</option>
@@ -160,6 +164,7 @@
           data-published="{{ t.publish_date or '' }}"
           data-updated="{{ t.updated_date or t.publish_date or '' }}"
           data-sort-weight="{{ t.sort_weight }}"
+          data-activity="{{ t.last_activity.acted_at or 0 }}"
           data-original-index="{{ loop.index0 }}"
           role="link"
           tabindex="0"
@@ -210,6 +215,13 @@
           </div>
 
           <div class="autobot-workflow">
+            {% if t.last_activity %}<p class="tender-recent">{{ t.last_activity.label }} · <time data-activity-time="{{ t.last_activity.acted_at }}"></time></p>{% endif %}
+            {% if t.has_estimate %}
+            <div class="tender-work-progress" data-progress-tender="{{ t.tender_id }}">
+              <div><strong>Загружаем прогресс анализа…</strong><span data-progress-prices></span></div>
+              <progress max="1" value="0" aria-label="Прогресс анализа сметы"></progress>
+            </div>
+            {% endif %}
             <div class="next-box">
               <span><small>Следующий шаг</small><strong>{{ t.status_detail }}</strong></span>
               <div class="row-actions">
@@ -1137,10 +1149,11 @@
 
     function sortTenderCards() {
       if (!tenderList) return;
-      const mode = String(tenderSort?.value || "workflow");
+      const mode = String(tenderSort?.value || "recent");
       const cards = Array.from(tenderList.querySelectorAll(".tender-card[data-search]"));
       const numberAttr = function(card, name) { return Number(card.getAttribute(name) || 0); };
       cards.sort(function(a, b) {
+        if (mode === "recent") return numberAttr(b, "data-activity") - numberAttr(a, "data-activity") || numberAttr(a, "data-original-index") - numberAttr(b, "data-original-index");
         if (mode === "updated-desc") return tenderDateNumber(b.dataset.updated) - tenderDateNumber(a.dataset.updated);
         if (mode === "published-desc") return tenderDateNumber(b.dataset.published) - tenderDateNumber(a.dataset.published);
         if (mode === "price-desc") return numberAttr(b, "data-price") - numberAttr(a, "data-price");
@@ -1211,7 +1224,7 @@
       [tenderMethodFilter, tenderRegionFilter, tenderPriceMin, tenderPriceMax, tenderDateFrom, tenderDateTo].forEach(function(input) {
         if (input) input.value = "";
       });
-      if (tenderSort) tenderSort.value = "workflow";
+      if (tenderSort) tenderSort.value = "recent";
       sortTenderCards();
       applyTenderSearch();
     });

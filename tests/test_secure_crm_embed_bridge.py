@@ -64,7 +64,7 @@ class SecureCrmEmbedBridgeTests(unittest.TestCase):
         self.assertIn("PMBI_CRM_PARENT_ORIGIN", self.web_ui)
         self.assertIn("frame-ancestors 'self'", self.web_ui)
         self.assertIn('if parent_origin:', self.web_ui)
-        for template_name in ('estimates.html', 'estimate_detail.html'):
+        for template_name in ('estimates.html', 'estimate_detail.html', 'tenders.html', 'tender_detail.html'):
             template = (REPO_ROOT / 'autobot' / 'templates' / template_name).read_text(encoding='utf-8')
             self.assertIn('<meta name="autobot-parent-origin" content="{{ crm_parent_origin|e }}" />', template)
 

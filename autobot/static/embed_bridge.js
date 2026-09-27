@@ -16,6 +16,21 @@
   var pending = Object.create(null);
   var lastScrolled = null;
   var scheduled = false;
+  function publishLocation() {
+    try { postTrusted({ type: "autobot:location", path: window.location.pathname + window.location.search + window.location.hash }); } catch (error) {}
+  }
+  ["pushState", "replaceState"].forEach(function (method) {
+    var original = window.history[method];
+    window.history[method] = function () {
+      var result = original.apply(this, arguments);
+      publishLocation();
+      return result;
+    };
+  });
+  window.addEventListener("hashchange", publishLocation);
+  window.addEventListener("popstate", publishLocation);
+  window.addEventListener("pageshow", publishLocation);
+  document.addEventListener("DOMContentLoaded", publishLocation, { once: true });
 
   function normalizeWebOrigin(value) {
     try {
@@ -171,4 +186,5 @@
   };
 
   schedulePublish();
+  publishLocation();
 })();

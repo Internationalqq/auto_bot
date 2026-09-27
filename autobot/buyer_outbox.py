@@ -139,6 +139,8 @@ def listing(tid):
 
 
 def claim(worker):
+    from autobot.buyer_followups import process_pending
+    process_pending()
     # Read candidate without holding the buyer lock while reading the report.
     # Recheck everything transactionally afterwards: publication -> buyer DB.
     for _ in range(20):
@@ -152,6 +154,8 @@ def claim(worker):
             candidate = dict(row)
         from autobot.buyer_workflow import current_draft
         try:
+            from autobot.buyer_followups import validate_source
+            validate_source(candidate)
             payload, _ = draft_message(candidate['tender_id'], candidate['draft_job_id'], candidate['draft_index'])
             with current_draft(payload), closing(connect()) as db, db:
                 db.execute('BEGIN IMMEDIATE')

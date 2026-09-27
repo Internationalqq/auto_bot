@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from flask import Blueprint, jsonify, request, send_from_directory, Response
+from flask import Blueprint, jsonify, request, send_from_directory, Response, make_response, current_app
 from autobot import buyer_jobs as jobs, buyer_outbox as outbox, buyer_campaigns as campaigns, crm_actor
 from autobot import buyer_suppliers as suppliers
 from autobot import buyer_replies as replies
@@ -38,7 +38,15 @@ def user_route(fn):
             crm_actor.resolve(request.headers)
             if not re.fullmatch(r'\d{8,25}', tid):
                 raise BuyerError('Некорректный номер тендера')
-            return fn(tid, **kwargs)
+            response = make_response(fn(tid, **kwargs))
+            if request.method == 'POST' and response.status_code < 400 and fn.__name__ in ('tender_jobs','send_draft'):
+                data = request.get_json(silent=True) or {}
+                if data.get('action') != 'check_replies':
+                    from autobot.tender_activity import record
+                    try: record(tid, 'suppliers')
+                    except (OSError, sqlite3.Error):
+                        current_app.logger.warning('Could not record tender activity for %s', tid)
+            return response
         except CorrectionError as error:
             return jsonify(ok=False, message=str(error)), error.status
         except BuyerError as error:
@@ -128,6 +136,29 @@ def report(tid):
     if request.args.get('format') == 'text':
         return Response(plain(result), content_type='text/plain; charset=utf-8')
     return jsonify(ok=True, **result)
+
+
+@blueprint.post('/api/tenders/<tid>/activity')
+@user_route
+def tender_activity(tid):
+    from autobot.tender_activity import record, LABELS
+    from autobot.web_ui import load_tender_metadata
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data,dict) or data.get('action') not in LABELS:
+        raise BuyerError('Некорректное действие')
+    if tid not in load_tender_metadata(): raise BuyerError('Тендер не найден')
+    record(tid,data['action'])
+    return jsonify(ok=True)
+
+
+@blueprint.get('/api/tenders/<tid>/work-progress')
+@user_route
+def tender_progress(tid):
+    from autobot.web_ui import load_tender_metadata, build_tender_detail
+    meta = load_tender_metadata().get(tid)
+    if not meta: raise BuyerError('Тендер не найден')
+    detail = build_tender_detail(tid,meta,{})
+    return jsonify(ok=True, processed=detail['counts']['processed'], total=detail['total_positions'], verified=detail['counts']['verified'])
 
 
 @blueprint.post('/api/tenders/<tid>/buyer/outbox')

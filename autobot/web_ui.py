@@ -240,6 +240,11 @@ def _request_accepts_gzip() -> bool:
     return qualities.get("gzip", qualities.get("*", 0.0)) > 0
 
 
+@app.context_processor
+def crm_embed_context():
+    return {'crm_parent_origin': _configured_crm_parent_origin()}
+
+
 @app.after_request
 def secure_and_compress_response(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -4261,10 +4266,13 @@ def _tender_law_and_method(tender_id: str, url: str, law: str, method: str) -> t
 
 def _tenders_items() -> tuple[list[dict], dict[str, int]]:
     payload = build_workflow_payload(include_storage=False)
+    from autobot.tender_activity import listing as recent_activity
+    activity = recent_activity()
     meta_by_id = load_tender_metadata()
     items = list(payload.get("tenders") or [])
     for item in items:
         tid = str(item.get("tender_id") or "").strip()
+        item['last_activity'] = activity.get(tid, {})
         action = str(item.get("next_action") or "").strip() or "download_documents"
         meta_row = meta_by_id.get(tid, {}) or {}
         raw_title = str(meta_row.get("title") or item.get("title") or "").strip()
@@ -4311,6 +4319,7 @@ def _tenders_items() -> tuple[list[dict], dict[str, int]]:
         item["can_export_crm"] = bool(item.get("has_estimate"))
     items.sort(
         key=lambda x: (
+            -x.get('last_activity', {}).get('acted_at', 0),
             int(x.get("sort_weight") or 50),
             _publish_date_sort_key(str(x.get("publish_date") or ""), newest_first=True),
             str(x.get("title") or ""),

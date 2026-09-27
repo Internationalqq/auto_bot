@@ -47,6 +47,8 @@ def request_check(tid, key):
 
 
 def claim(worker):
+    from autobot.buyer_followups import connect as followup_connect
+    with closing(followup_connect()): pass
     with closing(connect()) as db, db:
         db.execute('BEGIN IMMEDIATE')
         now = time.time()
@@ -57,7 +59,8 @@ def claim(worker):
             return None  # The same signed-in browser is still occupied.
         # Only already-authorized, successfully sent RFQs. Never inspect unrelated mail.
         db.execute("""INSERT OR IGNORE INTO buyer_inbox_checks(outbound_id,status,next_at)
-            SELECT id,'waiting',updated_at+? FROM outbound WHERE status='sent' AND created_at>?""",(CHECK_INTERVAL_SECONDS,now-7*86400))
+            SELECT id,'waiting',updated_at+? FROM outbound WHERE status='sent' AND created_at>?
+            AND id NOT IN (SELECT outbound_id FROM buyer_followups WHERE outbound_id IS NOT NULL)""",(CHECK_INTERVAL_SECONDS,now-7*86400))
         row = (db.execute('SELECT * FROM outbound WHERE id=?', (active['outbound_id'],)).fetchone() if active else
                db.execute("""SELECT o.* FROM buyer_inbox_checks c JOIN outbound o ON o.id=c.outbound_id
                   WHERE o.status='sent' AND c.next_at<=? AND c.status<>'checking'
@@ -208,7 +211,8 @@ def listing(tid):
                 snapshot = json.loads(p['snapshot'])
                 prices.append(dict(p) | {'comparison_kopecks': comparison_amount(p['price_kopecks'],p['unit'],snapshot.get('unit')), 'estimate_unit':snapshot.get('unit')})
             replies.append(dict(r) | {'prices':prices})
-        return {'checks':checks,'messages':replies}
+        from autobot.buyer_followups import listing as followups
+        return {'checks':checks,'messages':replies,'followups':followups(tid)}
 
 
 def annotate(tid, rows, region=None):
