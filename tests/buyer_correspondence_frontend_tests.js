@@ -3,16 +3,19 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 class Element {
-  constructor(tag='div') { this.tag=tag; this.children=[]; this.dataset={}; this.events={}; this.value=''; this.hidden=false; this.attrs={}; this.className=''; this.ownText=''; }
+  constructor(tag='div') { this.tag=tag; this.children=[]; this.dataset={}; this.events={}; this.value=''; this.hidden=false; this.attrs={}; this.className=''; this.ownText=''; this.scrollTop=0; this.clientHeight=200; this.scrollHeight=1000; this.classList={add:value=>{this.className+=' '+value;}}; }
   set textContent(text) { this.ownText=String(text); this.children=[]; }
   get textContent() { return this.ownText+this.children.map(child=>child.textContent).join(' '); }
-  append(...children) { this.children.push(...children); }
+  append(...children) { children.forEach(child=>{ if(child.parent) child.parent.children=child.parent.children.filter(c=>c!==child); child.parent=this; this.children.push(child); }); }
   replaceChildren(...children) { this.ownText=''; this.children=children; }
   setAttribute(key,value) { this.attrs[key]=value; }
   addEventListener(name,fn) { this.events[name]=fn; }
-  contains() { return false; }
+  contains(el) { return el && (el===this || this.children.some(c=>c.contains(el))); }
+  closest(selector) { return this.tag===selector ? this : this.parent?.closest(selector); }
+  focus() { document.activeElement=this; }
+  scrollIntoView(options) { this.lastScroll=options; }
   querySelectorAll(selector) {
-    const matches=el=>selector.startsWith('.') ? el.className.split(' ').includes(selector.slice(1)) : selector==='[data-buyer-count]' ? el.count : selector==='[data-buyer-sent-at]' ? el.dataset.buyerSentAt != null : el.tag===selector;
+    const matches=el=>selector.startsWith('.') ? el.className.split(' ').includes(selector.slice(1)) : selector==='[data-buyer-count]' ? el.count : selector==='[data-buyer-chat-control]' ? el.dataset.buyerChatControl != null : selector==='[data-buyer-sent-at]' ? el.dataset.buyerSentAt != null : selector==='details[open]' ? el.tag==='details' && el.open : el.tag===selector;
     return this.children.flatMap(child=>[...(matches(child)?[child]:[]),...child.querySelectorAll(selector)]);
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -30,9 +33,11 @@ const document={hidden:false,createElement:tag=>new Element(tag),querySelector:s
 let api;
 let now=1700000000000;
 class Clock extends Date { static now() { return now; } }
-const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(\);\r?\n  setInterval/,'  capture({companyList, correspondence, renderCompanies, relativeAge, render});\n  setInterval');
+const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(\);\r?\n  setInterval/,'  capture({companyList, correspondence, renderCompanies, relativeAge, render, conversationEvents, chatState});\n  setInterval');
 assert.ok(source.includes('capture({companyList'));
-vm.runInNewContext(source,{document,console,Date:Clock,setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch(){throw new Error('Offline test');},capture:value=>api=value});
+const storage=new Map();
+const context={document,console,Date:Clock,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch(){throw new Error('Offline test');},capture:value=>api=value};
+vm.runInNewContext(source,context);
 const position={position_key:'cable',name:'Кабель 4×150',quantity:351.9,unit:'пм'};
 const company={id:'supplier',name:'Поставщик',contacts:[{channel:'email',address:'old@example.org'}],prices:[],position_keys:['cable'],draft_job_ids:['current'],status:'sent'};
 const report={companies:[company],positions:[position]};
@@ -69,51 +74,62 @@ function render(data=replies, rep=report, outgoing=outbox) {
   return list.querySelector('.buyer-company');
 }
 let card=render();
-let summary=card.querySelector('summary');
-assert.match(summary.textContent,/new@example.org/);
-assert.doesNotMatch(summary.textContent,/old@example.org/);
-assert.match(summary.textContent,/Отправлено/);
-assert.match(summary.textContent,/Получен/);
-assert.doesNotMatch(summary.textContent,/Уточните адрес доставки/,'Full reply is one disclosure away, not repeated in every row');
-assert.match(card.querySelector('.buyer-latest-reply').textContent,/manager@example.org/);
-assert.equal(card.querySelectorAll('img').length,0,'Email markup is literal text, never HTML');
+assert.match(card.attrs['aria-label'],/new@example.org/);
+assert.doesNotMatch(card.attrs['aria-label'],/old@example.org/);
+assert.match(card.textContent,/Ответ получен/);
+assert.match(card.textContent,/Уточните адрес доставки/,'Contact shows a bounded last-message preview');
+assert.equal(list.querySelectorAll('img').length,0,'Email markup is literal text, never HTML');
+card.events.click();
+assert.equal(storage.get('autobot:buyer-chat:123456789012345'),'supplier');
+assert.equal(list.querySelector('.buyer-chats').dataset.open,'true','Opening a contact also opens the mobile conversation');
+let panel=list.querySelector('.buyer-chat');
+assert.equal(panel.hidden,false);
+assert.match(panel.querySelector('.buyer-chat-timeline').textContent,/Уточните адрес доставки/);
+assert.equal(document.activeElement,panel.querySelector('h3'),'Keyboard focus follows the opened contact');
+panel.querySelector('.buyer-chat-info-button').events.click();
+assert.equal(panel.querySelector('.buyer-chat-info').hidden,false);
+assert.equal(panel.querySelector('.buyer-chat-timeline').hidden,true);
+panel.querySelector('.buyer-chat-info-button').events.click();
 assert.equal(card.dataset.answered,'true');
 filters.find(f=>f.dataset.buyerFilter==='answered').events.click();
 assert.equal(card.hidden,false);
 filters.find(f=>f.dataset.buyerFilter==='sent').events.click();
 assert.equal(card.hidden,false);
 find.value='new@example.org'; find.events.input(); assert.equal(card.hidden,false);
-find.value='missing'; find.events.input(); assert.equal(card.hidden,true); assert.equal(noResults.hidden,false); assert.equal(head.hidden,true);
+find.value='missing'; find.events.input(); assert.equal(card.hidden,true); assert.equal(list.querySelector('.buyer-chat-no-results').hidden,false); assert.equal(panel.hidden,true);
+assert.equal(list.querySelector('.buyer-chats').dataset.open,'false','Mobile search returns to the contact list, including no-result feedback');
 find.value=''; find.events.input();
-assert.equal(head.hidden,false);
+assert.equal(panel.hidden,false);
 card=render({checks:{'new-mail':{status:'blocked',checked_at:320,error:'Нужна проверка входа'}},messages:[]});
-assert.match(card.querySelector('summary').textContent,/Не зафиксирован/);
-assert.doesNotMatch(card.querySelector('summary').textContent,/Ожидаем|Проверено/);
+assert.match(card.textContent,/Проверка почты недоступна/);
+assert.doesNotMatch(card.textContent,/Ожидаем|Проверено/);
 assert.match(mailNote.textContent,/Часть ответов не удалось проверить/);
 assert.equal(card.dataset.attention,'true');
 filters.find(f=>f.dataset.buyerFilter==='attention').events.click(); assert.equal(card.hidden,false);
 card=render({checks:{},messages:[]});
-assert.match(card.querySelector('summary').textContent,/Ожидаем/);
+assert.match(card.textContent,/Ожидаем/);
 assert.equal(card.hidden,true,'The selected filter survives a refresh');
 card=render({checks:{'new-mail':{status:'checking'}},messages:[]});
-assert.match(card.querySelector('summary').textContent,/Проверяем/);
+assert.match(card.textContent,/Проверяем/);
 card=render({...replies,checks:{'new-mail':{status:'blocked'}}});
-assert.match(card.querySelector('summary').textContent,/Получен/);
-assert.match(card.querySelector('.buyer-inbox-warning').textContent,/Не удалось проверить новые ответы/);
+assert.match(card.textContent,/Ответ получен/);
+assert.match(mailNote.textContent,/не удалось проверить/);
 const priced={...report,companies:[{...company,prices:[{price_kopecks:12550,unit:'м',position_key:'cable',origin:'reply',state:'review'}]}]};
 card=render({...replies,messages:[{...reply,raw_text:'Ответ '.repeat(1000)}]},priced);
-assert.ok(card.querySelector('summary').textContent.length<300,'A long reply cannot inflate the accessible row name');
-assert.ok(card.querySelector('.buyer-latest-reply').textContent.length>5000);
-assert.match(card.querySelector('summary').textContent,/125,5 ₽ \/ м/);
-assert.match(card.querySelector('summary').textContent,/Из ответа · уточнить/);
+assert.ok(card.attrs['aria-label'].length<300,'A long reply cannot inflate the accessible contact name');
+assert.ok(card.textContent.length<400,'Last-message preview is bounded');
+assert.ok(list.querySelector('.buyer-chat-timeline').textContent.length>5000,'Full text is retained in the conversation');
+assert.match(card.textContent,/125,5 ₽ \/ м/);
+assert.match(card.textContent,/из ответа · уточнить/);
+assert.match(list.querySelector('.buyer-chat-info').textContent,/нужно уточнение/);
 assert.equal(card.dataset.priced,'true');
 card=render({checks:{},messages:[]},report,[{...outbox[1],status:'uncertain'}]);
-assert.match(card.querySelector('summary').textContent,/Не подтверждено/);
+assert.match(card.textContent,/Нужна проверка отправки/);
 assert.equal(card.querySelector('time'),null,'Creation time must never be shown as a send confirmation');
 assert.equal(mailNote.hidden,true);
 card=render({checks:{},messages:[]},report,[{...outbox[1],updated_at:null}]);
 assert.equal(card.querySelector('time'),null,'Missing confirmation time must not produce an invented age');
-assert.match(card.querySelector('summary').textContent,/Отправка подтверждена/);
+assert.match(list.querySelector('.buyer-chat-timeline').textContent,/Отправка подтверждена/);
 
 const stamp=now/1000;
 [[0,'только что'],[59,'только что'],[60,'1 мин назад'],[3599,'59 мин назад'],[3600,'1 ч назад'],[9180,'2 ч 33 мин назад'],[86400,'1 д назад'],[93600,'1 д 2 ч назад'],[259200,'3 д назад']].forEach(([seconds,label])=>assert.equal(api.relativeAge(stamp-seconds),label));
@@ -121,7 +137,8 @@ assert.equal(api.relativeAge(stamp+60),'только что','Small clock skew n
 [null,0,undefined,'bad',Infinity].forEach(value=>assert.equal(api.relativeAge(value),''));
 const timedOutbox=[{...outbox[1],updated_at:stamp-120}];
 api.render([],timedOutbox,[],{checks:{},messages:[]},report);
-const retained=list.querySelector('.buyer-company'); retained.open=true;
+filters.find(f=>f.dataset.buyerFilter==='all').events.click();
+const retained=list.querySelector('.buyer-company'); retained.events.click();
 const time=retained.querySelector('time');
 assert.equal(time.textContent,'2 мин назад');
 assert.match(time.title,/Отправка подтверждена/);
@@ -130,7 +147,7 @@ now+=60000;
 api.render([],timedOutbox,[],{checks:{},messages:[]},report);
 assert.equal(list.querySelector('.buyer-company'),retained,'Identical API data must not rebuild the row');
 assert.equal(time.textContent,'3 мин назад','Age advances even when API data did not change');
-assert.equal(retained.open,true);
+assert.equal(retained.attrs['aria-pressed'],'true');
 now+=60000;
 assert.equal(intervals[0].ms,15000);
 intervals[0].fn();
@@ -138,8 +155,47 @@ assert.equal(time.textContent,'4 мин назад','Scheduled age updates also 
 now+=120000;
 events.visibilitychange();
 assert.equal(time.textContent,'6 мин назад','Returning from a hidden tab refreshes elapsed time immediately');
-assert.equal(retained.open,true);
+assert.equal(retained.attrs['aria-pressed'],'true');
+// Sorting uses confirmed send time; follow-ups appear once in the same conversation.
+const sent1={...outbox[1],body:'Первый запрос',created_at:10,updated_at:100};
+const sent2={...sent1,id:'followup',body:'Адрес объекта',created_at:20,updated_at:400};
+const addressReply={...reply,received_at:300};
+const addressReplies={checks:{},messages:[addressReply],followups:[{reply_id:reply.id,outbound_id:'followup',source:{document:'Контракт.docx'}}]};
+const addressThread=api.correspondence(company,[sent2,sent1],addressReplies);
+assert.equal(api.conversationEvents(addressThread,addressReplies).map(e=>e.id).join(','),'out-new-mail,in-reply,out-followup');
+assert.equal(api.chatState(addressThread,company),'Ожидаем ответ','An answer followed by our reply returns to waiting');
+api.render([], [sent2,sent1], [],addressReplies,report);
+panel=list.querySelector('.buyer-chat');
+assert.equal(panel.querySelectorAll('.buyer-message').length,3);
+assert.match(panel.textContent,/Автобот · адрес объекта/);
+assert.match(panel.textContent,/Контракт.docx/);
+assert.equal(panel.querySelectorAll('.buyer-message-in').length,1);
+panel.querySelector('.buyer-chat-info-button').focus();
+list.querySelector('.buyer-chat-list').scrollTop=90;
+const scroller=panel.querySelector('.buyer-chat-timeline');
+scroller.scrollTop=120;
+api.render([], [sent2,sent1], [],{...addressReplies,checks:{'new-mail':{status:'checked',checked_at:410}}},report);
+assert.equal(list.querySelector('.buyer-chat-timeline').scrollTop,120,'Polling preserves position while reading earlier messages');
+assert.equal(list.querySelector('.buyer-chat-list').scrollTop,90,'Polling preserves the contact list scroll');
+assert.equal(document.activeElement,list.querySelector('.buyer-chat-info-button'),'Polling preserves focused conversation controls');
+list.querySelector('.buyer-chat-timeline').scrollTop=800;
+api.render([], [sent2,sent1], [],{...addressReplies,checks:{'new-mail':{status:'checked',checked_at:420}}},report);
+assert.equal(list.querySelector('.buyer-chat-timeline').scrollTop,1000,'A reader at the bottom continues to the newest message');
+// A fresh page instance restores the selected conversation from per-tender storage.
+const multipleReport={...report,companies:[company,{...company,id:'second',name:'Другая компания',draft_job_ids:['second-job']}]};
+const multipleOutbox=[sent2,sent1,{...sent1,id:'second-mail',draft_job_id:'second-job',recipient:'second@example.org',updated_at:500}];
+api.render([],multipleOutbox,[],addressReplies,multipleReport);
+const chosen=list.querySelectorAll('.buyer-company').find(c=>c.dataset.key==='company-supplier'); chosen.events.click();
+assert.notEqual(list.querySelector('.buyer-company'),chosen,'Chosen conversation is not the default first row');
+vm.runInNewContext(source,context);
+api.render([], multipleOutbox, [],addressReplies,multipleReport);
+assert.equal(list.querySelectorAll('.buyer-company').find(c=>c.dataset.key==='company-supplier').attrs['aria-pressed'],'true');
+assert.equal(list.querySelector('.buyer-company').attrs['aria-pressed'],'false');
+assert.equal(list.querySelector('.buyer-chats').dataset.open,'true');
+list.querySelectorAll('.buyer-chat').find(p=>!p.hidden).querySelector('.buyer-chat-back').events.click();
+assert.equal(list.querySelector('.buyer-chats').dataset.open,'false');
+assert.equal(storage.has('autobot:buyer-chat:123456789012345'),false);
 render({checks:{},messages:[]},{companies:[]},[]);
-assert.equal(toolbar.hidden,true); assert.equal(mailNote.hidden,true); assert.equal(head.hidden,true);
+assert.equal(toolbar.hidden,true); assert.equal(mailNote.hidden,true);
 assert.match(list.textContent,/Компании пока не найдены/);
-console.log('Buyer correspondence: recipient isolation, compact statuses, safe replies, elapsed time, unchanged/offline refresh, filters and empty state passed.');
+console.log('Buyer chats: recipient isolation, chronology, automatic replies, safe text, statuses, filters, elapsed time, selection persistence, scroll continuity and empty state passed.');

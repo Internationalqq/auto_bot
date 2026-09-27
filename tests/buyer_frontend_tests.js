@@ -5,7 +5,7 @@ const vm = require('node:vm');
 function node() {
   return {textContent: '', hidden: false, disabled: false, events: {}, children:[],
     append(...values) {this.children.push(...values);},
-    querySelectorAll() {return [];},
+    querySelectorAll() {return [];}, querySelector() {return null;}, dataset:{},
     setAttribute() {},
     addEventListener(name, fn) { this.events[name] = fn; }};
 }
