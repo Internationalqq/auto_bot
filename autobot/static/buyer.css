@@ -48,11 +48,14 @@
 .buyer-chat-identity { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; flex: 1; min-width: 0; font-size: 12px; line-height: 1.5; }
 .buyer-chat-top { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
 .buyer-chat-top strong { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
-.buyer-chat-age { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.buyer-chat-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 3px; }
+.buyer-chat-age { color: #465c76; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .buyer-chat-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-.buyer-chat-state { color: var(--muted); font-size: 11px; }
-.buyer-chat-state.buyer-chat-answered { color: #12643c; font-weight: 600; }
-.buyer-chat-state.buyer-chat-warning { color: #865008; }
+.buyer-chat-state { padding: 3px 8px; border-radius: 5px; color: #465c76; background: #edf1f6; font-size: 14px; font-weight: 650; line-height: 1.45; overflow-wrap: anywhere; }
+.buyer-chat-state.buyer-chat-answered { color: #12643c; background: var(--green-soft); }
+.buyer-chat-state.buyer-chat-waiting, .buyer-chat-state.buyer-chat-warning { color: #865008; background: var(--amber-soft); }
+.buyer-chat-state.buyer-chat-error { color: var(--red); background: var(--red-soft); }
+.buyer-chat-state.buyer-chat-active { color: #244f82; background: #e1edfc; }
 .buyer-chat-price { color: var(--ink); font-size: 11px; }
 .buyer-chat-host { min-width: 0; min-height: 0; }
 .buyer-chat { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }

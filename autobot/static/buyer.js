@@ -600,13 +600,15 @@
       avatar.setAttribute('aria-hidden','true');
       const identity = node('span',null,'buyer-chat-identity'), top = node('span',null,'buyer-chat-top');
       top.append(node('strong',name));
+      const tone = state === 'Ответ получен' ? 'answered' : state === 'Ожидаем ответ' ? 'waiting' : thread.latest?.status === 'blocked' ? 'error' : thread.blocked || thread.latest?.status === 'uncertain' || company.status === 'contact_required' ? 'warning' : thread.checking || ['queued','sending'].includes(thread.latest?.status) ? 'active' : 'neutral';
+      const stateLabel = node('span',state,`buyer-chat-state buyer-chat-${tone}`);
+      const statusLine = node('span',null,'buyer-chat-status'); statusLine.append(stateLabel);
       if (lastEvent?.timestamp && (lastEvent.direction === 'in' || lastEvent.item.status === 'sent')) {
         const time = node('time',relativeAge(lastEvent.timestamp),'buyer-chat-age');
         time.dataset.buyerSentAt = String(lastEvent.timestamp); time.dateTime = new Date(lastEvent.timestamp*1000).toISOString();
-        time.title = `${lastEvent.direction === 'in' ? 'Ответ получен' : 'Отправка подтверждена'} ${shortDate(lastEvent.timestamp)}`; top.append(time);
+        time.title = `${lastEvent.direction === 'in' ? 'Ответ получен' : 'Отправка подтверждена'} ${shortDate(lastEvent.timestamp)}`; statusLine.append(time);
       }
-      const stateLabel = node('span',state,`buyer-chat-state${thread.blocked || ['blocked','uncertain'].includes(thread.latest?.status) ? ' buyer-chat-warning' : state === 'Ответ получен' ? ' buyer-chat-answered' : ''}`);
-      identity.append(top,node('span',messagePreview(lastEvent),'buyer-chat-preview'),stateLabel);
+      identity.append(top,node('span',messagePreview(lastEvent),'buyer-chat-preview'),statusLine);
       const price = prices.find(p => p.origin === 'reply' && p.price_kopecks != null) || prices.find(p => p.price_kopecks != null);
       if (price) {
         identity.append(node('span',`${(price.price_kopecks/100).toLocaleString('ru-RU')} ₽ / ${price.unit || 'ед.'} · ${price.origin === 'website' ? 'с сайта' : 'из ответа'}${price.state === 'review' || price.origin === 'website' ? ' · уточнить' : ''}`,'buyer-chat-price'));
