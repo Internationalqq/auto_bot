@@ -42,6 +42,11 @@ def execute(job, config, remote):
     folder.mkdir(parents=True,exist_ok=True,mode=0o700)
     state_path = folder/'state.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    if config.get('inbox_mode') == 'smtp_imap':
+        if state:
+            raise BuyerError('Журнал содержит прежнюю проверку почты; сначала завершите её')
+        from autobot.buyer_mail_transport import collect
+        return collect(job,config,remote,folder)
     if not state and config.get('inbox_mode') == 'mailru_lite_script':
         from autobot.buyer_mailru_inbox import execute as collect
         return collect(job,config,remote,folder)

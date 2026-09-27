@@ -1,8 +1,4 @@
-"""Mac-only outbox executor using the already signed-in Hermes buyer profile.
-
-No browser credentials cross the network. An attempt is reserved durably
-before the agent starts; crashes never cause automatic resending.
-"""
+"""Durable outbox executor for server SMTP or legacy Mac transports."""
 import argparse
 import hashlib
 import json
@@ -127,6 +123,9 @@ def execute(job, config, remote):
         state = json.loads(state_path.read_text(encoding='utf-8'))
         if state.get('receipt'):
             return state['receipt']
+        if config.get('sender_mode') == 'smtp_imap':
+            from autobot.buyer_mail_transport import send
+            return send(job, config, remote, folder, state)
         if state.get('transport') == 'mailru_lite':
             from autobot.buyer_mailru_script import execute as execute_script
             return execute_script(job, config, remote, folder, state)
@@ -135,6 +134,9 @@ def execute(job, config, remote):
             receipt = read_receipt(folder, job)
             save(state_path, {'receipt': receipt})
             return receipt
+    if not state and config.get('sender_mode') == 'smtp_imap':
+        from autobot.buyer_mail_transport import send
+        return send(job, config, remote, folder, state)
     if not state and job['status'] != 'sending':
         return {'status': 'uncertain', 'detail': 'Истекло ожидание исполнителя. Проверьте отправленные на Mac.', 'evidence': ''}
     if not state and config.get('sender_mode') == 'mailru_lite_script':

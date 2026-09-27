@@ -53,6 +53,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('Раздел',j['result']['drafts'][0]['body'])
         self.assertEqual(len(j['result']['drafts']),1)
 
+    def test_imap_transition_claim_carries_only_known_web_reply_fingerprints(self):
+        from autobot.buyer_reply_text import web_reply_fingerprint
+        key,job=self.sent()
+        result=self.result()
+        message=result['messages'][0]
+        message['message_id']='light.mail.ru/message/12345/'
+        self.assertTrue(replies.update(key,'reader',job['token'],result))
+        with closing(replies.connect()) as db:
+            before=[tuple(r) for r in db.execute('SELECT * FROM buyer_replies')]
+        replies.request_check(TID,key)
+        claimed=replies.claim('server-mail-sender')
+        self.assertEqual(claimed['known_web_replies'],[web_reply_fingerprint(message['sender'],message['text'],message['received_at'])])
+        with closing(replies.connect()) as db:
+            self.assertEqual(before,[tuple(r) for r in db.execute('SELECT * FROM buyer_replies')])
+
     def test_preparation_repeat_and_reopen_are_idempotent(self):
         a=suppliers.prepare(self.source);b=suppliers.prepare(copy.deepcopy(self.source))
         self.assertEqual(a['job_ids'],b['job_ids']);self.assertEqual(len(jobs.jobs(TID)),3)

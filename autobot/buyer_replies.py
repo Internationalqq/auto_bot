@@ -82,6 +82,11 @@ def claim(worker):
         out = {k:row[k] for k in ('id','recipient','subject','body','created_at')}
         out['positions'] = [{'line':i, **{k:p.get(k) for k in ('name','quantity','unit')}} for i,p in enumerate(positions(row),1)]
         out['mapping_trusted'] = not any(p['_request_edited'] for p in positions(row))
+        # Transition from browser message URLs to RFC Message-ID without
+        # re-importing known replies or changing their immutable evidence.
+        from autobot.buyer_reply_text import web_reply_fingerprint
+        out['known_web_replies'] = [web_reply_fingerprint(r['sender'],r['raw_text'],r['received_at'])
+            for r in db.execute("SELECT sender,raw_text,received_at FROM buyer_replies WHERE outbound_id=? AND message_id LIKE 'light.mail.ru/message/%'",(row['id'],))]
         out['token'] = token
         return out
 
