@@ -154,11 +154,11 @@ def tender_activity(tid):
 @blueprint.get('/api/tenders/<tid>/work-progress')
 @user_route
 def tender_progress(tid):
-    from autobot.web_ui import load_tender_metadata, build_tender_detail
+    from autobot.web_ui import load_tender_metadata
+    from autobot.tender_detail import build_tender_progress
     meta = load_tender_metadata().get(tid)
     if not meta: raise BuyerError('Тендер не найден')
-    detail = build_tender_detail(tid,meta,{})
-    return jsonify(ok=True, processed=detail['counts']['processed'], total=detail['total_positions'], verified=detail['counts']['verified'])
+    return jsonify(ok=True, **build_tender_progress(tid,meta))
 
 
 @blueprint.post('/api/tenders/<tid>/buyer/outbox')

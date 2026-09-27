@@ -110,6 +110,25 @@ def test_detail_separates_processed_rows_from_verified_prices(tmp_path, monkeypa
     assert detail["counts"]["verified"] == 1
     assert [position["market_processed"] for position in detail["positions"]] == [True, True]
     assert [position["verified_count"] for position in detail["positions"]] == [1, 0]
+    assert tender_detail.build_tender_progress(tender_id, {}) == {'total':2,'processed':2,'verified':1}
+
+
+def test_catalog_progress_releases_report_before_parsing(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from autobot.estimate_publication_recovery import consistent_report
+    tid='0171200001926000664'
+    monkeypatch.setattr(tender_detail,'REPORTS_DIR',tmp_path)
+    pd.DataFrame([{COL_NAME:'Материал',COL_UNIT:'шт',COL_QTY:1}]).to_excel(
+        tmp_path / f'ОТЧЕТ_ПО_СМЕТАМ_{tid}.xlsx',index=False)
+    read_excel=pd.read_excel
+    def another_reader():
+        with consistent_report(tmp_path,tid,timeout=.1): return True
+    def parse(snapshot):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(another_reader).result(timeout=2)
+        return read_excel(snapshot)
+    monkeypatch.setattr(pd,'read_excel',parse)
+    assert tender_detail.build_tender_progress(tid,{}) == {'total':1,'processed':0,'verified':0}
 
 
 def test_found_price_filter_requires_a_positive_offer_on_a_priceable_row(tmp_path, monkeypatch):

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import math
 import re
 import statistics
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 import pandas as pd
 
@@ -317,6 +319,40 @@ def build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict
     from autobot.estimate_publication_recovery import consistent_report
     with consistent_report(REPORTS_DIR, tender_id):
         return _consistent_build_tender_detail(tender_id, metadata, workflow)
+
+
+def build_tender_progress(tender_id: str, metadata: dict[str, Any]) -> dict[str, int]:
+    """Snapshot files briefly; catalog statistics must not lock the open page."""
+    from autobot.estimate_publication_recovery import consistent_report
+    from autobot.estimate_scope import expand_resources
+    from autobot.market_contract import merge_market_frames, confirmed_prices
+    from autobot.tender_viability import _estimate_numeric_for_compare
+    with consistent_report(REPORTS_DIR, tender_id):
+        snapshots = []
+        for path in (REPORTS_DIR / f"ОТЧЕТ_ПО_СМЕТАМ_{tender_id}.xlsx", _market_path(tender_id)):
+            if path.is_file() and path.stat().st_size > 64*1024*1024:
+                raise OSError('Отчёт слишком большой для быстрого подсчёта прогресса')
+            snapshots.append(path.read_bytes() if path.is_file() else None)
+    try:
+        frames = [pd.read_excel(BytesIO(raw)) if raw is not None else pd.DataFrame() for raw in snapshots]
+    except (ValueError, BadZipFile) as error:
+        raise OSError('Не удалось прочитать данные прогресса') from error
+    estimate = expand_resources(frames[0])
+    if metadata.get('region'): estimate['Регион поиска'] = str(metadata['region'])
+    rows = merge_market_frames(estimate, frames[1])
+    counts = {'total': 0, 'processed': 0, 'verified': 0}
+    for _, row in rows.iterrows():
+        name = _clean(row.get(COL_NAME, ''))
+        if not name or _clean(row.get(COL_DUP)) == 'Да': continue
+        counts['total'] += 1
+        if row.get('Рынок обработано') != 'Да': continue
+        counts['processed'] += 1
+        if not confirmed_prices(row): continue
+        sources = _parse_bundle(row.get('Цена-сайт-телефон (json)', ''),
+            estimate_price=_estimate_numeric_for_compare(row), name=name, unit=_clean(row.get(COL_UNIT, '')),
+            quantity=_number(row.get(COL_QTY)), total=_number(row.get(COL_SUM)))
+        if any(source['verified'] for source in sources): counts['verified'] += 1
+    return counts
 
 
 def _consistent_build_tender_detail(tender_id: str, metadata: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
