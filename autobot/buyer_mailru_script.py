@@ -100,10 +100,22 @@ class FirefoxLight:
         self.call({'action': 'wait', 'seconds': 1})
 
     def link(self, label):
-        state = self.capture()
-        links = unique([e for e in state['elements'] if e['role'] == 'AXLink' and e['label'] == label])
-        if len(links) != 1: raise BuyerError('Не найдена однозначная ссылка: ' + label)
-        self.click(links[0])
+        # A preserved title does not mean Mail.ru finished rendering its page.
+        # Wait for navigation, then refresh a read-only page once if still blank.
+        for refresh in range(2):
+            for attempt in range(4):
+                state = self.capture()
+                links = unique([e for e in state['elements'] if e['role'] == 'AXLink' and e['label'] == label])
+                if len(links) == 1:
+                    self.click(links[0])
+                    return
+                if len(links) > 1 or state['window_title'].startswith('Новое письмо'):
+                    raise BuyerError('Не найдена однозначная ссылка: ' + label)
+                if attempt < 3: self.call({'action':'wait','seconds':1})
+            reloads = unique([e for e in state['elements'] if e['role'] == 'AXButton' and e.get('label') == 'Обновить'])
+            if refresh or len(reloads) != 1: break
+            self.click(reloads[0])
+        raise BuyerError('Не найдена однозначная ссылка: ' + label)
 
     def find_sent(self, job):
         state = self.capture()

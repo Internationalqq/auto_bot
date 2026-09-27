@@ -109,15 +109,23 @@ def retry_blocked(tid, job_id):
             return job_id  # double-click on retry
         if row['status'] != 'blocked' or not row['receipt']:
             raise BuyerError('Повтор разрешён только после подтверждения, что письмо не отправлялось')
+        # A reply is a separate message from its already-sent question. Exempt
+        # only that verified parent; all other duplicate guards remain active.
+        parent_id = job_id
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_followups'").fetchone():
+            parent = db.execute('''SELECT p.id FROM buyer_followups f JOIN outbound p ON p.id=f.parent_outbound_id
+                WHERE f.outbound_id=? AND p.tender_id=? AND p.recipient=? AND p.status='sent' ''',
+                (job_id,tid,row['recipient'])).fetchone()
+            if parent: parent_id = parent['id']
         other = db.execute("""SELECT id FROM outbound WHERE tender_id=? AND draft_job_id=?
-            AND draft_index=? AND recipient=? AND id<>? AND status IN ('queued','sending','sent','uncertain') LIMIT 1""",
-            (tid,row['draft_job_id'],row['draft_index'],row['recipient'],job_id)).fetchone()
+            AND draft_index=? AND recipient=? AND id<>? AND id<>? AND status IN ('queued','sending','sent','uncertain') LIMIT 1""",
+            (tid,row['draft_job_id'],row['draft_index'],row['recipient'],job_id,parent_id)).fetchone()
         if other:
             raise BuyerError('Для этого адресата уже есть другая отправка этого обращения. Проверьте её в журнале; повтор запрещён.')
         original = drafts.get(row['draft_job_id'],{}).get('drafts',[])
         if row['draft_index'] < len(original):
             keys = set(original[row['draft_index']]['position_keys'])
-            for candidate in db.execute("SELECT draft_job_id,draft_index FROM outbound WHERE tender_id=? AND recipient=? AND id<>? AND status IN ('queued','sending','sent','uncertain')",(tid,row['recipient'],job_id)):
+            for candidate in db.execute("SELECT draft_job_id,draft_index FROM outbound WHERE tender_id=? AND recipient=? AND id<>? AND id<>? AND status IN ('queued','sending','sent','uncertain')",(tid,row['recipient'],job_id,parent_id)):
                 entries = drafts.get(candidate['draft_job_id'],{}).get('drafts',[])
                 if candidate['draft_index']<len(entries) and keys & set(entries[candidate['draft_index']]['position_keys']):
                     raise BuyerError('Эти позиции уже есть в другой переписке с поставщиком. Повтор запрещён.')

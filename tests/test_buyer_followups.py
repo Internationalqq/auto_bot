@@ -76,5 +76,26 @@ class FollowupTests(unittest.TestCase):
             db.execute('UPDATE buyer_followups SET next_at=0')
         follow.process_pending();self.assertEqual(len(box.listing(TID)),1)
 
+    def test_proven_unsent_reply_can_retry_without_resending_parent(self):
+        self.doc('contract.docx',['Место выполнения работ: '+ADDRESS]);self.seed();follow.process_pending()
+        child=next(row for row in box.listing(TID) if row['id']!='parent')['id']
+        receipt=box.encoded({'status':'blocked','detail':'Не открылась почтовая навигация','evidence':''})
+        with closing(box.connect()) as db,db:
+            db.execute("UPDATE outbound SET status='blocked',receipt=? WHERE id=?",(receipt,child))
+        with patch.object(box.buyer_jobs,'jobs',return_value=[]):
+            self.assertEqual(box.retry_blocked(TID,child),child)
+            self.assertEqual(box.retry_blocked(TID,child),child)
+            self.assertEqual(len(box.listing(TID)),2)
+            with closing(box.connect()) as db,db:
+                self.assertEqual(db.execute('SELECT count(*) FROM outbound_attempt_history').fetchone()[0],1)
+                self.assertEqual(db.execute("SELECT status FROM outbound WHERE id='parent'").fetchone()[0],'sent')
+                db.execute("UPDATE outbound SET status='uncertain',receipt=? WHERE id=?",(receipt,child))
+            with self.assertRaises(BuyerError): box.retry_blocked(TID,child)
+            with closing(box.connect()) as db,db:
+                db.execute("UPDATE outbound SET status='blocked' WHERE id=?",(child,))
+                db.execute('''INSERT INTO outbound (id,fingerprint,tender_id,draft_job_id,draft_index,recipient,subject,body,status,created_at,updated_at)
+                    SELECT 'duplicate','other',tender_id,draft_job_id,draft_index,recipient,subject,body,'sent',created_at,updated_at FROM outbound WHERE id=?''',(child,))
+            with self.assertRaises(BuyerError): box.retry_blocked(TID,child)
+
 
 if __name__=='__main__':unittest.main()

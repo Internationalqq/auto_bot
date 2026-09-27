@@ -81,6 +81,26 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.run_script()['status'], 'blocked')
         self.browser.send.assert_not_called()
 
+    def test_missing_navigation_reloads_read_only_page_once(self):
+        browser=object.__new__(script.FirefoxLight);browser.click=Mock();browser.call=Mock()
+        reload={'role':'AXButton','label':'Обновить','bounds':[1,1,20,20],'index':3}
+        link={'role':'AXLink','label':'Назад во «Входящие»','bounds':[1,40,100,20],'index':4}
+        blank={'window_title':'Поиск - test','elements':[reload]}
+        ready={'window_title':'Поиск - test','elements':[reload,link]}
+        browser.capture=Mock(side_effect=[blank]*4+[ready])
+        browser.link(link['label'])
+        self.assertEqual([c.args[0] for c in browser.click.call_args_list],[reload,link])
+        browser.click.reset_mock();browser.capture=Mock(return_value=blank)
+        with self.assertRaises(BuyerError): browser.link(link['label'])
+        browser.click.assert_called_once_with(reload)
+
+    def test_missing_navigation_never_reloads_composer(self):
+        browser=object.__new__(script.FirefoxLight);browser.click=Mock();browser.call=Mock()
+        browser.capture=Mock(return_value={'window_title':'Новое письмо - Mail.ru','elements':[
+            {'role':'AXButton','label':'Обновить','bounds':[1,1,20,20],'index':3}]})
+        with self.assertRaises(BuyerError): browser.link('Отправленные')
+        browser.click.assert_not_called();browser.call.assert_not_called()
+
     def test_sending_after_reply_search_returns_to_mail_navigation(self):
         browser=object.__new__(script.FirefoxLight);browser.link=Mock()
         browser.capture=Mock(side_effect=[{'window_title':'Поиск - AB-CAB-01'},
