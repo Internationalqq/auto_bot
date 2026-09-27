@@ -530,35 +530,20 @@ h1 em {
   transform: rotate(45deg);
 }
 
-.tender-scan-card {
-  margin-bottom: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-
-.tender-scan-card > summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; font-weight: 650; }
-.tender-scan-description { margin: 10px 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
-
-.tender-scan-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  min-width: 0;
-}
-
-.tender-scan-input {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
+.tender-scan-dialog { width: min(520px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 0; border-radius: 14px; color: var(--ink); background: var(--surface); box-shadow: var(--shadow-float); }
+.tender-scan-dialog::backdrop { background: rgb(18 32 51 / 38%); }
+.tender-scan-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.tender-scan-head h2 { margin: 0; font-size: 20px; }
+.tender-scan-form { display: grid; gap: 16px; }
+.tender-scan-input { display: grid; gap: 8px; min-width: 0; font-size: 13px; font-weight: 600; }
+.tender-scan-form > .btn { justify-self: end; }
+.ui-icon { display: block; flex: 0 0 auto; width: 18px; height: 18px; }
+.icon-button { width: 36px; padding: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .tender-scan-input input {
   width: 100%;
-  height: 42px;
-  padding: 0 13px 0 38px;
+  height: 44px;
+  padding: 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   color: var(--ink);
@@ -568,7 +553,7 @@ h1 em {
 }
 
 .tender-scan-input input::placeholder {
-  color: #8c99aa;
+  color: var(--muted);
 }
 
 .tender-scan-input input:focus {
@@ -582,9 +567,6 @@ h1 em {
   cursor: wait;
 }
 
-.tender-scan-input .search-icon {
-  left: 14px;
-}
 
 .tender-scan-button {
   min-height: 42px;
@@ -601,15 +583,13 @@ h1 em {
   font-size: 11px;
 }
 
-.tender-scan-foot b {
-  color: var(--ink-soft);
-  font-weight: 600;
-}
 
 .tender-scan-status {
   color: var(--muted);
   font-weight: 600;
-  text-align: right;
+  text-align: left;
+
+  font-size: 13px;
 }
 
 .tender-scan-status.is-recognized,
@@ -874,7 +854,7 @@ h1 em {
 .tender-tools {
   display: grid;
   min-width: 0;
-  margin-bottom: 10px;
+  margin-bottom: 16px;
 }
 
 .tender-search {
@@ -884,18 +864,22 @@ h1 em {
   min-width: 0;
 }
 
+.tender-search > .ui-icon { position: absolute; left: 14px; color: #536b80; pointer-events: none; }
+
 .tender-search input {
   width: 100%;
-  height: 42px;
-  padding: 0 62px 0 36px;
-  border: 1px solid var(--line-strong);
+  height: 44px;
+  padding: 0 14px 0 42px;
+  border: 1px solid #91a7c5;
   border-radius: var(--radius-sm);
   color: var(--ink);
   background: var(--surface);
+
+  font-size: 14px;
 }
 
 .tender-search input::placeholder {
-  color: #96a2b3;
+  color: var(--muted);
 }
 
 .tender-search input:focus {
@@ -925,17 +909,6 @@ h1 em {
   transform: rotate(45deg);
 }
 
-.tender-search kbd {
-  position: absolute;
-  right: 8px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-bottom-color: #c1cbd8;
-  border-radius: 5px;
-  color: var(--muted);
-  background: var(--surface-soft);
-  font: 9px/1.2 ui-sans-serif, sans-serif;
-}
 
 .filters {
   display: flex;
@@ -965,13 +938,13 @@ h1 em {
 .filter-chip strong {
   display: inline-grid;
   place-items: center;
-  min-width: 20px;
-  height: 20px;
+  min-width: 24px;
+  height: 24px;
   padding: 0 5px;
   border-radius: 99px;
   color: var(--muted);
   background: #e8edf3;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .filter-chip:hover {
@@ -997,8 +970,12 @@ h1 em {
   justify-self: end;
   gap: 7px;
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 13px;
   cursor: pointer;
+
+  min-height: 40px;
+
+  line-height: 1.4;
 }
 
 .exact-search-toggle input,
@@ -1009,13 +986,6 @@ h1 em {
   accent-color: var(--blue);
 }
 
-.eis-results-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-}
 
 .market-selection-bar {
   display: grid;
@@ -1078,47 +1048,20 @@ h1 em {
   accent-color: var(--blue);
 }
 
-.eis-results-head > div {
-  margin-right: auto;
-  color: var(--ink-soft);
-}
 
-.eis-results-head > div > span {
-  color: var(--ink-soft);
-  font-size: 12px;
-}
-
-.eis-results-head > div > span strong {
-  color: var(--blue);
-  font-size: 13px;
-}
-
-.tender-sort {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 12px;
-}
-
-.tender-sort select,
 .filter-select,
 .filter-range input {
-  min-height: 36px;
+  min-height: 40px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   color: var(--ink-soft);
   background: #fff;
   outline: none;
+
+  font-size: 13px;
 }
 
-.tender-sort select {
-  min-width: 0;
-  padding: 0 24px 0 8px;
-  font-size: 12px;
-}
 
-.tender-sort select:focus,
 .filter-select:focus,
 .filter-range input:focus {
   border-color: #8eb0eb;
@@ -1127,8 +1070,8 @@ h1 em {
 
 .tender-results-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 284px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 304px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -1151,13 +1094,13 @@ h1 em {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  min-height: 52px;
+  min-height: 48px;
   padding: 0 16px;
   border: 0;
   color: var(--ink);
   background: transparent;
   font: inherit;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 800;
   text-align: left;
   cursor: pointer;
@@ -1181,15 +1124,15 @@ h1 em {
 }
 
 .filter-block {
-  padding: 15px 0;
+  padding: 16px 0;
   border-top: 1px solid #e6ebf2;
 }
 
 .filter-block h3 {
-  margin: 0 0 11px;
+  margin: 0 0 10px;
   color: var(--ink-soft);
-  font-size: 10px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .workflow-filter-links {
@@ -1203,15 +1146,17 @@ h1 em {
 .workflow-filter-links .filter-chip {
   justify-content: space-between;
   min-width: 0;
-  padding: 0 7px;
+  padding: 8px 10px;
   border-color: var(--line);
   background: var(--surface-soft);
-  font-size: 9px;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+  min-height: 40px;
 }
 
 .workflow-filter-links .filter-chip span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .filter-options {
@@ -1222,24 +1167,28 @@ h1 em {
 .filter-options label {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 8px;
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.35;
   cursor: pointer;
+
+  min-height: 32px;
 }
 
 .filter-options b {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .filter-select {
   width: 100%;
   padding: 0 30px 0 9px;
-  font-size: 10px;
+  font-size: 13px;
+
+  min-height: 40px;
 }
 
 .filter-range {
@@ -1257,7 +1206,7 @@ h1 em {
 
 .filter-range label span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .filter-range input {
@@ -1310,23 +1259,12 @@ h1 em {
   transition: transform .17s ease, border-color .17s ease, box-shadow .17s ease;
 }
 
-.tender-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 3px;
-  border-radius: var(--radius-md) 0 0 var(--radius-md);
-  background: var(--blue);
-}
 
-.tender-card.status-attention::before { background: var(--amber); }
 
 .tender-card:hover {
-  border-color: #becce0;
-  box-shadow: 0 16px 38px rgba(28, 48, 77, .12);
-  transform: translateY(-2px);
+  border-color: #91a7c5;
+  box-shadow: none;
+  transform: none;
 }
 
 .tender-card[hidden] {
@@ -1335,28 +1273,30 @@ h1 em {
 
 .eis-card-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
+  grid-template-columns: minmax(0, 1fr) 190px;
 }
 
 .eis-card-main {
   min-width: 0;
-  padding: 14px 16px;
+  padding: 14px 16px 12px;
 }
 
+.eis-card-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; margin-bottom: 8px; }
+
 .eis-law {
-  margin-bottom: 9px;
-  color: #7f94b9;
-  font-size: 11px;
-  font-weight: 650;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .eis-headline {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 6px 10px;
   min-width: 0;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .tender-select-control {
@@ -1420,9 +1360,11 @@ h1 em {
 .eis-number {
   min-width: 0;
   color: var(--blue);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
   overflow-wrap: anywhere;
+
+  text-decoration: none;
 }
 
 .eis-number:hover {
@@ -1487,13 +1429,15 @@ h1 em {
 
 .card-title-link {
   color: var(--ink);
+
+  text-decoration: none;
 }
 
 .eis-object h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 650;
-  line-height: 1.4;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -1503,21 +1447,24 @@ h1 em {
 
 .eis-customer summary, .eis-publication summary, .workflow-progress summary { cursor: pointer; color: var(--ink-soft); font-size: 12px; }
 
+.eis-customer { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; }
+.eis-customer > span { margin: 0; font-size: 12px; color: var(--muted); }
+
 .eis-customer strong {
-  display: block;
-  margin-top: 8px;
+  display: inline;
+  margin-top: 0;
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.5;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
 .eis-empty {
   margin: 0;
-  color: #9aa7b8;
+  color: var(--muted);
   font-size: 12px;
-  font-style: italic;
+  font-style: normal;
 }
 
 .eis-card-side {
@@ -1532,7 +1479,7 @@ h1 em {
 .eis-price strong {
   display: block;
   color: var(--ink);
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   line-height: 1.2;
   overflow-wrap: anywhere;
@@ -1540,10 +1487,13 @@ h1 em {
 
 .eis-dates {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 8px;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding-top: 0;
 }
+
+.eis-dates > span { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.eis-dates small { margin: 0; font-size: 11px; color: var(--muted); }
 
 .eis-dates span,
 .eis-region {
@@ -1566,99 +1516,40 @@ h1 em {
 }
 
 .autobot-workflow {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  gap: 10px 16px;
   padding: 12px 16px;
   border-top: 1px solid var(--line);
   border-radius: 0 0 var(--radius-md) var(--radius-md);
-  background: var(--surface-soft);
-}
+  background: var(--surface);
 
-.step-strip {
-  display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  padding-top: 10px;
-}
 
-.step-strip span {
-  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 11px;
+
+  justify-content: flex-end;
 }
 
-.step-strip i {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 19px;
-  height: 19px;
-  border: 1px solid #d9e1ea;
-  border-radius: 50%;
-  background: #fff;
-}
-
-.step-strip i::before {
-  content: "";
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #bac4d0;
-}
-
-.step-strip span.is-done {
-  color: var(--blue);
-}
-
-.step-strip span.is-done i {
-  border-color: var(--blue);
-  background: var(--blue-soft);
-}
-
-.step-strip span.is-done i::before {
-  width: 5px;
-  height: 5px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--blue);
-}
-
-.next-box {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-}
-
-.next-box > span {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.next-box > span small {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 550;
-}
-
-.next-box > span strong {
-  color: var(--ink-soft);
-  font-size: 12px;
-  font-weight: 550;
-  line-height: 1.4;
-}
-
+.workflow-progress { padding: 8px 10px; border-top: 1px solid var(--line); }
+.workflow-progress summary { font-size: 12px; cursor: pointer; }
+.step-strip { display: grid; gap: 5px; padding-top: 8px; color: var(--muted); font-size: 12px; }
 .tender-card .row-actions {
   flex-wrap: nowrap;
-  justify-content: space-between;
+  justify-content: flex-end;
+
+  gap: 8px;
+
+  margin-left: auto;
 }
 
 .tender-card .row-actions > .btn {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+
+  min-height: 36px;
+
+  padding: 8px 10px;
+
+  font-size: 12px;
 }
 
 .more-menu {
@@ -1678,9 +1569,9 @@ h1 em {
 .more-menu > summary {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
-  padding-bottom: 6px;
+  width: 36px;
+  height: 36px;
+  padding-bottom: 0;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   color: var(--ink-soft);
@@ -1948,7 +1839,7 @@ h1 em {
   50% { opacity: .32; }
 }
 
-@media (max-width: 1060px) {
+@media (max-width: 980px) {
   .page {
     padding-right: 18px;
     padding-left: 18px;
@@ -1957,10 +1848,6 @@ h1 em {
   .head-actions {
     max-width: 410px;
     flex-wrap: wrap;
-  }
-
-.tender-scan-foot {
-    grid-column: 1;
   }
 
   .tender-tools {
@@ -2044,7 +1931,7 @@ h1 em {
   }
 
   .eis-card-side { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); border-left: 0; }
-  .eis-card-side .eis-publication { grid-column: 1 / -1; order: 3; }
+  .eis-card-side .eis-dates { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; order: 3; }
 
   .eis-dates {
     margin-top: 0;
@@ -2083,16 +1970,15 @@ h1 em {
     font-size: 28px;
   }
 
-.head-actions {
+  .head-actions {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
   }
 
-  .head-actions .btn { min-height: 40px; padding-inline: 12px; }
+  .head-actions .btn { min-height: 44px; padding: 8px; gap: 6px; font-size: 13px; line-height: 1.3; }
+  .head-actions #resumeSearchButton { grid-column: 1 / -1; }
 
-  .tender-scan-card {
-    padding: 14px;
-  }
 
 .tender-scan-form {
     grid-template-columns: 1fr;
@@ -2114,8 +2000,6 @@ h1 em {
     justify-self: start;
   }
 
-  .tender-sort { width: 100%; }
-  .tender-sort select { flex: 1; }
 
   .workflow-filter-links {
     grid-template-columns: 1fr;
@@ -2135,9 +2019,6 @@ h1 em {
 
   .metric { min-height: 44px; padding: 9px; }
 
-  .tender-search kbd {
-    display: none;
-  }
 
   .tender-search input {
     padding-right: 12px;
@@ -2156,20 +2037,10 @@ h1 em {
     margin-left: auto;
   }
 
-  .eis-dates {
-    gap: 12px;
-  }
+  .eis-card-side .eis-dates { grid-template-columns: 1fr; }
 
   .autobot-workflow {
     padding: 13px 16px 16px;
-  }
-
-  .next-box {
-    grid-template-columns: 1fr;
-  }
-
-  .step-strip {
-    gap: 2px;
   }
 
   .row-actions {

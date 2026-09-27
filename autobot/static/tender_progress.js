@@ -23,32 +23,69 @@
     });
   }
   ages(); setInterval(ages, 60000);
-  const waiting = []; let running = false;
+  const waiting = [], states = new Map(); let running = false;
+  function enqueue(el, reset = false) {
+    const state = states.get(el);
+    if (!state || state.queued || state.busy) return;
+    clearTimeout(state.timer);
+    if (reset) state.failures = 0;
+    state.queued = true;
+    waiting.push(el);
+    drain();
+  }
   async function drain() {
     if (running) return; running = true;
     try {
       while (waiting.length) {
         const el = waiting.shift();
+        const state = states.get(el), bar = el.querySelector('progress'), retry = el.querySelector('[data-progress-retry]');
+        state.queued = false; state.busy = true;
+        el.setAttribute('aria-busy','true');
+        if (retry) { retry.disabled = true; retry.textContent = 'Загружаем…'; }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
         try {
-          const response = await fetch(`/api/tenders/${el.dataset.progressTender}/work-progress`,{cache:'no-store'});
+          const response = await fetch(`/api/tenders/${el.dataset.progressTender}/work-progress`,{cache:'no-store',signal:controller.signal});
           const data = await response.json();
-          if (!response.ok || !data.ok) throw new Error();
-          const total = Math.max(0, Number(data.total)), processed = Math.min(total, Math.max(0, Number(data.processed)));
+          if (!response.ok || !data.ok || ![data.total,data.processed,data.verified].every(n => Number.isInteger(n) && n >= 0) || data.processed > data.total || data.verified > data.processed) throw new Error();
+          const total = data.total, processed = data.processed;
           el.querySelector('strong').textContent = total ? `Проанализировано ${processed} из ${total} позиций` : 'Смета ещё не разобрана';
-          const bar = el.querySelector('progress');
           bar.max = Math.max(1,total); bar.value = processed;
+          bar.hidden = !total;
           bar.setAttribute('aria-label', 'Прогресс анализа сметы');
           el.querySelector('[data-progress-prices]').textContent = `С подтверждённой ценой: ${data.verified}`;
+          state.failures = 0; state.loaded = true;
+          if (retry) retry.hidden = true;
         } catch (_) {
           el.querySelector('strong').textContent = 'Прогресс временно недоступен';
-          el.querySelector('progress').hidden = true;
+          bar.hidden = true;
+          el.querySelector('[data-progress-prices]').textContent = '';
+          state.failures += 1;
+          if (retry) retry.hidden = false;
+          // A short connection failure must not leave the card broken until F5.
+          if (state.failures < 3) state.timer = setTimeout(() => {
+            if (!document.hidden) enqueue(el);
+          }, state.failures * 10000);
+        } finally {
+          clearTimeout(timeout);
+          state.busy = false;
+          el.setAttribute('aria-busy','false');
+          if (retry) { retry.disabled = false; retry.textContent = 'Повторить'; }
         }
       }
     } finally { running = false; }
   }
   const observer = new IntersectionObserver(entries => {
-    for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); waiting.push(entry.target); }
-    drain();
+    for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); enqueue(entry.target); }
   }, {rootMargin:'100px'});
-  document.querySelectorAll('[data-progress-tender]').forEach(el => observer.observe(el));
+  document.querySelectorAll('[data-progress-tender]').forEach(el => {
+    states.set(el,{failures:0,loaded:false,queued:false,busy:false,timer:null});
+    el.querySelector('[data-progress-retry]')?.addEventListener('click',() => enqueue(el,true));
+    observer.observe(el);
+  });
+  document.addEventListener('visibilitychange',() => {
+    if (!document.hidden) states.forEach((state,el) => {
+      if (state.failures > 0 && state.failures < 3) enqueue(el);
+    });
+  });
 })();

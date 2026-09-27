@@ -5,6 +5,15 @@
 .tender-work-progress progress::-webkit-progress-bar { background: var(--line); }
 .tender-work-progress progress::-webkit-progress-value { background: var(--blue); border-radius: 3px; }
 .tender-work-progress progress::-moz-progress-bar { background: var(--blue); border-radius: 3px; }
+.tender-work-progress progress[hidden] { display: none; }
 .tender-work-progress p { margin: 0; }
-.tender-recent { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+.tender-card .tender-work-progress { flex: 1 1 245px; margin: 0; gap: 7px; font-size: 12px; }
+.tender-card .tender-work-progress > div { display: grid; gap: 3px; }
+.tender-card .tender-work-progress strong { font-size: 13px; }
+.tender-card .tender-work-progress progress { height: 6px; }
+.tender-recent { display: flex; align-items: center; gap: 6px; color: #24599a; font-size: 12px; font-weight: 600; margin: 0; }
+.tender-recent .ui-icon { width: 15px; height: 15px; }
+.progress-retry { justify-self: start; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; background: var(--surface); color: var(--blue); font: inherit; cursor: pointer; }
+.progress-retry[hidden] { display: none; }
+.progress-retry:disabled { color: var(--muted); cursor: wait; }
 @media (max-width: 600px) { .tender-work-progress { gap: 10px; } }

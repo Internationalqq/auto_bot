@@ -9,7 +9,7 @@
   <title>Сметы</title>
 
   <link rel="stylesheet" href="/static/autobot-ui.css?v=20260926-minimal-1" />
-  <link rel="stylesheet" href="/estimates/catalog.css?v=20260926-minimal-1" />
+  <link rel="stylesheet" href="/estimates/catalog.css?v=20260927-catalog-2" />
   <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1">
 </head>
 <body class="autobot-page estimates-index-page">
@@ -19,8 +19,7 @@
     <section class="hero-grid">
       <div class="catalog-heading-main">
 
-        <h1>Сметы <span class="catalog-count">{{ overview.total_count }}</span></h1>
-        <p class="hero-text">Загрузите файл или откройте сохранённую смету.</p>
+        <h1>Сметы</h1>
       </div>
 
       <details class="upload-card" {% if not estimates %}open{% endif %}><summary>{{ icon("file") }} Загрузить смету <span>Excel / PDF</span></summary><div class="upload-card-body">
@@ -59,11 +58,8 @@
 
     <section class="catalog-panel">
       <div class="panel-head">
-        <div class="catalog-heading">
-          <p class="panel-note">Для добавления в объект отметьте нужные сметы.</p>
-        </div>
         <div class="catalog-tools">
-          <label class="estimate-catalog-search"><span aria-hidden="true"></span><input type="search" id="estimateCatalogSearch" aria-label="Найти смету" placeholder="Найти смету" autocomplete="off" /></label>
+          <label class="estimate-catalog-search">{{ icon('search') }}<input type="search" id="estimateCatalogSearch" aria-label="Найти смету" placeholder="Найти смету" autocomplete="off" /></label>
           <button class="btn secondary bundle-open-btn" id="estimateBundleOpenBtn" type="button" hidden disabled>Добавить выбранные в объект</button>
         </div>
       </div>
@@ -77,7 +73,7 @@
         {% for e in estimates %}
         <article class="estimate-card" data-estimate-card="{{ e.id }}" data-estimate-search="{{ (e.title ~ ' ' ~ e.original_filename ~ ' ' ~ e.types_short)|lower }}">
           <label class="estimate-select"><input type="checkbox" data-estimate-select value="{{ e.id }}" data-estimate-title="{{ e.title }}" data-estimate-rows="{{ e.row_count }}" data-estimate-total="{{ e.total_sum_value }}" data-estimate-capability="{{ e.crm_import_capability }}" aria-label="Выбрать смету {{ e.title }}" /></label>
-          <div class="estimate-card-name">{{ icon('file') }}<div><h3><a href="/estimates/{{ e.id }}">{{ e.title }}</a></h3>{% if e.original_filename != e.title %}<p>{{ e.original_filename }}</p>{% endif %}<small>{{ e.created_at }} · {{ e.types_short }}</small></div></div>
+          <div class="estimate-card-name"><div><h3><a href="/estimates/{{ e.id }}">{{ e.title }}</a></h3>{% if e.original_filename != e.title %}<p>{{ e.original_filename }}</p>{% endif %}<small>{{ e.created_at }} · {{ e.types_short }}</small></div></div>
           <div class="estimate-card-count" data-label="Позиций"><b>{{ e.row_count }}</b></div>
           <div class="estimate-card-total" data-label="Сумма сметы"><b>{{ e.total_sum_fmt }}</b></div>
           <div class="estimate-card-state"><span class="status-pill {{ e.market_status_class }}">{{ e.market_status_label }}</span><small>Подтверждено {{ e.market_progress_done }} из {{ e.market_progress_total }}</small></div>
