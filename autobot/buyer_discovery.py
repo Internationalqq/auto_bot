@@ -33,6 +33,18 @@ _DIRECTORY_HOSTS = frozenset({
 _EMAIL = re.compile(r'[\w.%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}')
 
 
+def source_identity(url):
+    host=(urlsplit(url).hostname or '').lower().removeprefix('www.')
+    if host=='avito.ru' or host.endswith('.avito.ru'):return url
+    # Explicit geographic mirrors of a company's domain, not arbitrary
+    # customer subdomains on hosting platforms or separate Avito sellers.
+    parts=host.split('.')
+    cities={'moscow','msk','spb','sankt-peterburg','saint-petersburg','yaroslavl','yar',
+            'rybinsk','kazan','samara','ufa','perm','ekaterinburg','novosibirsk','krasnodar','rostov'}
+    if len(parts)==3 and parts[0] in cities:host='.'.join(parts[1:])
+    return host
+
+
 def directory_source(url):
     host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
     return any(host == domain or host.endswith('.'+domain) for domain in _DIRECTORY_HOSTS)
@@ -195,7 +207,7 @@ def search(query):
             if not search_relevant(item,query):
                 unrelated = True
                 continue
-            identity = url if host == 'avito.ru' or host.endswith('.avito.ru') else host
+            identity = source_identity(url)
             if identity in seen: continue
             seen.add(identity)
             links.append({'url': url, 'title': item.title[:240]})
@@ -224,6 +236,30 @@ def search(query):
             error = 'часть бесплатных поисковиков не ответила'
     if not links and (error or unrelated):
         raise BuyerError('Поиск временно недоступен: '+(error or 'поисковики вернули страницы не по запросу'))
+    return links
+
+
+def search_task(task, source):
+    from autobot.buyer_store import cached_links
+    links=cached_links(task,source)
+    seen={source_identity(p['url']) for p in links}
+    errors=[]
+    def append(found,query):
+        for item in found:
+            identity=source_identity(item['url'])
+            if identity in seen or len(links)>=10:continue
+            seen.add(identity);links.append({**item,'discovered_query':query})
+    if len(links)<3:
+        try:append(search(task['query']),task['query'])
+        except (BuyerError,OSError) as error:errors.append(str(error))
+    fallback=task.get('fallback_query')
+    if len(links)<3 and fallback and fallback!=task['query']:
+        try:append(search(fallback),fallback)
+        except (BuyerError,OSError) as error:errors.append(str(error))
+    if errors:
+        reason='; '.join(dict.fromkeys(errors))[:700]
+        if not links:raise BuyerError(reason)
+        links[0]={**links[0],'search_warning':reason}
     return links
 
 
@@ -337,17 +373,19 @@ def inspect(task, source, *, fetch=fetch_html):
     relevant = bool(re.search(pattern, topic, re.I)) if pattern else bool(anchors) and sum(a in topic.casefold() for a in anchors) >= min(2,len(anchors))
     if not relevant:
         raise BuyerError('Страница не подтверждает нужный ассортимент или вид работ')
+    if task.get('work_profile'):
+        from autobot.buyer_needs import WORK_PROFILES
+        profile=WORK_PROFILES.get(task['work_profile'])
+        if profile and not re.search(profile[1],facts['heading']+' '+facts['content'][:12000],re.I):
+            raise BuyerError('Не подтверждена специализация подрядчика: '+profile[0])
     commerce = r'заказ|заявк|вызвать|выполняем|оказываем|услуг|стоимость|прайс|цен[аыу]' if task['bucket']=='works' else r'поставк|продаж|купить|заказ|налич|прайс|каталог|производител|производств|магазин|товар|корзин'
     host = urlsplit(url).hostname.removeprefix('www.')
     if not re.search(commerce, facts['heading']+' '+facts['content'][:12000], re.I) and host != 'avito.ru':
         raise BuyerError('Не подтверждено коммерческое предложение компании')
     if task.get('intent') == 'product':
-        from autobot.buyer_needs import product_identifiers
-        def comparable(value):
-            value=value.casefold().replace('ё','е').replace('×','х').translate(str.maketrans('abcehkmoptxy','авсенкмортху'))
-            return re.sub(r'[^\w]','',value)
-        product_text = comparable(facts['heading']+' '+facts['content'][:12000])
-        rows = [r for r in rows if all(comparable(term) in product_text for term in product_identifiers(r['name']))]
+        from autobot.buyer_needs import product_identifiers, identifier_matches
+        product_text = facts['heading']+' '+facts['content'][:12000]
+        rows = [r for r in rows if all(identifier_matches(term,product_text) for term in product_identifiers(r['name']))]
         if not rows:
             raise BuyerError('Страница не подтверждает запрошенную модель или размер товара')
     regional = next((source_region_evidence(p[1], source['region'], task['bucket']) for p in pages
@@ -358,20 +396,27 @@ def inspect(task, source, *, fetch=fetch_html):
         # Platform support contacts are not the advertiser's contacts.
         email, emails = '', []
         facts['channels'] = [{'channel':'avito','address':url,'source_url':url}]
-    identity = 'page:'+url if host == 'avito.ru' else 'site:'+host
+    identity = ('page:' if host=='avito.ru' or host.endswith('.avito.ru') else 'site:')+source_identity(url)
     evidence_pages = [{'url': p[0], 'sha256': digest(p[1]), 'checked_at':time.time(),
                        'excerpt':p[2]['text'][:2000]} for p in pages]
-    prices = []
+    prices, price_checks = [], []
     for row in rows:
         offer = inspect_source_page(html, url, name=row['name'], target_unit=row['unit'], position_bucket=task['bucket'], quantity=row['quantity'])
+        price_checks.append({'position_key':row['position_key'],'source_url':url,'accepted':offer.accepted,
+                             'status':offer.status,'reason':offer.reason,'evidence':offer.evidence,
+                             'unit':offer.unit,'extractor':offer.extractor,'observed_at':time.time()})
         if offer.accepted and offer.price is not None:
+            vat=re.search(r'(?:с\s+(?:учетом\s+)?НДС|без\s+НДС|включая\s+НДС)',offer.evidence,re.I)
             prices.append({'position_key':row['position_key'], 'price_kopecks':int((Decimal(str(offer.price))*100).quantize(Decimal('1'), rounding=ROUND_HALF_UP)),
-                           'unit':offer.unit,'source_url':url,'evidence':offer.evidence,'state':'published','observed_at':time.time()})
+                           'unit':offer.unit,'source_url':url,'evidence':offer.evidence,'vat':vat[0] if vat else '',
+                           'state':'published','observed_at':time.time()})
+    channels=list({(c['channel'],re.sub(r'\D','',c['address'])[-10:] if c['channel']=='phone' else c['address']):c
+                   for p in pages for c in p[2]['channels']}.values())
     return {'id':'discovered-'+digest(identity)[:24], 'company':facts['name'], 'url':url,
-            'email':email,'emails':emails,'channels':[c for p in pages for c in p[2]['channels']],
+            'email':email,'emails':emails,'channels':channels,
             'position_keys':[r['position_key'] for r in rows], 'categories':[task['category']],
             'region':source['region'], 'region_note':regional or 'Регион поставки или выполнения работ нужно подтвердить',
-            'evidence_pages':evidence_pages,'prices':prices,'image':facts['image'],'discovered':True}
+            'evidence_pages':evidence_pages,'prices':prices,'price_checks':price_checks,'image':facts['image'],'discovered':True}
 
 
 def verify_contact(supplier):
@@ -398,7 +443,9 @@ def run_once():
         store.settle()
         return False
     try:
-        if step['kind'] == 'search': store.finish(step, links=search(step['payload']['query']))
+        if step['kind'] == 'search':
+            links=search_task(step['payload'],step['source'])
+            store.finish(step,links=links,error=next((p['search_warning'] for p in links if p.get('search_warning')),''))
         elif step['kind'] == 'prepare':
             from autobot.buyer_workflow import prepare_run
             store.finish(step, prepared=prepare_run(step['source']['tender_id'], step['run_id']))

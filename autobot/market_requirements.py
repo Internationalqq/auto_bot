@@ -68,6 +68,11 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         patterns.append(('stone_grade', 'Прочность щебня', r'\b[мm]\s*\d{2,4}\b'))
     if 'стеклошар' in folded:
         patterns.append(('glass_fraction','Фракция стеклошариков',r'\b\d{1,4}\s*[-–—]\s*\d{1,4}\s*мкм\b'))
+    if 'георешет' in folded:
+        patterns.extend([
+            ('geogrid_height','Высота ячейки георешётки',rf'\b(?:высот\w*(?:\s+(?:ячейк\w*|ребр\w*))?|h)\s*[:=]?\s*{number}\s*(?:мм|см)\b'),
+            ('geogrid_strength','Прочность георешётки',rf'\b{number}\s*/\s*{number}\s*кн\s*/\s*м\b'),
+        ])
     if any(word in folded for word in ('краск','эмаль')):
         patterns.append(('paint_color','Цвет краски',r'\b(?:бел(?:ый|ая)|черн(?:ый|ая)|желт(?:ый|ая)|красн(?:ый|ая)|сер(?:ый|ая)|зелен(?:ый|ая)|оранжев(?:ый|ая)|син(?:ий|яя))\b'))
         patterns.append(('paint_base','Основа краски',r'\b(?:акрилов|алкидн)\w*\b'))
@@ -109,6 +114,9 @@ def technical_specs(name: object) -> list[dict[str, str]]:
             if kind == 'grass_variety':
                 value=_canonical(match.group(1))
                 if re.fullmatch(r'универсальн(?:ый|ая|ое|ые)',value):value='универсальная'
+            if kind == 'geogrid_height':
+                height=float(re.search(number,evidence)[0].replace(',','.'))
+                value=f'{height*(10 if evidence.casefold().endswith("см") else 1):g}мм'
             if kind == 'cable_model':
                 # A numeric weight ("масса кабеля до 1 кг") is not the cable
                 # family КГ. Keep genuine names such as "Кабель КГ 3х2,5".
@@ -201,7 +209,7 @@ sizes are retained for discovery; their comparison needs category-specific units
     if incomplete:
         return incomplete
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base', 'road_sign_model', 'road_sign_size', 'road_sign_film', 'road_sign_film_class')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base', 'road_sign_model', 'road_sign_size', 'road_sign_film', 'road_sign_film_class', 'geogrid_height', 'geogrid_strength')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:

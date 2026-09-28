@@ -37,7 +37,8 @@ def exact_identity_reason(row, quote):
 def unquoted(body):
     # Remove recognizable quoted-message boundaries, keeping original evidence
     # in the snapshot. Never derive a price from the customer's quoted request.
-    cut=re.search(r'(?im)^(?:\s*>|\s*-{3,}.*(?:сообщени|message)|\s*On .+ wrote:|\s*(?:От|From):\s|.*(?:писал|писала)\s*:)',body)
+    cut=re.search(r'(?im)^(?:\s*>|\s*-{3,}.*(?:сообщени|message)|\s*On .+ wrote:|\s*(?:От|From):\s|.*(?:писал|писала)\s*:|'
+                  r'\s*(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),?\s+\d{1,2}\s+[а-я]+\s+\d{4}[^\n]*\sот\s)',body)
     return body[:cut.start()].strip() if cut else body.strip()
 
 

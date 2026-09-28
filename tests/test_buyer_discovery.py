@@ -65,6 +65,71 @@ class DiscoveryTests(unittest.TestCase):
         self.source['positions'][0]['quantity']='20'
         self.assertNotEqual(first,store.enqueue(self.source))
 
+    def test_external_networks_do_not_accept_a_domestic_electrician(self):
+        self.source['positions']=[row('w','Кабель до 35 кВ в проложенных трубах, масса 1 м кабеля до 6 кг','work')]
+        source=needs.snapshot(self.source);task=needs.queries(source)[0]|{'url':'https://electric.example/'}
+        self.assertIn('наружных электрических сетей',task['query'])
+        page='<h1>Электромонтажные работы</h1><p>Услуги электрика: розетки, проводка в квартирах. Закажите выезд.</p>'
+        with self.assertRaisesRegex(BuyerError,'специализация'):
+            discovery.inspect(task,source,fetch=lambda url:(url,page))
+        page+='<p>Прокладка кабельных линий и монтаж наружных электрических сетей.</p>'
+        result=discovery.inspect(task,source,fetch=lambda url:(url,page))
+        self.assertEqual(result['position_keys'],['w'])
+        self.assertFalse(result['price_checks'][0]['accepted'])
+        self.assertTrue(result['price_checks'][0]['reason'])
+
+    def test_written_product_identity_keeps_model_and_decimal_boundaries(self):
+        for term,text,expected in [('У733М','Сжим U733M (16-35)',True),('У733М','Сжим У733М1',False),
+                ('4х150','АВБбШв 4 x 150 - 1кВ',True),('4х150','4х1500',False),
+                ('4х1,5','4х15',False),('АВБбШв','АВБбШвнг 4х150',False),
+                ('4ПКТп(б)-1-16/25(Б)','Муфта 4ПКТп(б)-1-16/25(Б) КВТ',True)]:
+            with self.subTest(term=term,text=text):self.assertEqual(needs.identifier_matches(term,text),expected)
+
+    def test_city_mirrors_are_one_company_but_avito_sellers_stay_separate(self):
+        found=[SimpleNamespace(url=url,title='Кабель') for url in (
+            'https://yaroslavl.supplier.example/item','https://moscow.supplier.example/item',
+            'https://other.example/item','https://avito.ru/one','https://avito.ru/two')]
+        with patch.object(discovery,'search_api',return_value=found):
+            links=discovery.search('кабель')
+        self.assertEqual(len(links),4)
+        self.assertNotEqual(discovery.source_identity('https://seller1.hosting.example/'),discovery.source_identity('https://seller2.hosting.example/'))
+
+    def test_sparse_regional_results_try_one_delivery_query_and_preserve_errors(self):
+        task={'query':'"У733М" купить Ярославль','fallback_query':'"У733М" купить доставка','intent':'product'}
+        first={'url':'https://one.example/','title':'У733М'}
+        with patch.object(store,'cached_links',return_value=[]),patch.object(discovery,'search',side_effect=[[first],[first,{'url':'https://two.example/','title':'У733М'}]]) as search:
+            result=discovery.search_task(task,self.source)
+        self.assertEqual(len(result),2);self.assertEqual(search.call_count,2)
+        with patch.object(store,'cached_links',return_value=[first]),patch.object(discovery,'search',side_effect=BuyerError('Поиск временно недоступен')):
+            result=discovery.search_task(task,self.source)
+        self.assertEqual(len(result),1);self.assertIn('временно',result[0]['search_warning'])
+
+    def test_previous_product_url_is_rechecked_without_reusing_price_or_other_tender(self):
+        run=store.enqueue(self.source);step=store.claim()
+        candidate={'id':'company','company':'Supplier','url':'https://supplier.example/card','email':'',
+                   'position_keys':['c'],'evidence_pages':[],'prices':[{'position_key':'c','price_kopecks':10,'source_url':'https://supplier.example/card'}]}
+        store.finish(step,candidate=candidate)
+        task={'intent':'product','position_keys':['c']}
+        links=store.cached_links(task,self.source)
+        self.assertEqual(links,[{'url':candidate['url'],'title':'Supplier','reused':True}])
+        self.assertEqual(store.cached_links(task,self.source|{'tender_id':'9876543210'}),[])
+        self.assertEqual(store.cached_links(task,self.source|{'positions':[row(name='Другой кабель')]}),[])
+
+    def test_rechecking_price_replaces_old_observation_and_retains_rejection(self):
+        run=store.enqueue(self.source);step=store.claim()
+        url='https://supplier.example/card'
+        base={'id':'company','company':'Supplier','url':url,'email':'','emails':[],
+              'position_keys':['c'],'evidence_pages':[],'categories':['cable']}
+        price={'position_key':'c','source_url':url,'price_kopecks':100,'observed_at':1}
+        check={'position_key':'c','source_url':url,'accepted':True,'observed_at':1}
+        store.finish(step,candidate=base|{'prices':[price],'price_checks':[check]})
+        next_step=store.claim()
+        store.finish(next_step,candidate=base|{'prices':[],'price_checks':[check|{'accepted':False,'observed_at':2,'reason':'Цена по запросу'}]})
+        company=store.candidates(self.source['tender_id'],run)[0]
+        self.assertEqual(company['prices'],[])
+        self.assertEqual(len(company['price_checks']),1)
+        self.assertEqual(company['price_checks'][0]['reason'],'Цена по запросу')
+
     def test_business_date_computed_at_enqueue(self):
         with patch.object(store,'today_iso',return_value='2030-01-02'):
             store.enqueue(self.source)

@@ -190,7 +190,7 @@ def detect_price_unit(text: object) -> str:
         ("кг", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:кг|килограмм\w*|kgm)",)),
         ("т", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:\bт\b|тонн\w*)",)),
         ("л", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:\bл\b|литр\w*)",)),
-        ("шт", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:шт\.?|штук\w*|единиц\w*|pce)",)),
+        ("шт", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:шт\.?|штук\w*|единиц(?:у|ы)?(?![а-я]|\s+измерени)|pce)",)),
         ("час", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:час\w*|чел\.?-?ч|маш\.?-?ч)",)),
         ("смена", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*смен\w*",)),
         ("м", (r"(?:руб(?:\.|лей|ля|ль)?|₽)\s*(?:/|за)?\s*(?:1\s*)?(?:метр\w*|\bм\.?\b|mtr)(?!\s*[23])",)),
@@ -297,7 +297,10 @@ def _product_unit(product) -> str:
     for tag in product.select('[itemprop="unitText"], [itemprop="unitCode"]'):
         if tag.find_parent(attrs={'itemscope': True}) is product:
             units.add(normalize_unit(tag.get('content') or tag.get_text(' ', strip=True)))
-    for tag in product.select('div,span,p,td,li'):
+    for tag in product.select('div,span,p,td,li,tr,dl'):
+        owner = tag.find_parent(attrs={'itemtype': re.compile(r'(?:/|:)Product$', re.I)})
+        if owner is not None and owner is not product:
+            continue
         value = _clean(tag.get_text(' ', strip=True))
         if len(value) > 100:
             continue
@@ -306,6 +309,17 @@ def _product_unit(product) -> str:
             units.add(normalize_unit(match.group(1)))
     units.discard('')
     return next(iter(units)) if len(units) == 1 else ''
+
+
+def _product_vat(product) -> str:
+    if product is None:
+        return ''
+    labels = set()
+    for tag in product.select('.price-label, [itemprop="priceSpecification"], p, small'):
+        value = _clean(tag.get_text(' ', strip=True))
+        if re.fullmatch(r'цен[аы]\s+(?:указан[аы]\s+)?(?:с\s+НДС|без\s+НДС|включая\s+НДС)\s*[:.]?', value, re.I):
+            labels.add(value.rstrip(':.'))
+    return next(iter(labels)) if len(labels) == 1 else ''
 
 
 def _scope(text: object, page_text: object = "") -> str:
@@ -433,7 +447,7 @@ def _microdata_facts(soup: BeautifulSoup, name: str) -> list[_PriceFact]:
             if unit_tag is not None else ""
         )
         unit_text = unit_text or _product_unit(product)
-        evidence = _clean(f"{title} {price} руб. {unit_text}")
+        evidence = _clean(f"{title} {price} руб. {unit_text} {_product_vat(product)}")
         key = (price, evidence)
         if key in seen:
             continue
@@ -738,12 +752,16 @@ def inspect_source_page(
         or host.removeprefix('www.') == 'keepmarket.ru' and path.startswith('/catalog/lan-kabel-vitaya-para-f-utp/')
         or host.removeprefix('www.') == 'tdatm.ru' and path.startswith('/catalog/')
         or host.removeprefix('www.') == 'pkmegapolis.ru' and path.startswith('/dorozhnye-znaki/')
+        or host.removeprefix('www.') == 'shop220.ru'
         or host.removeprefix('www.') == 'elektro.ru' and path.startswith('/product/'))
     if specialised:
         # Use the same authoritative selling block for catalogue and live
         # searches. Generic text may contain a wholesale price or a modal.
         try:
-            if host.removeprefix('www.') == 'gazony-esg.ru':
+            if host.removeprefix('www.') == 'shop220.ru':
+                from autobot.supplier_catalog_sites import shop220_records
+                records = shop220_records(page_html, url)
+            elif host.removeprefix('www.') == 'gazony-esg.ru':
                 from autobot.supplier_catalog_sites import esg_records
                 records = esg_records(page_html, url)
             elif host.removeprefix('www.') == 'tinko.ru':

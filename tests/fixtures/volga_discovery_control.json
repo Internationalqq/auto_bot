@@ -1,0 +1,637 @@
+{
+  "tender_id": "0171200001926000664",
+  "region": "Ярославская область",
+  "positions": [
+    {
+      "position_key": "3112c4ca03be31e38a03f0f8d8a471c8",
+      "name": "Щебень из плотных горных пород для строительных работ М 1200, фракция 20-40 мм",
+      "quantity": 57.859,
+      "unit": "м3",
+      "type_slug": "material",
+      "section": "Раздел 2. Установка бортовых камней",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Щебень из плотных горных пород для строительных работ М 1200, фракция 20-40 мм",
+          "original_unit": "м3",
+          "position_type": "material",
+          "normalized_unit": "м3",
+          "specifications": [
+            {
+              "kind": "fraction",
+              "label": "Фракция щебня",
+              "value": "20-40",
+              "evidence": "20-40"
+            },
+            {
+              "kind": "stone_grade",
+              "label": "Прочность щебня",
+              "value": "м1200",
+              "evidence": "М 1200"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "5b5c9621e66625a0dea04497166fb732",
+      "name": "Смеси бетонные тяжелого бетона (БСТ) на щебне из гравия, класс В15, F(1)100, W4",
+      "quantity": 38.3087,
+      "unit": "м3",
+      "type_slug": "material",
+      "section": "Раздел 2. Установка бортовых камней",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Смеси бетонные тяжелого бетона (БСТ) на щебне из гравия, класс В15, F(1)100, W4",
+          "original_unit": "м3",
+          "position_type": "material",
+          "normalized_unit": "м3",
+          "specifications": [
+            {
+              "kind": "concrete_class",
+              "label": "Класс бетона",
+              "value": "в15",
+              "evidence": "В15"
+            },
+            {
+              "kind": "concrete_aggregate",
+              "label": "Заполнитель бетона",
+              "value": "гравий",
+              "evidence": "гравия"
+            },
+            {
+              "kind": "concrete_frost",
+              "label": "Морозостойкость бетона",
+              "value": "f(1)100",
+              "evidence": "F(1)100"
+            },
+            {
+              "kind": "concrete_water",
+              "label": "Водонепроницаемость бетона",
+              "value": "w4",
+              "evidence": "W4"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "1ac57946b4759a48aff331fb21f82145",
+      "name": "Бордюрный камень 100.20.8 Тиманфайа, б/ц, ч/п",
+      "quantity": 755.0,
+      "unit": "пм",
+      "type_slug": "material",
+      "section": "Раздел 2. Установка бортовых камней",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Бордюрный камень 100.20.8 Тиманфайа, б/ц, ч/п",
+          "original_unit": "пм",
+          "position_type": "material",
+          "normalized_unit": "пм",
+          "specifications": [
+            {
+              "kind": "curb_model",
+              "label": "Марка бордюра",
+              "value": "100.20.8",
+              "evidence": "100.20.8"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "4e5d67a1934bd80ca9fc88c14a9dfb08",
+      "name": "Песок природный для строительных работ I класс, мелкий",
+      "quantity": 931.997,
+      "unit": "м3",
+      "type_slug": "material",
+      "section": "Раздел 3. Устройство плиточного покрытия",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Песок природный для строительных работ I класс, мелкий",
+          "original_unit": "м3",
+          "position_type": "material",
+          "normalized_unit": "м3",
+          "specifications": [
+            {
+              "kind": "sand_class",
+              "label": "Класс песка",
+              "value": "1",
+              "evidence": "I класс"
+            },
+            {
+              "kind": "sand_grain",
+              "label": "Крупность песка",
+              "value": "мелкий",
+              "evidence": "мелкий"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "8ca9eec24049af5dedce4524a54b4b08",
+      "name": "Геополотно нетканое полиэфирное, иглопробивное, поверхностная плотность 200 г/м2",
+      "quantity": 6213.339,
+      "unit": "м2",
+      "type_slug": "material",
+      "section": "Раздел 3. Устройство плиточного покрытия",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Геополотно нетканое полиэфирное, иглопробивное, поверхностная плотность 200 г/м2",
+          "original_unit": "м2",
+          "position_type": "material",
+          "normalized_unit": "м2",
+          "specifications": [
+            {
+              "kind": "density",
+              "label": "Поверхностная плотность",
+              "value": "200гм2",
+              "evidence": "200 г/м2"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "39e1d2fc9d642902857e8bc3aaa8e883",
+      "name": "Смеси сухие цементно-песчаные монтажно-кладочные, крупность заполнителя не более 3,5 мм, класс В12,5 (М150), F100",
+      "quantity": 124.896975,
+      "unit": "т",
+      "type_slug": "material",
+      "section": "Раздел 3. Устройство плиточного покрытия",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Смеси сухие цементно-песчаные монтажно-кладочные, крупность заполнителя не более 3,5 мм, класс В12,5 (М150), F100",
+          "original_unit": "т",
+          "position_type": "material",
+          "normalized_unit": "т",
+          "specifications": [],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "58eaf8866fda88994a8446ea885e217f",
+      "name": "Тротуарная плитка Готика Паркет, Тиманфайа, с/ц, ч/п h=60 мм размером 300x100 мм",
+      "quantity": 2352.63,
+      "unit": "м2",
+      "type_slug": "material",
+      "section": "Раздел 3. Устройство плиточного покрытия",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Тротуарная плитка Готика Паркет, Тиманфайа, с/ц, ч/п h=60 мм размером 300x100 мм",
+          "original_unit": "м2",
+          "position_type": "material",
+          "normalized_unit": "м2",
+          "specifications": [
+            {
+              "kind": "dimensions",
+              "label": "Размеры / сечение",
+              "value": "300х100",
+              "evidence": "300x100"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "ea8db6b8c6bd991ce6d1bd8c1a65984d",
+      "name": "Тротуарная плитка Готика Полигональ, Голд 1, б/ц, ч/п, h=80 мм размером 893x780 мм",
+      "quantity": 920.907,
+      "unit": "м2",
+      "type_slug": "material",
+      "section": "Раздел 3. Устройство плиточного покрытия",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Тротуарная плитка Готика Полигональ, Голд 1, б/ц, ч/п, h=80 мм размером 893x780 мм",
+          "original_unit": "м2",
+          "position_type": "material",
+          "normalized_unit": "м2",
+          "specifications": [
+            {
+              "kind": "dimensions",
+              "label": "Размеры / сечение",
+              "value": "893х780",
+              "evidence": "893x780"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "ffbac174a4d3802f87447bf44c5596f5",
+      "name": "Плотная мелкозернистая асфальтобетонная смесь марка III тип Д с красным пигментом",
+      "quantity": 128.4,
+      "unit": "т",
+      "type_slug": "material",
+      "section": "Раздел 4. Устройство покрытия велодорожки",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Плотная мелкозернистая асфальтобетонная смесь марка III тип Д с красным пигментом",
+          "original_unit": "т",
+          "position_type": "material",
+          "normalized_unit": "т",
+          "specifications": [],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "2c42eac34932a9080fca4fa19b8168c3",
+      "name": "Краска для дорожной разметки автомобильных дорог, суспензия пигментов и наполнителей в акриловом сополимере с модифицирующими добавками, цвет белый",
+      "quantity": 47.24553,
+      "unit": "кг",
+      "type_slug": "material",
+      "section": "Раздел 4. Устройство покрытия велодорожки",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Краска для дорожной разметки автомобильных дорог, суспензия пигментов и наполнителей в акриловом сополимере с модифицирующими добавками, цвет белый",
+          "original_unit": "кг",
+          "position_type": "material",
+          "normalized_unit": "кг",
+          "specifications": [
+            {
+              "kind": "paint_color",
+              "label": "Цвет краски",
+              "value": "бел",
+              "evidence": "белый"
+            },
+            {
+              "kind": "paint_base",
+              "label": "Основа краски",
+              "value": "акрил",
+              "evidence": "акриловом"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "bc9f6943abca3db5d201bdcf43c634f8",
+      "name": "Стеклошарики световозвращающие для посыпки разметочных красок, фракция 100-600 мкм",
+      "quantity": 0.0305655,
+      "unit": "т",
+      "type_slug": "material",
+      "section": "Раздел 4. Устройство покрытия велодорожки",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Стеклошарики световозвращающие для посыпки разметочных красок, фракция 100-600 мкм",
+          "original_unit": "т",
+          "position_type": "material",
+          "normalized_unit": "т",
+          "specifications": [
+            {
+              "kind": "glass_fraction",
+              "label": "Фракция стеклошариков",
+              "value": "100-600мкм",
+              "evidence": "100-600 мкм"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "8b313a99760099abc0c7c973a0b8f4c9",
+      "name": "Георешетка нетканая композитная синтетическая, прочность при растяжении 80/15 кН/м - Георешетка объемная из полиэтиленовых лент, размеры ячейки 210х210 мм, высота ячейки 150 мм",
+      "quantity": 496.95488,
+      "unit": "м2",
+      "type_slug": "material",
+      "section": "Раздел 5. Укрепление откосов",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Георешетка нетканая композитная синтетическая, прочность при растяжении 80/15 кН/м - Георешетка объемная из полиэтиленовых лент, размеры ячейки 210х210 мм, высота ячейки 150 мм",
+          "original_unit": "м2",
+          "position_type": "material",
+          "normalized_unit": "м2",
+          "specifications": [
+            {
+              "kind": "dimensions",
+              "label": "Размеры / сечение",
+              "value": "210х210",
+              "evidence": "210х210"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "7da86b1b47fec2ed171f68801d417998",
+      "name": "Сжим типа У733М для магистральных и ответвительных проводов и кабелей",
+      "quantity": 1.72,
+      "unit": "100 шт",
+      "type_slug": "material",
+      "section": "Раздел 5. Материалы и оборудование",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Сжим типа У733М для магистральных и ответвительных проводов и кабелей",
+          "original_unit": "100 шт",
+          "position_type": "material",
+          "normalized_unit": "шт",
+          "specifications": [],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "7d11bd0fab0b4732582b1ec9af2e9568",
+      "name": "Муфта кабельная концевая 4ПКТп(б)-1-16/25(Б) (КВТ)",
+      "quantity": 86.0,
+      "unit": "шт",
+      "type_slug": "material",
+      "section": "Раздел 5. Материалы и оборудование",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Муфта кабельная концевая 4ПКТп(б)-1-16/25(Б) (КВТ)",
+          "original_unit": "шт",
+          "position_type": "material",
+          "normalized_unit": "шт",
+          "specifications": [
+            {
+              "kind": "hardware_model",
+              "label": "Модель / артикул",
+              "value": "4пктп(б)-1-16/25(б)",
+              "evidence": "4ПКТп(б)-1-16/25(Б)"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "6c4cd77920bebd799cd88a1bf6aec5e0",
+      "name": "Кабель АВБбШв 4х150 - 0,66/1 кВ",
+      "quantity": 351.9,
+      "unit": "пм",
+      "type_slug": "material",
+      "section": "Раздел 5. Материалы и оборудование",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Кабель АВБбШв 4х150 - 0,66/1 кВ",
+          "original_unit": "пм",
+          "position_type": "material",
+          "normalized_unit": "пм",
+          "specifications": [
+            {
+              "kind": "dimensions",
+              "label": "Размеры / сечение",
+              "value": "4х150",
+              "evidence": "4х150"
+            },
+            {
+              "kind": "cable_model",
+              "label": "Марка кабеля",
+              "value": "aвббшв",
+              "evidence": "АВБбШв"
+            },
+            {
+              "kind": "cable_voltage",
+              "label": "Напряжение кабеля",
+              "value": "660",
+              "evidence": " 0,66"
+            },
+            {
+              "kind": "cable_voltage",
+              "label": "Напряжение кабеля",
+              "value": "1000",
+              "evidence": "1 кВ"
+            }
+          ],
+          "issues": [],
+          "can_search": true
+        }
+      }
+    },
+    {
+      "position_key": "1795857dc2bf1a77799c19bedbf7a09b",
+      "name": "Разработка грунта с погрузкой на автомобили-самосвалы в траншеях экскаватором «обратная лопата» с ковшом вместимостью 0,5 (0,5-0,63) м3, группа грунтов: 2",
+      "quantity": 2.08074,
+      "unit": "1000 м³",
+      "type_slug": "work",
+      "section": "Раздел 1. Разработка грунта под конструктивные слои",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Разработка грунта с погрузкой на автомобили-самосвалы в траншеях экскаватором «обратная лопата» с ковшом вместимостью 0,5 (0,5-0,63) м3, группа грунтов: 2",
+          "original_unit": "1000 м3",
+          "position_type": "work",
+          "normalized_unit": "м3",
+          "specifications": [],
+          "issues": [],
+          "can_search": true,
+          "work": {
+            "schema_version": 1,
+            "operation": "excavation",
+            "query": "разработка грунта",
+            "original_name": "Разработка грунта с погрузкой на автомобили-самосвалы в траншеях экскаватором «обратная лопата» с ковшом вместимостью 0,5 (0,5-0,63) м3, группа грунтов: 2",
+            "original_unit": "1000 м3",
+            "constraints": [
+              {
+                "kind": "excavator",
+                "label": "экскаватор",
+                "value": "excavator",
+                "evidence": "экскаватором"
+              },
+              {
+                "kind": "trench",
+                "label": "в траншее",
+                "value": "trench",
+                "evidence": "в траншеях"
+              },
+              {
+                "kind": "soil-group",
+                "label": "группа грунта",
+                "value": "2",
+                "evidence": "группа грунтов: 2"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "position_key": "ebc771d20c5bcfcbf33a546db4d0d9a7",
+      "name": "Установка бортовых камней бетонных: при других видах покрытий",
+      "quantity": 7.55,
+      "unit": "100 м",
+      "type_slug": "work",
+      "section": "Раздел 2. Установка бортовых камней",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Установка бортовых камней бетонных: при других видах покрытий",
+          "original_unit": "100 м",
+          "position_type": "work",
+          "normalized_unit": "м",
+          "specifications": [],
+          "issues": [],
+          "can_search": true,
+          "work": {
+            "schema_version": 1,
+            "operation": "kerb",
+            "query": "установка бордюра",
+            "original_name": "Установка бортовых камней бетонных: при других видах покрытий",
+            "original_unit": "100 м",
+            "constraints": []
+          }
+        }
+      }
+    },
+    {
+      "position_key": "de7036c3b0ad3348c35ab544e04c2ef3",
+      "name": "Армирование грунтовых насыпей георешетками",
+      "quantity": 0.4808,
+      "unit": "1000 м²",
+      "type_slug": "work",
+      "section": "Раздел 5. Укрепление откосов",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Армирование грунтовых насыпей георешетками",
+          "original_unit": "1000 м2",
+          "position_type": "work",
+          "normalized_unit": "м2",
+          "specifications": [],
+          "issues": [],
+          "can_search": true,
+          "work": {
+            "schema_version": 1,
+            "operation": "",
+            "query": "",
+            "original_name": "Армирование грунтовых насыпей георешетками",
+            "original_unit": "1000 м2",
+            "constraints": []
+          }
+        }
+      }
+    },
+    {
+      "position_key": "77bfe3438784a6a93c42a9fe136746d3",
+      "name": "Кабель до 35 кВ в проложенных трубах, блоках и коробах, масса 1 м кабеля: до 1 кг",
+      "quantity": 6.95,
+      "unit": "100 м",
+      "type_slug": "work",
+      "section": "Раздел 2. Электромонтажные работы",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Кабель до 35 кВ в проложенных трубах, блоках и коробах, масса 1 м кабеля: до 1 кг",
+          "original_unit": "100 м",
+          "position_type": "work",
+          "normalized_unit": "м",
+          "specifications": [
+            {
+              "kind": "package",
+              "label": "Масса / объём",
+              "value": "1кг",
+              "evidence": "1 кг"
+            }
+          ],
+          "issues": [],
+          "can_search": true,
+          "work": {
+            "schema_version": 1,
+            "operation": "wire-pull",
+            "query": "протяжка провода в трубе",
+            "original_name": "Кабель до 35 кВ в проложенных трубах, блоках и коробах, масса 1 м кабеля: до 1 кг",
+            "original_unit": "100 м",
+            "constraints": [
+              {
+                "kind": "prepared-pipe",
+                "label": "готовая труба",
+                "value": "prepared-pipe",
+                "evidence": "проложенных трубах"
+              },
+              {
+                "kind": "voltage",
+                "label": "напряжение",
+                "value": "до35кв",
+                "evidence": "до 35 кв"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "position_key": "6aefd26ee89ed85558ed3983785965ab",
+      "name": "Добавлять (уменьшать) на каждые 10 мм: к норме 27-07-005-04 - до 60 мм",
+      "quantity": -830.4,
+      "unit": "м реза",
+      "type_slug": "aggregate",
+      "section": "Раздел 3. Устройство плиточного покрытия",
+      "parent_position_id": null,
+      "specification": {
+        "requirements": {
+          "schema_version": 1,
+          "original_name": "Добавлять (уменьшать) на каждые 10 мм: к норме 27-07-005-04 - до 60 мм",
+          "original_unit": "м реза",
+          "position_type": "aggregate",
+          "normalized_unit": "м",
+          "specifications": [],
+          "issues": [
+            "Нужно определить самостоятельный предмет поиска"
+          ],
+          "can_search": false
+        }
+      }
+    }
+  ]
+}

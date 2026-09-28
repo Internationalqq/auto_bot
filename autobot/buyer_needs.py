@@ -62,6 +62,32 @@ def product_identifiers(name):
     return list(dict.fromkeys(terms))
 
 
+def identifier_matches(term, text):
+    def canonical(value):
+        value=value.casefold().replace('ё','е').replace('×','х').replace('–','-').replace('—','-')
+        value=value.translate(str.maketrans('abcehkmoptxyu','авсенкмортхуу'))
+        value=re.sub(r'(?<=\d),(?=\d)', '.', value)
+        value=re.sub(r'\s*([/\-])\s*', r'\1', value)
+        value=re.sub(r'\(\s*','(',value)
+        value=re.sub(r'\s*\)',')',value)
+        return re.sub(r'(?<=\d)\s*х\s*(?=\d)', 'х', value)
+    return bool(re.search(r'(?<![\w.,])'+re.escape(canonical(term))+r'(?![\w.,])',canonical(text)))
+
+
+WORK_PROFILES={
+    'external_electrical':('монтаж наружных электрических сетей кабельных линий',
+        r'наружн\w*\s+(?:электр\w*\s+)?(?:сет|освещ)|кабельн\w*\s+лини|силов\w*\s+кабел|электроснабжен\w*\s+(?:предприятий|объектов)|до\s*35\s*кв'),
+    'lighting_installation':('монтаж опор наружного освещения',r'(?:монтаж|установк)\w*[^.!?]{0,60}опор|наружн\w*\s+освещ'),
+}
+
+
+def work_profile(row):
+    name=row['name'].casefold().replace('ё','е')
+    if re.search(r'(?:установк|монтаж)\w*\s+опор.*(?:наружн|освещ)',name):return 'lighting_installation'
+    if re.search(r'кабель\s+до\s*35\s*кв|наружн\w*\s+электр|силов\w*\s+кабел|кабельн\w*\s+лини',name):return 'external_electrical'
+    return ''
+
+
 def queries(payload):
     from autobot.buyer_suppliers import category
     names = {'cable': 'кабель', 'lighting': 'светильники',
@@ -85,28 +111,34 @@ def queries(payload):
         if not detected and kind == 'works' and re.search(r'электромонтаж|электропровод|(?:монтаж|прокладка|подключение).*(?:кабел|провод|электро|розет|щит)', row['name'], re.I):
             detected = 'electrical_work'
         group = detected or re.sub(r'\s+', ' ', row['name']).strip()[:100]
-        key = (kind, group)
+        key = (kind, group, work_profile(row) if kind=='works' else '')
         groups.setdefault(key, []).append(row['position_key'])
     result = []
-    for (kind, group), keys in groups.items():
-        title = names.get(group, group)
+    for (kind, group, profile), keys in groups.items():
+        title = WORK_PROFILES[profile][0] if profile else names.get(group, group)
         terms = 'подрядчик' if kind == 'works' else 'поставщик'
         result.append({'query': f'{title} {terms} {payload["region"]}'[:380],
-                       'position_keys': keys, 'bucket': kind, 'category': group, 'intent':'supplier'})
+                       'position_keys': keys, 'bucket': kind, 'category': group, 'intent':'supplier', 'work_profile':profile})
         if kind == 'works':
             result.append({'query': f'site:avito.ru {title} {payload["region"]}'[:380],
-                           'position_keys': keys, 'bucket': kind, 'category': group, 'intent':'supplier'})
+                           'position_keys': keys, 'bucket': kind, 'category': group, 'intent':'supplier', 'work_profile':profile})
     # Separate exact material queries from supplier-profile queries. A catalogue
     # home page can prove assortment, but cannot prove a particular item's price.
     exact = {}
     for row in payload['positions']:
         if row['type_slug'] not in ('material','product'): continue
         from autobot.market_strategy import market_query_name
+        from autobot.market_requirements import preserve_query_specs, technical_specs
         identifiers = product_identifiers(row['name'])
         title = ' '.join('"'+term.replace('"','')+'"' for term in identifiers) if identifiers else market_query_name(row['name'],row['type_slug'])
+        if identifiers and not any(s['kind'] in ('hardware_model','cable_model','curb_model') for s in technical_specs(row['name'])):
+            # A dimension alone (210x210) may describe dozens of unrelated goods.
+            title=names.get(category(row),market_query_name(row['name'],row['type_slug']))+' '+title
+        title=preserve_query_specs(row['name'],title)
         key = (title.strip(), category(row) or row['name'][:100])
         exact.setdefault(key, []).append(row['position_key'])
     for (title, group), keys in exact.items():
         result.append({'query':f'{title[:270]} купить {payload["region"]}'[:380],
-                       'position_keys':keys,'bucket':'materials','category':group,'intent':'product'})
+                       'position_keys':keys,'bucket':'materials','category':group,'intent':'product',
+                       'fallback_query':f'{title[:270]} купить доставка'[:380]})
     return result

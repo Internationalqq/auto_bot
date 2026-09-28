@@ -59,22 +59,37 @@ def configure(config):
 
 
 class Service:
-    def __init__(self,config,remote,drafts):
+    def __init__(self,config,remote,drafts,*,inbox_only=False):
         self.config,self.remote,self.drafts=config,remote,drafts
         self.root=Path(config['outbox_dir'])
-        self.ready_until=0
+        self.inbox_only=inbox_only
+        self.next_check={}
+        self.protocol_errors={}
         self.prefer_inbox=True
 
     def step(self):
-        # No queue is claimed while credentials or the mail network are down.
-        if time.time()>=self.ready_until:
-            check_connection(self.config)
-            self.ready_until=time.time()+300
-        draft_status=self.drafts.step()
-        direction,status=process_next(self.config,self.remote,prefer_inbox=self.prefer_inbox)
+        # SMTP outages must not hide incoming quotations. Each direction has
+        # its own health/backoff, and sending also needs IMAP for reconciliation.
+        protocols=('IMAP',) if self.inbox_only else ('IMAP','SMTP')
+        for protocol in protocols:
+            if time.time()<self.next_check.get(protocol,0): continue
+            try:
+                check_connection(self.config,protocols=(protocol,))
+                self.protocol_errors.pop(protocol,None)
+                self.next_check[protocol]=time.time()+300
+            except BuyerError as error:
+                self.protocol_errors[protocol]=str(error)
+                self.next_check[protocol]=time.time()+60
+        if 'IMAP' in self.protocol_errors:
+            raise BuyerError(self.protocol_errors['IMAP'])
+        can_send=not self.inbox_only and 'SMTP' not in self.protocol_errors
+        draft_status=self.drafts.step() if can_send else 'idle'
+        direction,status=process_next(self.config,self.remote,prefer_inbox=self.prefer_inbox,allow_outbox=can_send)
         self.prefer_inbox=direction!='inbox'
-        if status in ('blocked','uncertain'):self.ready_until=0
-        return {'direction':direction,'result':status,'draft':draft_status}
+        if status in ('blocked','uncertain'):self.next_check.clear()
+        return {'direction':direction,'result':status,'draft':draft_status,
+                'receiving':True,'sending':can_send,
+                'send_detail':'Отправка приостановлена: включён режим получения' if self.inbox_only else self.protocol_errors.get('SMTP','')}
 
     def run(self,once=False):
         while True:
@@ -83,11 +98,11 @@ class Service:
                 result=self.step()
                 state={'ok':True,'checked_at':time.time(),**result}
             except BuyerError as error:
-                self.ready_until=0;delay=60
+                delay=60
                 state={'ok':False,'checked_at':time.time(),'detail':str(error)}
             except Exception:
                 # No SMTP responses, credentials or message bodies in logs.
-                self.ready_until=0;delay=60
+                self.next_check.clear();delay=60
                 state={'ok':False,'checked_at':time.time(),'detail':'Внутренняя ошибка сервиса; повтор отправки защищён журналом'}
             save(self.root/'service-status.json',state)
             if not state['ok'] or state.get('direction') or state.get('draft')!='idle':
@@ -101,13 +116,15 @@ def main():
     parser.add_argument('command',choices=['configure','check','run','status'])
     parser.add_argument('--config',type=Path,required=True)
     parser.add_argument('--once',action='store_true')
+    parser.add_argument('--inbox-only',action='store_true',help='Read existing supplier replies; never claim an outgoing message')
     args=parser.parse_args()
     os.umask(0o077)
     try:
         config=load_config(args.config)
         if args.command=='configure':configure(config);return 0
         if args.command=='check':
-            print(json.dumps(check_connection(config),ensure_ascii=False));return 0
+            protocols=('IMAP',) if args.inbox_only else ('SMTP','IMAP')
+            print(json.dumps(check_connection(config,protocols=protocols),ensure_ascii=False));return 0
         root=Path(config['outbox_dir'])
         if args.command=='status':
             state=json.loads((root/'service-status.json').read_text())
@@ -123,7 +140,7 @@ def main():
         with (root/'sender.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             drafts=Worker(QueueClient(config['queue_url'],token,config['worker_id']+'-draft'),None,DraftJournal(root/'drafts.sqlite3'))
-            return Service(config,remote,drafts).run(args.once)
+            return Service(config,remote,drafts,inbox_only=args.inbox_only).run(args.once)
     except BuyerError as error:
         print(str(error),file=sys.stderr);return 1
     except (OSError,ValueError,KeyError):

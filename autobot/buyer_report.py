@@ -57,7 +57,7 @@ def build(tid, run_id=None):
         companies.append({'id':supplier['id'], 'name':supplier['company'], 'source_url':supplier['url'],
                           'draft_job_ids':[j['id'] for j in matching],
                           'image_url':f'/api/tenders/{tid}/buyer/image/{quote(supplier["id"], safe="")}?run_id={quote(run_id, safe="")}' if supplier.get('image') else '',
-                          'contacts':contacts, 'prices':prices, 'messages':messages, 'status':status,
+                          'contacts':contacts, 'prices':prices, 'price_checks':supplier.get('price_checks',[]), 'messages':messages, 'status':status,
                           'position_keys':supplier['position_keys'], 'region_note':supplier['region_note'],
                           'outbox_ids':sorted(out_ids), 'reply_count':len(answers),
                           'send_details':[m['receipt']['detail'] for m in sent if m.get('receipt')],
@@ -84,6 +84,9 @@ def plain(data):
         lines.extend(['', f"{company['name']} — {states.get(company['status'],company['status'])}",
                       'Контакт: '+('; '.join(c['channel']+': '+c['address'] for c in company['contacts']) or 'не найден')])
         if not company['prices']: lines.append('Цена: пока нет подтверждённого предложения')
+        for check in company.get('price_checks',[]):
+            if not check['accepted']:
+                lines.append('Цена не принята: '+position_names.get(check['position_key'],check['position_key'])+' — '+check['reason'])
         for price in company['prices']:
             value = format(Decimal(price['price_kopecks'])/100, '.2f') if price['price_kopecks'] is not None else 'не определена'
             lines.append(f"Цена: {value} ₽ / {price['unit']} · {position_names.get(price['position_key'],price['position_key'])} · "

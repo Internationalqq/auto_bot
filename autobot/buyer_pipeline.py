@@ -43,6 +43,8 @@ def mail_status(path=None, *, now=None):
         stamp = float(data['checked_at'])
         if not 0 <= now - stamp < 1800:
             return {'state': 'offline', 'checked_at': stamp, 'label': 'Почтовый сервис давно не выходил на связь'}
+        if data.get('ok') is True and data.get('receiving') is True and data.get('sending') is False:
+            return {'state':'receiving','checked_at':stamp,'label':'Ответы проверяются; отправка приостановлена'}
         return {'state': 'ready' if data.get('ok') is True else 'blocked', 'checked_at': stamp,
                 'label': 'Почта подключена' if data.get('ok') is True else 'Почта недоступна: требуется проверить подключение'}
     except (OSError, ValueError, KeyError, TypeError):
@@ -103,7 +105,7 @@ def project(tid, region, rows, *, drafts=(), runs=(), outbox=(), replies=(), cam
         result[key] = {'position_key': key, 'name': row['name'], 'item_no': row.get('item_no', ''),
                        'unit': row.get('unit', ''), 'quantity': row.get('quantity'), 'type_label': row.get('type_label', ''),
                        'eligible': current[key] is not None, 'flags': {stage: False for stage in STAGES},
-                       'offers': [], 'contacts': [], 'messages': [], 'search_state': 'not_started',
+                       'offers': [], 'contacts': [], 'messages': [], 'price_checks': [], 'search_state': 'not_started',
                        'search_error': '', 'stale': False, 'updated_at': None, 'last_reply_at': None}
         entry = result[key]
         if not entry['eligible']:
@@ -144,6 +146,7 @@ def project(tid, region, rows, *, drafts=(), runs=(), outbox=(), replies=(), cam
             for key in keys.intersection(company.get('position_keys', [])):
                 entry = result[key]
                 entry['flags']['candidates'] = True
+                entry['price_checks'].extend(p for p in company.get('price_checks',[]) if p.get('position_key')==key)
                 contacts = ([{'channel': 'email', 'address': company['email'], 'source_url': company['url']}]
                             if company.get('email') else []) + company.get('channels', [])
                 entry['contacts'].extend({**c, 'company': company['company'], 'checked_at': run.get('updated_at')} for c in contacts)
@@ -248,7 +251,8 @@ def project(tid, region, rows, *, drafts=(), runs=(), outbox=(), replies=(), cam
         elif flags['contacts']:
             state, label, reason = 'contacts', 'Контакт найден', 'Можно подготовить запрос по этой позиции'
         elif flags['candidates']:
-            state, label, reason = 'candidates', 'Есть варианты', 'Нужно проверить характеристики, единицу или цену'
+            failures=[p['reason'] for p in entry['price_checks'] if not p.get('accepted') and p.get('reason')]
+            state, label, reason = 'candidates', 'Есть варианты', (failures[-1] if failures else 'Нужно проверить характеристики, единицу или цену')
         elif entry['search_state'] == 'searching':
             state, label, reason = 'searching', 'Идёт поиск', 'Результаты появятся автоматически'
         elif entry['search_error']:

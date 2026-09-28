@@ -100,15 +100,18 @@ def failure(error, protocol):
     return f'{protocol}: нет защищённого соединения с почтовым сервером.'
 
 
-def check_connection(config):
+def check_connection(config, *, protocols=('SMTP', 'IMAP')):
     """Authenticate without sending, downloading messages or claiming jobs."""
     settings(config)
+    result = {'account': config['sender_email']}
     for label,connect in (('SMTP',smtp_connection),('IMAP',imap_connection)):
+        if label not in protocols: continue
         try:
             with connect(config):pass
         except (OSError,smtplib.SMTPException,imaplib.IMAP4.error,BuyerError) as error:
             raise BuyerError(failure(error,label)) from None
-    return {'smtp':True,'imap':True,'account':config['sender_email']}
+        result[label.lower()] = True
+    return result
 
 
 def mailboxes(connection):

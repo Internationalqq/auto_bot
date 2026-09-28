@@ -205,6 +205,14 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result['state'], expected)
             self.assertNotIn('secret', str(result))
 
+    def test_receiving_only_does_not_claim_sending_is_connected(self):
+        path=Path(self.tmp.name)/'status.json'
+        path.write_text(json.dumps({'checked_at':100,'ok':True,'receiving':True,'sending':False,'send_detail':'secret'}))
+        result=pipeline.mail_status(path,now=200)
+        self.assertEqual(result['state'],'receiving')
+        self.assertIn('отправка приостановлена',result['label'])
+        self.assertNotIn('secret',str(result))
+
     def test_endpoint_requires_current_crm_actor_and_calls_tender_scoped_build(self):
         from autobot.uploaded_corrections import CorrectionError
         app = Flask(__name__)

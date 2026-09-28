@@ -6,6 +6,30 @@ from autobot.supplier_catalog_store import clean
 from autobot.market_strategy import normalize_unit
 
 
+def shop220_records(body,url):
+    """Main retail card: amount, currency and explicit selling denominator."""
+    from autobot.market_source_adapters import parse_ruble_values
+    soup=BeautifulSoup(body,'html.parser')
+    headings=soup.select('h1');blocks=soup.select('.pc-price-block')
+    if len(headings)!=1 or len(blocks)!=1:return []
+    block=blocks[0]
+    amount=block.select_one('.pc-price-now');currency=block.select_one('.pc-price-curr')
+    measure=block.select_one('.pc-price-pack')
+    if amount is None or currency is None or measure is None:return []
+    raw_price=clean(amount.get_text(' ',strip=True))+' '+clean(currency.get_text(' ',strip=True))
+    prices=parse_ruble_values(raw_price)
+    raw_unit=clean(measure.get_text(' ',strip=True))
+    match=re.fullmatch(r'за\s+1\s+(шт\.?|м|пог\.?\s*м|кг|т|м[²³23])',raw_unit,re.I)
+    if len(prices)!=1 or not match:return []
+    name=clean(headings[0].get_text(' ',strip=True))
+    evidence=f'{name} · {raw_price} · {raw_unit}'
+    vat=block.select_one('.pc-nds')
+    if vat is not None:evidence+=' · '+clean(vat.get_text(' ',strip=True))[:200]
+    return [{'name':name,'url':url,'unit':normalize_unit(match[1]),'price':prices[0],
+             'bucket':'materials','item_key':url,'price_kind':'published','evidence':evidence,
+             'details':{'price_scope':'product','extractor':'shop220-main-product'}}]
+
+
 def keepmarket_records(body,url):
     """A cable's metre rate and compulsory reel are separate source facts."""
     from decimal import Decimal

@@ -187,10 +187,11 @@ def execute(job, config, remote):
     return receipt
 
 
-def process_next(config, remote, *, prefer_inbox=False):
+def process_next(config, remote, *, prefer_inbox=False, allow_outbox=True):
     """Alternate directions; a long outbox must not starve scheduled replies."""
     order = ('inbox', 'outbox') if prefer_inbox else ('outbox', 'inbox')
     for kind in order:
+        if kind == 'outbox' and not allow_outbox: continue
         if kind == 'inbox' and config.get('collect_replies') is not True: continue
         job = remote.request('/'+kind+'/claim').get('job')
         if not job: continue

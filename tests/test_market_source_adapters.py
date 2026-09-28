@@ -6,6 +6,36 @@ from autobot.market_source_adapters import inspect_source_page, detect_price_uni
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_shop220_main_price_keeps_explicit_piece_unit(self):
+        page='''<h1>Сжим ответвительный SE У733М (16-35/1,5-10) U733M</h1>
+        <div class="pc-price-block"><div class="pc-price-main"><span class="pc-price-now">91,20</span>
+        <span class="pc-price-curr">р.</span><span class="pc-price-pack">за 1 шт</span></div>
+        <div class="pc-nds">* цена указана с учетом НДС.</div></div><p>Сжим У733М 50 руб/шт</p>'''
+        args=dict(name='Сжим типа У733М для магистральных и ответвительных проводов и кабелей',target_unit='100 шт',position_bucket='materials')
+        result=inspect_source_page(page,'https://shop220.ru/u733m.htm',**args)
+        self.assertTrue(result.accepted,result.reason)
+        self.assertEqual((result.price,result.unit),(91.2,'шт'))
+        self.assertIn('НДС',result.evidence)
+        for removed in ('за 1 шт','91,20'):
+            self.assertFalse(inspect_source_page(page.replace(removed,''),'https://shop220.ru/u733m.htm',**args).accepted)
+
+    def test_product_table_unit_binds_to_own_offer_and_preserves_vat(self):
+        # Reduced KVT-pro card observed on 2026-09-28; stock/wholesale are not prices.
+        page='''<div itemscope itemtype="https://schema.org/Product">
+        <h1 itemprop="name">Муфта кабельная концевая 4ПКТп(б)-1-16/25(Б) (КВТ)</h1>
+        <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+        <meta itemprop="price" content="2142.24"><meta itemprop="priceCurrency" content="RUB"></div>
+        <div class="price-label">Цена с НДС:</div><span class="price">2142.24 руб.</span>
+        <table><tr><td>Единица измерения</td><td>шт</td></tr><tr><td>Вес нетто, кг</td><td>0.27</td></tr></table>
+        <table><tr><th>ОПТ 1 от 10 тыс. ₽</th></tr><tr><td>по запросу</td></tr></table></div>'''
+        args=dict(name='Муфта кабельная концевая 4ПКТп(б)-1-16/25(Б) (КВТ)',target_unit='шт',position_bucket='materials')
+        result=inspect_source_page(page,'https://kvt-pro.ru/mufta',**args)
+        self.assertTrue(result.accepted,result.reason)
+        self.assertEqual((result.price,result.unit),(2142.24,'шт'))
+        self.assertIn('Цена с НДС',result.evidence)
+        self.assertFalse(inspect_source_page(page.replace('<td>шт</td>','<td>упаковка</td>'),'https://kvt-pro.ru/mufta',**args).accepted)
+        self.assertFalse(inspect_source_page(page.replace('<td>шт</td>','<td></td>'),'https://kvt-pro.ru/mufta',**args).accepted)
+
     def test_product_card_keeps_own_price_and_explicit_unit_with_recommendations(self):
         page = '''<div itemscope itemtype="https://schema.org/Product"><h1>Коробка Dahua DH-PFA136</h1>
         <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">

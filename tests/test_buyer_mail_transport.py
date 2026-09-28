@@ -211,6 +211,14 @@ class MailTests(unittest.TestCase):
         for sender,body,stamp in [('y@example.org','text here',NOW),('x@example.org','changed',NOW),('x@example.org','text here',NOW+60)]:
             self.assertNotEqual(original,web_reply_fingerprint(sender,body,stamp))
 
+    def test_mailru_russian_quote_header_does_not_duplicate_legacy_reply(self):
+        body='Добрый день, укажите адрес объекта\nС уважением, ООО Поставщик'
+        legacy=body+'\nСуббота, 26 сентября 2026, 11:42 +03:00 от Иван <buyer@mail.ru>\nКабель — 500 руб/м'
+        known=web_reply_fingerprint(JOB['recipient'],legacy,NOW)
+        result=self.collect([message(body)],{**JOB,'known_web_replies':[known]})
+        self.assertEqual(result['status'],'checked')
+        self.assertEqual(result['messages'],[])
+
     def test_inbox_transport_does_not_touch_legacy_agent(self):
         with patch.object(buyer_inbox,'sender_client',side_effect=AssertionError('No agents')),patch.object(mail,'collect',return_value={'status':'checked','messages':[]}) as collector:
             self.assertEqual(buyer_inbox.execute(JOB,self.config,self.remote)['status'],'checked')
@@ -285,9 +293,43 @@ class MailTests(unittest.TestCase):
         drafts=Mock();drafts.step.return_value='completed'
         runner=service.Service(self.config,self.remote,drafts)
         with patch.object(service,'check_connection') as check,patch.object(service,'process_next',return_value=('inbox','checked')):
-            self.assertEqual(runner.step(),{'direction':'inbox','result':'checked','draft':'completed'})
-            runner.step();check.assert_called_once()
+            state=runner.step()
+            self.assertEqual((state['direction'],state['result'],state['draft']),('inbox','checked','completed'))
+            self.assertTrue(state['receiving']);self.assertTrue(state['sending'])
+            runner.step();self.assertEqual(check.call_count,2)
         self.assertFalse(runner.prefer_inbox)
+
+    def test_smtp_outage_keeps_imap_working_without_claiming_send(self):
+        drafts=Mock()
+        runner=service.Service(self.config,self.remote,drafts)
+        def health(config,*,protocols):
+            if protocols==('SMTP',):raise BuyerError('SMTP unavailable')
+        self.remote.request.return_value={'job':None}
+        with patch.object(service,'check_connection',side_effect=health) as check:
+            state=runner.step();runner.step()
+        self.assertTrue(state['receiving']);self.assertFalse(state['sending'])
+        self.assertEqual(state['send_detail'],'SMTP unavailable')
+        self.assertEqual(check.call_count,2)  # independent health checks are cached
+        self.assertEqual([c.args[0] for c in self.remote.request.call_args_list],['/inbox/claim']*2)
+        drafts.step.assert_not_called()
+
+    def test_inbox_only_does_not_connect_smtp_or_run_drafts(self):
+        drafts=Mock();runner=service.Service(self.config,self.remote,drafts,inbox_only=True)
+        self.remote.request.return_value={'job':None}
+        with patch.object(service,'check_connection') as check:
+            state=runner.step()
+        check.assert_called_once_with(self.config,protocols=('IMAP',))
+        self.remote.request.assert_called_once_with('/inbox/claim')
+        drafts.step.assert_not_called();self.assertFalse(state['sending'])
+
+    def test_smtp_recovery_restores_sending_after_backoff(self):
+        runner=service.Service(self.config,self.remote,Mock())
+        self.remote.request.return_value={'job':None}
+        with patch.object(service.time,'time',return_value=100),patch.object(service,'check_connection',side_effect=[None,BuyerError('SMTP unavailable')]):
+            self.assertFalse(runner.step()['sending'])
+        with patch.object(service.time,'time',return_value=161),patch.object(service,'check_connection') as check:
+            self.assertTrue(runner.step()['sending'])
+        check.assert_called_once_with(self.config,protocols=('SMTP',))
 
     def test_password_setup_rejects_noninteractive_input(self):
         with patch.object(service.sys.stdin,'isatty',return_value=False),patch.object(service.getpass,'getpass') as prompt:

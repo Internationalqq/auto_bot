@@ -12,7 +12,7 @@ from autobot.business_time import today_iso
 from autobot.hermes_buyer import BuyerError, encoded
 from autobot.buyer_needs import digest, snapshot, queries
 
-DISCOVERY_VERSION = 2
+DISCOVERY_VERSION = 3
 
 
 def initialize():
@@ -98,11 +98,10 @@ def finish(step, *, candidate=None, links=(), prepared=None, error='', retry=Fal
                 break
             add_step(db, step['run_id'], 'inspect', digest([link['url'], step['payload']['position_keys']]), {**step['payload'], **link})
         if candidate:
-            from urllib.parse import urlsplit
+            from autobot.buyer_discovery import source_identity
             for old in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=?', (step['run_id'],)).fetchall():
                 previous = json.loads(old['data'])
-                same_host = (urlsplit(previous['url']).hostname == urlsplit(candidate['url']).hostname
-                             and 'avito.ru' not in urlsplit(candidate['url']).hostname)
+                same_host = source_identity(previous['url']) == source_identity(candidate['url'])
                 if (previous['id'] == candidate['id'] or same_host or
                         set(previous.get('emails', [])) & set(candidate.get('emails', []))):
                     db.execute('DELETE FROM buyer_search_candidates WHERE run_id=? AND party_id=?', (step['run_id'], previous['id']))
@@ -112,8 +111,11 @@ def finish(step, *, candidate=None, links=(), prepared=None, error='', retry=Fal
                     candidate['email'] = previous.get('email') or candidate.get('email', '')
                     for field in ('position_keys', 'categories', 'emails'):
                         candidate[field] = list(dict.fromkeys(previous.get(field, [])+candidate.get(field, [])))
-                    for field in ('prices', 'channels'):
-                        candidate[field] = list({encoded(p): p for p in previous.get(field, [])+candidate.get(field, [])}.values())
+                    checks={(p['position_key'],p['source_url']):p for p in previous.get('price_checks',[])+candidate.get('price_checks',[])}
+                    prices={(p['position_key'],p['source_url']):p for p in previous.get('prices',[])+candidate.get('prices',[])}
+                    candidate['price_checks']=list(checks.values())
+                    candidate['prices']=[p for key,p in prices.items() if checks.get(key,{}).get('accepted') is not False]
+                    candidate['channels']=list({(p['channel'],p['address']):p for p in previous.get('channels',[])+candidate.get('channels',[])}.values())
                     candidate['evidence_pages'] = list({p['url']: p for p in previous['evidence_pages']+candidate['evidence_pages']}.values())
             db.execute('INSERT OR REPLACE INTO buyer_search_candidates VALUES (?,?,?)', (step['run_id'], candidate['id'], encoded(candidate)))
         if prepared is not None:
@@ -161,6 +163,30 @@ def candidates(tid, key):
     source(tid, key)
     with closing(outbox.connect()) as db:
         return [json.loads(r[0]) for r in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=? ORDER BY party_id', (key,))]
+
+
+def cached_links(task, source):
+    """Reuse public product URLs from the same tender; always inspect them anew."""
+    if task.get('intent')!='product' or not outbox.DB_PATH.is_file():return []
+    wanted={(r['name'],r['unit'],r['type_slug']) for r in source['positions'] if r['position_key'] in task['position_keys']}
+    from autobot.buyer_discovery import public_url, source_identity
+    found={}
+    with closing(outbox.connect()) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_search_runs'").fetchone():return []
+        runs=db.execute('SELECT id,payload FROM buyer_search_runs WHERE tender_id=? AND created_at>? ORDER BY created_at DESC LIMIT 30',
+                        (source['tender_id'],time.time()-30*86400)).fetchall()
+        for run in runs:
+            keys={r['position_key'] for r in json.loads(run['payload'])['positions'] if (r['name'],r['unit'],r['type_slug']) in wanted}
+            if not keys:continue
+            for row in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=? ORDER BY party_id LIMIT 300',(run['id'],)):
+                company=json.loads(row['data'])
+                for price in company.get('prices',[]):
+                    if price['position_key'] not in keys:continue
+                    try:url=public_url(price['source_url'])
+                    except (BuyerError,KeyError):continue
+                    found.setdefault(source_identity(url),{'url':url,'title':company['company'],'reused':True})
+                    if len(found)>=10:return list(found.values())
+    return list(found.values())
 
 
 def cancel(tid):
