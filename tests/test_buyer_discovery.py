@@ -208,7 +208,8 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_directory_support_is_not_a_supplier_or_verifiable_old_recipient(self):
         for url in ('https://yar.spravker.ru/kabel/','https://www.rusprofile.ru/id/1',
-                    'https://2gis.ru/yaroslavl/search/electro','https://vsem-podryad.ru/purchase/1'):
+                    'https://2gis.ru/yaroslavl/search/electro','https://vsem-podryad.ru/purchase/1',
+                    'https://stroyka-ms.ru/suppliers/material/kabel/tsfo/iaroslavskaia-oblast/'):
             with self.subTest(url=url):
                 with self.assertRaises(BuyerError):
                     discovery.page_facts(url,'Кабель. Электромонтажные работы support@portal.example')
@@ -263,11 +264,29 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_unknown_directory_heading_cannot_publish_its_support_contacts(self):
         for heading in ('Лучшие компании по электромонтажным работам в Ярославле: 73 адресов, телефоны и отзывы',
-                        'Каталог строительных компаний Ярославля'):
+                        'Каталог строительных компаний Ярославля', 'База поставщиков кабеля Ярославля',
+                        'База данных поставщиков строительных материалов'):
             with self.subTest(heading=heading),self.assertRaisesRegex(BuyerError,'контакты площадки'):
                 discovery.page_facts('https://unknown.example/',f'<h1>{heading}</h1>Оказываем услуги. support@unknown.example')
         facts=discovery.page_facts('https://supplier.example/','<h1>Компания Спектр: электромонтаж, отзывы</h1>Оказываем услуги. office@supplier.example')
         self.assertEqual(facts['emails'],['office@supplier.example'])
+
+    def test_old_directory_candidate_is_hidden_without_erasing_source_history(self):
+        run_id = store.enqueue(self.source)
+        candidate = {'id':'directory','url':'https://stroyka-ms.ru/suppliers/material/kabel/',
+                     'company':'Directory', 'position_keys':['c'], 'email':'support@portal.example'}
+        with closing(box.connect()) as db, db:
+            db.execute('INSERT INTO buyer_search_candidates VALUES (?,?,?)',
+                       (run_id,candidate['id'],json.dumps(candidate)))
+        self.assertEqual(store.candidates(self.source['tender_id'],run_id),[])
+        self.assertEqual(store.listing(self.source['tender_id'])[0]['candidates'],[])
+        with closing(box.connect()) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM buyer_search_candidates').fetchone()[0],1)
+
+    def test_supplier_company_page_is_not_mistaken_for_a_directory(self):
+        facts=discovery.page_facts('https://impx.ru/company/uglichcable/',
+            '<h1>Завод Угличкабель</h1><p>Производство и поставка силовых кабелей. info@impx.ru</p>')
+        self.assertEqual(facts['emails'],['info@impx.ru'])
 
     def test_new_qualification_policy_requires_new_run_and_blocks_old_send(self):
         run_id=self.pipeline()

@@ -126,6 +126,7 @@ def project(tid, region, rows, *, drafts=(), runs=(), outbox=(), replies=(), cam
         return {p['position_key'] for p in payload.get('positions', []) if current.get(p.get('position_key')) is not None
                 and need(p, tid, region) == current[p['position_key']]}
 
+    from autobot.buyer_discovery import directory_source
     for run in runs:
         payload = run['payload']
         keys = matching(payload) if payload.get('discovery_version') == buyer_store.DISCOVERY_VERSION else set()
@@ -143,6 +144,8 @@ def project(tid, region, rows, *, drafts=(), runs=(), outbox=(), replies=(), cam
                 if step.get('error'):
                     result[key]['search_error'] = step['error']
         for company in run.get('candidates', []):
+            if directory_source(company.get('url', '')):
+                continue
             for key in keys.intersection(company.get('position_keys', [])):
                 entry = result[key]
                 entry['flags']['candidates'] = True

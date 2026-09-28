@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # support/advertising contacts are not procurement recipients.
 _DIRECTORY_HOSTS = frozenset({
     '2gis.ru', 'spravker.ru', 'orgsprav.com', 'rusprofile.ru', 'optsbyt.ru',
-    'metaprom.ru', 'vsem-podryad.ru', 'ruscable.ru',
+    'metaprom.ru', 'vsem-podryad.ru', 'ruscable.ru', 'stroyka-ms.ru',
     'profi.ru', 'zoon.ru', 'mir76.ru', 'bizorg.su', 'prom.ua',
     'wikipedia.org', 'vc.ru', 'dtf.ru',
 })
@@ -281,7 +281,7 @@ def page_facts(url, html):
     for node in soup(['script', 'style', 'noscript']): node.decompose()
     text = soup.get_text(' ', strip=True)
     heading = ' '.join(node.get_text(' ',strip=True) for node in soup.select('title,h1'))
-    if re.search(r'(?:каталог|справочник|рейтинг|список)\s+(?:\w+\s+){0,3}(?:компани|организаци|фирм|мастер|исполнител)|'
+    if re.search(r'(?:каталог|справочник|рейтинг|список|база(?:\s+данных)?)\s+(?:\w+\s+){0,3}(?:компани|организаци|фирм|мастер|исполнител|поставщик)|'
                  r'лучши[еех]\s+(?:компани|организаци|мастер|исполнител)|'
                  r'\b\d+\s+(?:адресов|компаний|организаций|фирм|мастеров)\b.{0,120}(?:отзыв|телефон|рейтинг)',heading,re.I):
         raise BuyerError('Справочник или подборка компаний: контакты площадки не являются контактами поставщика')

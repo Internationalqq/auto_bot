@@ -135,6 +135,7 @@ def settle():
 
 
 def listing(tid):
+    from autobot.buyer_discovery import directory_source
     if not outbox.DB_PATH.is_file(): return []
     with closing(outbox.connect()) as db:
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_search_runs'").fetchone(): return []
@@ -143,7 +144,8 @@ def listing(tid):
             steps = [dict(r) for r in db.execute('SELECT kind,status,error FROM buyer_search_steps WHERE run_id=?', (run['id'],))]
             result.append({k: run[k] for k in ('id','status','business_date','created_at','updated_at')} |
                           {'position_count': len(json.loads(run['payload'])['positions']), 'steps': steps,
-                           'candidates': [json.loads(r['data']) for r in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=? ORDER BY party_id', (run['id'],))],
+                           'candidates': [c for r in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=? ORDER BY party_id', (run['id'],))
+                                          if not directory_source((c := json.loads(r['data']))['url'])],
                            'prepared': json.loads(run['prepared']) if run['prepared'] else None})
         return result
 
@@ -160,9 +162,11 @@ def source(tid, key):
 
 
 def candidates(tid, key):
+    from autobot.buyer_discovery import directory_source
     source(tid, key)
     with closing(outbox.connect()) as db:
-        return [json.loads(r[0]) for r in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=? ORDER BY party_id', (key,))]
+        return [c for r in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=? ORDER BY party_id', (key,))
+                if not directory_source((c := json.loads(r[0]))['url'])]
 
 
 def cached_links(task, source):

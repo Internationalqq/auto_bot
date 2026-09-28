@@ -124,6 +124,14 @@ class PipelineTests(unittest.TestCase):
         result = pipeline.project(TID, REGION, self.rows, drafts=[job], campaigns=[campaign])
         self.assertEqual(result['summary']['contacts'], 0)
 
+    def test_saved_directory_does_not_count_as_supplier_evidence(self):
+        run={'payload':buyer_store.snapshot(source(self.rows)) | {'discovery_version':buyer_store.DISCOVERY_VERSION},
+             'status':'completed','candidates':[{'company':'Directory','url':'https://stroyka-ms.ru/suppliers/',
+                'email':'support@portal.example','position_keys':['c'],'prices':[]}]}
+        result=pipeline.project(TID,REGION,self.rows,runs=[run])
+        self.assertEqual(result['summary']['contacts'],0)
+        self.assertFalse(result['positions'][0]['flags']['candidates'])
+
     def test_question_reply_is_not_a_confirmed_price(self):
         _, key = self.sent()
         self.reply(key, 'Уточните адрес доставки, пожалуйста.')
