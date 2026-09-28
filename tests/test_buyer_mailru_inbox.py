@@ -105,7 +105,7 @@ class InboxScriptTests(unittest.TestCase):
         result=inbox.prices(body,positions)
         self.assertEqual([p['line'] for p in result],[3,1])
         self.assertEqual([p['vat'] for p in result],['без НДС','с НДС'])
-        self.assertTrue(all(p['quote'] in body and p['exact_match'] is False for p in result))
+        self.assertTrue(all(p['quote'] in body and p['exact_match'] is True for p in result))
 
     def test_grouped_reply_requires_number_or_unique_full_name(self):
         positions=[{'line':1,'name':'Кабель АВБбШв 4х150'},{'line':2,'name':'Муфта КВТ'}]

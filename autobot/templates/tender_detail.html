@@ -16,7 +16,9 @@
   <link rel="stylesheet" href="/tenders/progress.css?v=20260927-1">
   <script defer src="/tenders/progress.js?v=20260927-1"></script>
   <link rel="stylesheet" href="/tenders/buyer.css?v=20260927-chat-status-1" />
-  <script defer src="/tenders/buyer.js?v=20260927-chat-status-1"></script>
+  <link rel="stylesheet" href="/tenders/buyer-pipeline.css?v=20260928-pipeline-1" />
+  <script defer src="/tenders/buyer-pipeline.js?v=20260928-pipeline-1"></script>
+  <script defer src="/tenders/buyer.js?v=20260928-pipeline-1"></script>
   <link rel="stylesheet" href="/estimates/workspace-nav.css?v=20260926-minimal-1">
 </head>
 <body>
@@ -50,7 +52,7 @@
 
     {% if tender.total_positions %}
     <section class="tender-work-progress" aria-label="Прогресс работы с тендером">
-      <div><strong>Проанализировано {{ tender.counts.processed }} из {{ tender.total_positions }} позиций</strong><span>С подтверждённой ценой: {{ tender.counts.verified }}</span></div>
+      <div><strong>Проанализировано {{ tender.counts.processed }} из {{ tender.total_positions }} позиций</strong><span>С ценой для сравнения: {{ tender.counts.verified }}</span></div>
       <progress value="{{ tender.counts.processed }}" max="{{ tender.total_positions }}" aria-label="Прогресс анализа сметы"></progress>
     </section>
     {% endif %}
@@ -321,9 +323,10 @@
     <section class="buyer-panel" data-workspace-panel="suppliers" id="workspaceSuppliers" aria-labelledby="workspaceTabSuppliers" hidden>
       <div data-buyer="{{ tender.tender_id }}">
         <header class="buyer-heading">
-          <div><h2 id="buyerTitle">Чаты с поставщиками</h2><p>Запросы, ответы и предложения по этой смете.</p></div>
+          <div><h2 id="buyerTitle">От сметы к предложению</h2><p>Позиции, цены и переписка с поставщиками.</p></div>
           <button class="btn ghost" type="button" data-buyer-refresh>Обновить</button>
         </header>
+        <div class="buyer-pipeline" data-buyer-pipeline aria-label="Снабжение по актуальной смете"></div>
         <details class="buyer-setup" data-buyer-setup open>
         <summary>Подбор поставщиков</summary>
         <div class="buyer-launch">

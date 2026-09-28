@@ -4,6 +4,36 @@ import json
 import re
 
 
+def exact_identity_reason(row, quote):
+    """Only a literal, complete identity can automatically confirm a quote.
+
+    Keep decimals and token boundaries: 4x1,5 is not 4x15, and 4x15 is not
+    4x150. Numbered shorthand still maps the reply but does not prove its SKU.
+    """
+    def canonical(value):
+        text = str(value or '').casefold().replace('ё', 'е')
+        text = re.sub(r'(?<=\d),(?=\d)', '.', text)
+        text = text.translate(str.maketrans({'×':'х', 'x':'х', '–':'-', '—':'-', '²':'2', '³':'3'}))
+        return re.sub(r'\s+', ' ', text).strip()
+    name, evidence = canonical(row.get('name')), canonical(quote)
+    if re.search(r'аналог|вместо|замен|не\s+соответств|отлича|нет\s+в\s+наличии', evidence):
+        return 'Предложена замена или требуется уточнить соответствие'
+    if not name or not re.search(r'(?<!\w)' + re.escape(name) + r'(?![\w.,])', evidence):
+        return 'В ответе нет полного наименования запрошенной позиции'
+    specification = row.get('specification') or {}
+    requirements = specification.get('requirements', row.get('requirements')) or {}
+    from autobot.market_requirements import technical_conflict, technical_specs
+    observed = {(s['kind'], canonical(s['value'])) for s in technical_specs(quote)}
+    for trait in requirements.get('specifications', []):
+        fragment = canonical(trait.get('evidence') if isinstance(trait, dict) else trait)
+        matches = fragment in evidence if fragment else (
+            isinstance(trait, dict) and (trait.get('kind'), canonical(trait.get('value'))) in observed)
+        if not matches:
+            label = trait.get('label') or trait.get('evidence') if isinstance(trait, dict) else trait
+            return 'Ответ не подтверждает характеристику: ' + str(label)
+    return technical_conflict(row.get('name'), quote)
+
+
 def unquoted(body):
     # Remove recognizable quoted-message boundaries, keeping original evidence
     # in the snapshot. Never derive a price from the customer's quoted request.
@@ -51,7 +81,7 @@ def prices(body,positions):
         candidates[number]={'line':number,'price':match[1],'unit':match[2].replace(' ',''),'vat':vat,
              'availability':availability[0][:400] if availability else '',
              'delivery':delivery[0][:600] if delivery else '',
-             'exact_match':False,'quote':quote}
+             'exact_match':not exact_identity_reason(by_line[number], quote),'quote':quote}
     return [item for item in candidates.values() if item is not None]
 
 

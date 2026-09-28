@@ -24,6 +24,17 @@
   let selectedChat = '', chatOpened = false, chatEntries = [], chatShell, chatHost;
   const chatScroll = new Map(), chatInfo = new Set();
   const chatDrafts = new Map();
+  const pipeline = globalThis.createBuyerPipeline?.(root.querySelector('[data-buyer-pipeline]'), {
+    onSearch: key => mutate({action:'search_suppliers', position_keys:[key]}),
+    onChat: id => {
+      const entry = chatEntries.find(item => item.company.correspondence_ids.includes(id));
+      if (!entry) return false;
+      filter = 'all'; if (find) find.value = '';
+      applyFilter(); selectChat(entry.company.id, {open:true, focus:true});
+      chatShell.scrollIntoView({block:'start', behavior:'instant'});
+      return true;
+    }
+  });
   try { selectedChat = sessionStorage.getItem(chatStorageKey) || ''; chatOpened = !!selectedChat; } catch (_) { /* Storage may be disabled. */ }
   const campaignLabels = {queued:'Проверка ожидает запуска', checking:'Проверяем сайты поставщиков', completed:'Проверка сайтов завершена', failed:'Проверка остановлена'};
   const sendLabels = {queued: 'В очереди отправки', sending: 'Отправляем', sent: 'Отправка подтверждена', blocked: 'Не отправлено', uncertain: 'Нужна проверка отправки'};
@@ -708,7 +719,7 @@
       const sent = outbox.filter(item => item.status === 'sent');
       const blocked = sent.filter(item => replies.checks?.[item.id]?.status === 'blocked').length;
       mailNote.hidden = !sent.length;
-      mailNote.textContent = blocked ? `${blocked === sent.length ? 'Проверка ответов недоступна' : 'Часть ответов не удалось проверить'}. В списке — только сохранённые ответы.` : 'Ответы проверяются каждые 10 минут.';
+      mailNote.textContent = blocked ? `${blocked === sent.length ? 'Проверка ответов недоступна' : 'Часть ответов не удалось проверить'}. В списке — только сохранённые ответы.` : 'Загружаем состояние почтового сервиса…';
     }
     applyFilter();
   }
@@ -753,6 +764,22 @@
       render(data.jobs, data.outbox, data.campaigns, data.replies, report);
       renderCoverage(data.coverage, report); renderSearches(runs, data.jobs, report);
       status.classList?.remove('buyer-error');
+      if (pipeline) {
+        const mailNote = root.querySelector('[data-buyer-mail-note]');
+        try {
+          const response = await fetch(url.replace(/jobs$/, 'pipeline'), {cache:'no-store'});
+          const next = await response.json();
+          if (!response.ok || !next.ok) throw new Error(next.message || 'Не удалось обновить состояние позиций.');
+          pipeline.update(next);
+          if (mailNote) {
+            mailNote.hidden = false;
+            mailNote.textContent = next.mail.state === 'ready' ? 'Почта подключена · ответы проверяются каждые 10 минут.' : `${next.mail.label}. В чатах — сохранённая переписка.`;
+          }
+        } catch (error) {
+          pipeline.fail(error.message);
+          if (mailNote) { mailNote.hidden = false; mailNote.textContent = 'Состояние почты сейчас проверить не удалось. В чатах — сохранённая переписка.'; }
+        }
+      }
     }
     catch (error) {
       status.textContent = error.message; status.classList?.add('buyer-error');
@@ -811,11 +838,12 @@
   async function mutate(body) {
     if (busy) return;
     busy = true; start.disabled = cancel.disabled = true;
+    const bar = root.querySelector('[data-buyer-statusbar]'); if (bar) bar.hidden = false;
     status.textContent = body.action === 'cancel' ? 'Отменяем задания…' : 'Собираем позиции по направлениям…';
     try {
       await api(body); if (body.action === 'search_suppliers') selectedRun = ''; await load();
     }
-    catch (error) { status.textContent = error.message; }
+    catch (error) { status.textContent = error.message; if (bar) bar.hidden = false; return {error:error.message}; }
     finally { busy = false; start.disabled = cancel.disabled = false; }
   }
   start.addEventListener('click', () => {

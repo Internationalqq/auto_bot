@@ -138,13 +138,23 @@ def parse_price(item, row, raw):
             amount = int(number*100)
     except InvalidOperation: pass
     reasons = []
+    from autobot.buyer_reply_text import exact_identity_reason, unquoted
+    supplier_text = unquoted(raw)
     if row.get('_sender_unverified'): reasons.append('Ответ с другого адреса: подтвердите принадлежность поставщику')
     if row.get('_request_edited'): reasons.append('Текст запроса изменён: вручную проверьте привязку ответа к позиции')
-    quoted_numbers = [n.replace(' ','').replace('\u00a0','').replace(',','.') for n in re.findall(r'(?<!\w)\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?(?!\w)',quote)]
-    if amount is None or not any(Decimal(n)*100==amount for n in quoted_numbers): reasons.append('Цена не подтверждена цитатой')
+    literals = re.findall(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?)\s*(?:руб(?:\.|лей|ля)?|₽|RUB)\s*(?:/|за)\s*((?:10|100|1000)\s*)?(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)', quote, re.I)
+    if len(literals) != 1 or amount is None or not any(
+        Decimal(n.replace(' ', '').replace('\u00a0', '').replace(',', '.')) * 100 == amount
+        and unit_parts(scale + measure) == unit_parts(unit) for n, scale, measure in literals):
+        reasons.append('Цена за единицу не подтверждена однозначной цитатой')
     if comparison_amount(amount,unit,row.get('unit')) is None or not re.search(r'(?<!\w)'+re.escape(norm(unit))+r'(?!\w)',quote.casefold().replace('³','3').replace('²','2')): reasons.append('Уточните единицу цены')
-    if not vat or vat not in raw or not re.search(r'с ндс|без ндс|ндс включ|включая ндс|ндс не облага',vat,re.I): reasons.append('Не указан НДС')
-    if item.get('exact_match') is not True: reasons.append('Нужно подтвердить характеристики позиции')
+    if not vat or vat not in supplier_text or not re.search(r'с ндс|без ндс|ндс включ|включая ндс|ндс не облага',vat,re.I): reasons.append('Не указан НДС')
+    # The transport's flag cannot certify a different SKU. Re-evaluate the
+    # literal supplier evidence here, including requirements from the request.
+    identity_reason = exact_identity_reason(row, quote)
+    if identity_reason: reasons.append(identity_reason)
+    if item.get('exact_match') is False: reasons.append('Соответствие товара не подтверждено при разборе ответа')
+    if quote not in unquoted(raw): reasons.append('Цена находится в цитируемой переписке, а не в новом ответе')
     if re.search(r'\bот\s*\d|ориентир|примерн',quote,re.I): reasons.append('Цена ориентировочная')
     if not re.search(r'руб|₽|RUB',quote,re.I): reasons.append('Не подтверждена валюта RUB')
     # Preserve terms verbatim, not model-invented descriptions.

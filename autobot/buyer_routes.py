@@ -31,6 +31,13 @@ def no_cache(response):
     return response
 
 
+@blueprint.get('/tenders/buyer-pipeline.<ext>')
+def pipeline_asset(ext):
+    if ext not in ('js', 'css'):
+        return '', 404
+    return send_from_directory(Path(__file__).parent / 'static', 'buyer_pipeline.' + ext)
+
+
 def user_route(fn):
     @wraps(fn)
     def wrapped(tid, **kwargs):
@@ -136,6 +143,13 @@ def report(tid):
     if request.args.get('format') == 'text':
         return Response(plain(result), content_type='text/plain; charset=utf-8')
     return jsonify(ok=True, **result)
+
+
+@blueprint.get('/api/tenders/<tid>/buyer/pipeline')
+@user_route
+def pipeline(tid):
+    from autobot.buyer_pipeline import build
+    return jsonify(ok=True, **build(tid))
 
 
 @blueprint.post('/api/tenders/<tid>/activity')

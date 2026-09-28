@@ -32,7 +32,7 @@ const elements={'[data-buyer-list]':list,'[data-buyer-find]':find,'[data-buyer-n
 const root={dataset:{buyer:'123456789012345'},querySelector:s=>elements[s],querySelectorAll:()=>filters};
 const events={}, intervals=[];
 const document={hidden:false,createElement:tag=>new Element(tag),querySelector:s=>s==='[data-buyer]'?root:null,querySelectorAll:()=>[],addEventListener:(name,fn)=>events[name]=fn};
-let api;
+let api, pipelineActions;
 let now=1700000000000;
 class Clock extends Date { static now() { return now; } }
 const source=fs.readFileSync('autobot/static/buyer.js','utf8').replace(/  load\(\);\r?\n  setInterval/,'  capture({companyList, correspondence, renderCompanies, relativeAge, render, conversationEvents, chatState, draftState});\n  setInterval');
@@ -40,6 +40,7 @@ assert.ok(source.includes('capture({companyList'));
 const storage=new Map();
 const context={document,console,URL,Date:Clock,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch(){throw new Error('Offline test');},capture:value=>api=value};
 context.crypto=require('node:crypto').webcrypto;
+context.createBuyerPipeline=(_host, actions)=>{pipelineActions=actions;return null;};
 vm.runInNewContext(source,context);
 const position={position_key:'cable',name:'Кабель 4×150',quantity:351.9,unit:'пм'};
 const company={id:'supplier',name:'Поставщик',contacts:[{channel:'email',address:'old@example.org'}],prices:[],position_keys:['cable'],draft_job_ids:['current'],status:'sent'};
@@ -87,6 +88,8 @@ function render(data=replies, rep=report, outgoing=outbox) {
   return list.querySelector('.buyer-company');
 }
 let card=render();
+assert.equal(pipelineActions.onChat('new-mail'),true,'Position evidence opens its actual conversation');
+assert.equal(pipelineActions.onChat('foreign-mail'),false,'Unknown message cannot open another supplier');
 assert.match(card.attrs['aria-label'],/new@example.org/);
 assert.doesNotMatch(card.attrs['aria-label'],/old@example.org/);
 assert.match(card.textContent,/Ответ получен/);

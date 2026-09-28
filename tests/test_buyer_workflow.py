@@ -162,7 +162,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(data['messages'][0]['prices']),2)
         rows=copy.deepcopy(self.source['positions']);replies.annotate(TID,rows)
         self.assertEqual([r['buyer_quotes'][0]['price_kopecks'] for r in rows[:2]],[12050,300000])
-        self.assertTrue(all(r['buyer_quotes'][0]['state']=='review' for r in rows[:2]))
+        self.assertTrue(all(r['buyer_quotes'][0]['state']=='comparable' for r in rows[:2]))
         self.assertTrue(all(r['estimate_unit']==12345678 for r in rows))
         self.assertFalse(rows[2]['buyer_quotes'])
 

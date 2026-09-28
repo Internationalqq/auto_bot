@@ -152,7 +152,7 @@ class MailTests(unittest.TestCase):
 
     def test_literal_price_parsed_but_manual_mapping_not_guessed(self):
         incoming=self.parse()
-        self.assertEqual(incoming['prices'][0]['price'],'500');self.assertFalse(incoming['prices'][0]['exact_match'])
+        self.assertEqual(incoming['prices'][0]['price'],'500');self.assertTrue(incoming['prices'][0]['exact_match'])
         self.assertEqual(self.parse(mapping_trusted=False)['prices'],[])
 
     def test_outgoing_wrong_subject_wrong_recipient_old_message_ignored(self):
