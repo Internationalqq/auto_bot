@@ -10,7 +10,7 @@ import uuid
 from autobot import buyer_outbox as outbox
 from autobot.business_time import today_iso
 from autobot.hermes_buyer import BuyerError, encoded
-from autobot.buyer_needs import digest, snapshot, queries
+from autobot.buyer_needs import digest, snapshot, queries, SOURCES_PER_QUERY
 
 DISCOVERY_VERSION = 3
 
@@ -91,12 +91,24 @@ def finish(step, *, candidate=None, links=(), prepared=None, error='', retry=Fal
         state = 'queued' if error and retry and current['attempts'] < 3 else 'failed' if error else 'completed'
         db.execute('UPDATE buyer_search_steps SET status=?,token=NULL,lease_until=NULL,error=?,next_at=?,result=? WHERE id=?',
                    (state, error[:700], time.time()+min(180, 15*2**current['attempts']), encoded(candidate or {}), step['id']))
+        # Reserve a separate budget for every query. A large estimate must not
+        # consume all inspections before its later product queries are handled.
+        existing = {r['scope']: json.loads(r['payload']) for r in db.execute(
+            "SELECT scope,payload FROM buyer_search_steps WHERE run_id=? AND kind='inspect'", (step['run_id'],))} if links else {}
+        owned = {scope for scope, task in existing.items()
+                 if task.get('query') == step['payload'].get('query')
+                 and task.get('position_keys') == step['payload'].get('position_keys')}
         for link in links:
-            count = db.execute("SELECT count(*) FROM buyer_search_steps WHERE run_id=? AND kind='inspect'", (step['run_id'],)).fetchone()[0]
-            if count >= 300:
-                db.execute("UPDATE buyer_search_steps SET status='failed',error=? WHERE id=?", ('Достигнут лимит 300 проверок сайтов; часть источников не проверена', step['id']))
+            scope = digest([link['url'], step['payload']['position_keys']])
+            if scope in existing:
+                continue
+            if len(owned) >= SOURCES_PER_QUERY:
+                db.execute("UPDATE buyer_search_steps SET status='failed',error=? WHERE id=?", (f'Достигнут лимит {SOURCES_PER_QUERY} источников для одного запроса; остальные запросы продолжатся', step['id']))
                 break
-            add_step(db, step['run_id'], 'inspect', digest([link['url'], step['payload']['position_keys']]), {**step['payload'], **link})
+            task = {**step['payload'], **link}
+            add_step(db, step['run_id'], 'inspect', scope, task)
+            existing[scope] = task
+            owned.add(scope)
         if candidate:
             from autobot.buyer_discovery import source_identity
             for old in db.execute('SELECT data FROM buyer_search_candidates WHERE run_id=?', (step['run_id'],)).fetchall():
@@ -189,7 +201,7 @@ def cached_links(task, source):
                     try:url=public_url(price['source_url'])
                     except (BuyerError,KeyError):continue
                     found.setdefault(source_identity(url),{'url':url,'title':company['company'],'reused':True})
-                    if len(found)>=10:return list(found.values())
+                    if len(found)>=SOURCES_PER_QUERY:return list(found.values())
     return list(found.values())
 
 

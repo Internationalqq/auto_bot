@@ -154,6 +154,41 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(store.finish(old))
         self.assertTrue(store.finish(current))
 
+    def test_large_estimate_keeps_sources_for_queries_after_first_300_pages(self):
+        self.source['positions'] = [row(str(i), f'Кабель ВВГнг-LS 3х{i + 1}') for i in range(35)]
+        key = store.enqueue(self.source)
+        searches = 0
+        while (step := store.claim()) and step['kind'] == 'search':
+            links = [{'url': f'https://supplier{i}.example/{searches}', 'title': 'Кабель'} for i in range(10)]
+            self.assertTrue(store.finish(step, links=links))
+            searches += 1
+        self.assertGreater(searches, 30)
+        with closing(box.connect()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM buyer_search_steps WHERE run_id=? AND kind='inspect'", (key,)).fetchone()[0], searches * 10)
+            self.assertEqual(db.execute("SELECT count(*) FROM buyer_search_steps WHERE run_id=? AND kind='search' AND status='completed'", (key,)).fetchone()[0], searches)
+        self.assertEqual(box.listing(self.source['tender_id']), [])
+
+    def test_query_limit_survives_retry_without_starving_other_queries(self):
+        key = store.enqueue(self.source)
+        step = store.claim()
+        links = [{'url': f'https://supplier{i}.example/', 'title': 'Кабель'} for i in range(10)]
+        store.finish(step, links=links + [links[-1]])
+        with closing(box.connect()) as db, db:
+            # Simulate a resumed query whose provider now returns extra links.
+            db.execute("UPDATE buyer_search_steps SET status='queued',next_at=0 WHERE id=?", (step['id'],))
+        resumed = store.claim()
+        self.assertEqual(resumed['id'], step['id'])
+        store.finish(resumed, links=links + [{'url': 'https://overflow.example/', 'title': 'Кабель'}])
+        following = store.claim()
+        self.assertEqual(following['kind'], 'search')
+        store.finish(following, links=[{'url': 'https://last-query.example/', 'title': 'Кабель'}])
+        with closing(box.connect()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM buyer_search_steps WHERE run_id=? AND kind='inspect'", (key,)).fetchone()[0], 11)
+            failed = db.execute('SELECT status,error FROM buyer_search_steps WHERE id=?', (step['id'],)).fetchone()
+            self.assertEqual(failed['status'], 'failed')
+            self.assertIn('одного запроса', failed['error'])
+            self.assertEqual(db.execute('SELECT status FROM buyer_search_steps WHERE id=?', (following['id'],)).fetchone()[0], 'completed')
+
     def test_canceled_run_rejects_inflight_result_and_resumes(self):
         key=store.enqueue(self.source); step=store.claim()
         store.cancel(self.source['tender_id'])

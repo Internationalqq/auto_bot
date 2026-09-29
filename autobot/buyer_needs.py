@@ -6,6 +6,8 @@ import re
 from autobot.hermes_buyer import BuyerError, encoded, task_payload, supplier_brief
 from autobot.buyer_drafts import quantity
 
+SOURCES_PER_QUERY = 10
+
 
 def digest(value):
     return hashlib.sha256(encoded(value).encode('utf-8')).hexdigest()

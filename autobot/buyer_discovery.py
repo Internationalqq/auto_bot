@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlsplit, urlunsplit, unquote, quote
 from bs4 import BeautifulSoup, Comment
 from autobot.hermes_buyer import BuyerError
-from autobot.buyer_needs import digest
+from autobot.buyer_needs import digest, SOURCES_PER_QUERY
 
 log = logging.getLogger(__name__)
 
@@ -198,7 +198,7 @@ def search(query):
     def accept(found):
         nonlocal unrelated
         for item in found:
-            if len(links) >= 10: break
+            if len(links) >= SOURCES_PER_QUERY: break
             try: url = public_url(item.url)
             except BuyerError: continue
             if directory_source(url): continue
@@ -220,14 +220,14 @@ def search(query):
     # domains and ignored site: restrictions must not suppress the fallback.
     error = ''
     for backend in ('brave', 'yandex'):
-        if len(links) >= 10: return links
+        if len(links) >= SOURCES_PER_QUERY: return links
         try:
             from ddgs import DDGS
             items = _ddgs_text(DDGS, query, timeout=8, region='ru-ru', max_results=20, backend=backend)
             accept(SimpleNamespace(url=item.get('href') or item.get('url') or '', title=item.get('title') or '',snippet=item.get('body') or item.get('snippet') or '') for item in items)
         except Exception:
             error = 'часть бесплатных поисковиков не ответила'
-    if len(links) < 10:
+    if len(links) < SOURCES_PER_QUERY:
         try:
             response = requests.get('https://www.bing.com/search', params={'format':'rss','q':query}, timeout=(4, 8))
             response.raise_for_status()
@@ -247,7 +247,7 @@ def search_task(task, source):
     def append(found,query):
         for item in found:
             identity=source_identity(item['url'])
-            if identity in seen or len(links)>=10:continue
+            if identity in seen or len(links)>=SOURCES_PER_QUERY:continue
             seen.add(identity);links.append({**item,'discovered_query':query})
     if len(links)<3:
         try:append(search(task['query']),task['query'])
