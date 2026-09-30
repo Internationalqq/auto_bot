@@ -1,4 +1,4 @@
-"""CRM-authenticated tender drafts and separately authenticated Mac worker API."""
+"""CRM-authenticated tender drafts and separately authenticated worker API."""
 from functools import wraps
 import json
 import re
@@ -252,6 +252,14 @@ def worker_route(fn):
 @worker_route
 def claim(data):
     return jsonify(ok=True, job=jobs.claim(data['worker_id']))
+
+
+@blueprint.post(WORKER_API + '/service/status')
+@worker_route
+def mail_service_status(data):
+    from autobot.buyer_mail_status import record
+    record(data['worker_id'], data.get('state'))
+    return jsonify(ok=True)
 
 
 @blueprint.post(WORKER_API + '/outbox/claim')

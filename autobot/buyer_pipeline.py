@@ -34,6 +34,10 @@ def need(row, tid, region):
 
 def mail_status(path=None, *, now=None):
     """Read only the deliberately public worker heartbeat, never its config."""
+    if path is None:
+        from autobot.buyer_mail_status import read
+        local = read(now=now)
+        if local is not None: return local
     path = path or buyer_outbox.DB_PATH.parent / 'mail-transport' / 'service-status.json'
     now = time.time() if now is None else now
     try:
@@ -48,7 +52,7 @@ def mail_status(path=None, *, now=None):
         return {'state': 'ready' if data.get('ok') is True else 'blocked', 'checked_at': stamp,
                 'label': 'Почта подключена' if data.get('ok') is True else 'Почта недоступна: требуется проверить подключение'}
     except (OSError, ValueError, KeyError, TypeError):
-        return {'state': 'unknown', 'checked_at': None, 'label': 'Нет подтверждения подключения серверной почты'}
+        return {'state': 'unknown', 'checked_at': None, 'label': 'Нет подтверждения подключения почты'}
 
 
 def stored(tid):
