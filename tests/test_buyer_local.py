@@ -64,7 +64,7 @@ class LocalMailTests(unittest.TestCase):
         with patch.object(local,'load_config',return_value=config), patch.object(local,'running',side_effect=[False,True,True]), patch.object(local.subprocess,'Popen') as launch:
             self.assertTrue(local.start(self.root/'config.json')['started'])
         args=launch.call_args.args[0]
-        self.assertEqual(args[1:4],['-m','autobot.buyer_mail_service','run'])
+        self.assertEqual(args[1:6],['-X','utf8','-m','autobot.buyer_mail_service','run'])
         self.assertNotIn('private-password',str(launch.call_args))
         self.assertNotIn('private-token',str(launch.call_args))
         if os.name=='nt':self.assertEqual(launch.call_args.kwargs['creationflags'],subprocess.CREATE_NO_WINDOW)

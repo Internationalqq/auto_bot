@@ -55,7 +55,7 @@ def start(config_path, *, inbox_only=False):
                 raise BuyerError('Сначала настройте ключ очереди и пароль приложения почты')
         (root/'stop-request').unlink(missing_ok=True)
         save(root/'service-status.json', {'ok':False,'checked_at':time.time(),'detail':'Подключается'})
-        args = [sys.executable, '-m', 'autobot.buyer_mail_service', 'run', '--config', str(config_path)]
+        args = [sys.executable, '-X', 'utf8', '-m', 'autobot.buyer_mail_service', 'run', '--config', str(config_path)]
         if inbox_only: args.append('--inbox-only')
         env = dict(os.environ, BUYER_DISCOVERY_WORKER='0', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1')
         # The installed source lives beside this module, independently of the
