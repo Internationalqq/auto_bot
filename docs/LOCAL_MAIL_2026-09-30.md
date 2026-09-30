@@ -23,8 +23,11 @@ SMTP и IMAP исполняет выбранный компьютер. Откр�
 
 Нужен Python 3.11+ и `pip install -r requirements-mail.txt`. Копия пакета
 `autobot` должна быть доступна этому Python; полноценные зависимости web/AI
-не нужны. Windows установлен в `%LOCALAPPDATA%/PMbi/AutoBot` со своим Python
-и минимальными пакетами, независимо от рантайма Codex. Windows ACL каталога:
+не нужны. Windows установлен в `%USERPROFILE%/PMbi/AutoBot` со своим Python
+и минимальными пакетами, независимо от рантайма Codex. Установка в LocalAppData
+из MSIX-приложения может перенаправляться в его LocalCache; физический путь
+проверен через GetFinalPathNameByHandle. Worker запущен через системный WMI,
+отдельно от дерева процессов Codex. Windows ACL каталога:
 только текущий пользователь и SYSTEM. На macOS/Linux каталог 0700, секреты 0600.
 Нельзя коммитить конфигурацию с секретами или копировать их в аргументы команд.
 
