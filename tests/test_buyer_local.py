@@ -67,7 +67,7 @@ class LocalMailTests(unittest.TestCase):
         self.assertEqual(args[1:6],['-X','utf8','-m','autobot.buyer_mail_service','run'])
         self.assertNotIn('private-password',str(launch.call_args))
         self.assertNotIn('private-token',str(launch.call_args))
-        if os.name=='nt':self.assertEqual(launch.call_args.kwargs['creationflags'],subprocess.CREATE_NO_WINDOW)
+        if os.name=='nt':self.assertEqual(launch.call_args.kwargs['creationflags'],subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB)
         else:self.assertTrue(launch.call_args.kwargs['start_new_session'])
 
     def test_status_api_requires_worker_key_and_stores_only_bools_with_server_time(self):

@@ -62,7 +62,9 @@ def start(config_path, *, inbox_only=False):
         # caller's current directory and the Codex app's runtime.
         source = Path(__file__).resolve().parents[1]
         env['PYTHONPATH'] = str(source)
-        options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session':True}
+        # A hidden window alone still inherits the launcher's Windows Job.
+        # Break away so closing that launcher cannot terminate this worker.
+        options = {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB} if os.name == 'nt' else {'start_new_session':True}
         with (root/'service.log').open('ab') as log:
             child = subprocess.Popen(args, cwd=source, env=env, stdin=subprocess.DEVNULL,
                                      stdout=log, stderr=subprocess.STDOUT, **options)
