@@ -8,6 +8,44 @@ from autobot.market_price_index import build_price_identity
 from autobot.market_contract import offers_for_row
 
 
+@pytest.mark.parametrize('evidence', [
+    'Выключатель автоматический 1P, 32 А, 10 кА, характеристика D',
+    'Выключатель автоматический 1P, 20 А, 6 кА, характеристика D',
+    'Выключатель автоматический 1P, 20 А, 10 кА, характеристика C',
+    'Выключатель автоматический 3P, 20 А, 10 кА, характеристика D',
+    'Автоматический выключатель дифференциального тока АВДТ-63M 1P+N 32А 10мА характеристика С тип A электронный 6кА',
+])
+def test_breaker_price_requires_current_poles_curve_and_breaking_capacity(evidence):
+    assert technical_conflict('Выключатель автоматический 1P, 20 А, 10 кА, характеристика D',evidence)
+
+
+def test_breaker_typography_aliases_are_allowed_but_missing_traits_are_not():
+    assert not technical_conflict('Выключатель автоматический 3п 50А ВА','Выключатель автоматический ВА-99М 100/50А 3P 35кА')
+    assert not technical_conflict('Выключатель автоматический 1P 20 А 10 кА характеристика D','Автомат 1п 20A 10 кA характеристика Д')
+    assert technical_conflict('Выключатель автоматический 1P 20 А 10 кА характеристика D','Выключатель автоматический 1P 20 А')
+
+
+def test_surge_protection_does_not_substitute_another_model_or_circuit():
+    name='УЗИП (Устройство защиты от импульсных перенапряжений) РИФ-Э-I+II 275/12,5 с (3+0)'
+    assert technical_conflict(name,'Устройство защиты от импульсных перенапряжений Т1+Т2, Iimp-12,5kA, In-20kA, Uc-275В, 4+0 (EKF OV12-4-504)')
+    assert technical_conflict(name,name.replace('(3+0)','(4+0)'))
+    assert not technical_conflict(name,name.replace('12,5','12.5'))
+
+
+def test_saved_wrong_electrical_price_is_rejected_without_rewriting_history():
+    import copy
+    from autobot.buyer_discovery import checked_candidate
+    rows=[{'position_key':'breaker','name':'Выключатель автоматический 1P 20 А 10 кА характеристика D'}]
+    candidate={'prices':[{'position_key':'breaker','source_url':'https://supplier.example/price',
+        'price_kopecks':197938,'state':'published','evidence':'Автоматический выключатель АВДТ 1P+N 32А 10мА характеристика С 6кА'}],
+        'price_checks':[{'position_key':'breaker','source_url':'https://supplier.example/price','accepted':True}]}
+    before=copy.deepcopy(candidate)
+    checked=checked_candidate(candidate,rows)
+    assert checked['prices']==[]
+    assert checked['price_checks'][0]['accepted'] is False
+    assert candidate==before
+
+
 @pytest.mark.parametrize('name,unit,kind,fragments', [
     ('Щебень из плотных горных пород фракция 20-40 мм', 'м3', 'material', ['20-40', 'плотных']),
     ('Камень бортовой бетонный БР 100.30.15', 'шт', 'material', ['БР 100.30.15']),

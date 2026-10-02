@@ -66,6 +66,18 @@ def technical_specs(name: object) -> list[dict[str, str]]:
     if 'щеб' in folded:
         patterns.append(('fraction', 'Фракция щебня', r'\b\d{1,3}\s*[-–—]\s*\d{1,3}\b'))
         patterns.append(('stone_grade', 'Прочность щебня', r'\b[мm]\s*\d{2,4}\b'))
+    if re.search(r'автомат|выключател|авдт', folded):
+        patterns.extend([
+            ('breaker_current', 'Номинальный ток автомата', rf'(?<![\d.,]){number}\s*[аa](?!\w)'),
+            ('breaker_poles', 'Число полюсов автомата', r'(?<!\w)[1-4]\s*[pрп](?:\s*\+\s*[nн])?(?!\w)'),
+            ('breaker_curve', 'Характеристика расцепления', r'\bхарактеристик\w*\s*[:=-]?\s*[bвcсdд]\b'),
+            ('breaker_capacity', 'Отключающая способность автомата', rf'\b{number}\s*к[аa]\b'),
+        ])
+    if re.search(r'узип|импульсн\w*\s+перенапряж|\bриф[-\s]*э', folded):
+        patterns.extend([
+            ('hardware_model', 'Модель / артикул', r'\bриф[-\s]*э[-\s]*[iv]+(?:\+[iv]+)?\s*\d{2,4}/\d{1,3}(?:[.,]\d+)?'),
+            ('surge_scheme', 'Схема подключения УЗИП', r'(?<!\d)[1-4]\s*\+\s*[01](?!\d)'),
+        ])
     if 'стеклошар' in folded:
         patterns.append(('glass_fraction','Фракция стеклошариков',r'\b\d{1,4}\s*[-–—]\s*\d{1,4}\s*мкм\b'))
     if 'георешет' in folded:
@@ -111,6 +123,12 @@ def technical_specs(name: object) -> list[dict[str, str]]:
         for match in re.finditer(pattern, original, re.I):
             evidence = match.group(0)
             value = _canonical(evidence)
+            if kind in {'breaker_current', 'breaker_capacity'}:
+                value = value.replace('a', 'а')
+            if kind == 'breaker_poles':
+                value = value.translate(str.maketrans({'р':'p','п':'p','н':'n'}))
+            if kind == 'breaker_curve':
+                value = evidence[-1].casefold().translate(str.maketrans({'в':'b','с':'c','д':'d'}))
             if kind == 'grass_variety':
                 value=_canonical(match.group(1))
                 if re.fullmatch(r'универсальн(?:ый|ая|ое|ые)',value):value='универсальная'
@@ -209,7 +227,7 @@ sizes are retained for discovery; their comparison needs category-specific units
     if incomplete:
         return incomplete
     wanted, found = technical_specs(name), technical_specs(evidence)
-    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base', 'road_sign_model', 'road_sign_size', 'road_sign_film', 'road_sign_film_class', 'geogrid_height', 'geogrid_strength')
+    required_kinds = ('dimensions', 'curb_model', 'protection', 'cable_model', 'cable_voltage', 'cable_stranding', 'density', 'package', 'brand', 'product_line', 'concrete_aggregate', 'concrete_frost', 'concrete_water', 'stone_grade', 'sand_class', 'sand_grain', 'hardware_model', 'grass_variety', 'glass_fraction', 'paint_color', 'paint_base', 'road_sign_model', 'road_sign_size', 'road_sign_film', 'road_sign_film_class', 'geogrid_height', 'geogrid_strength', 'breaker_current', 'breaker_poles', 'breaker_curve', 'breaker_capacity', 'surge_scheme')
     for kind in required_kinds:
         left = {s['value'] for s in wanted if s['kind'] == kind}
         if not left:
