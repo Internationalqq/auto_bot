@@ -34,6 +34,9 @@ def current_draft(payload):
     if not supplier.get('discovered'):
         yield
         return
+    from autobot.buyer_discovery import directory_source
+    if directory_source(supplier.get('url', '')):
+        raise BuyerError('Источник не является поставщиком; обращение не отправлено')
     with current_source(payload['tender_id'], [p['position_key'] for p in payload['positions']]) as source:
         run_id = supplier.get('source_run_id')
         if run_id:

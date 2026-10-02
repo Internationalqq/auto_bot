@@ -29,6 +29,7 @@ _DIRECTORY_HOSTS = frozenset({
     'metaprom.ru', 'vsem-podryad.ru', 'ruscable.ru', 'stroyka-ms.ru',
     'profi.ru', 'zoon.ru', 'mir76.ru', 'bizorg.su', 'prom.ua',
     'wikipedia.org', 'vc.ru', 'dtf.ru',
+    'uslugi.yandex.ru', 'minstroyrf.gov.ru', 'stroy-podskazka.ru', 'catalogmineralov.ru',
 })
 _EMAIL = re.compile(r'[\w.%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}')
 
@@ -46,8 +47,27 @@ def source_identity(url):
 
 
 def directory_source(url):
-    host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
-    return any(host == domain or host.endswith('.'+domain) for domain in _DIRECTORY_HOSTS)
+    parsed = urlsplit(url)
+    host = (parsed.hostname or '').lower().removeprefix('www.')
+    return (any(host == domain or host.endswith('.'+domain) for domain in _DIRECTORY_HOSTS)
+            or (host == 'yandex.ru' and re.match(r'^/services(?:/|$)', parsed.path) is not None)
+            or bool(re.search(r'/(?:chto-vkhodit|chto-takoe|kak-vybrat|kak-sdelat)[-/]', parsed.path, re.I)))
+
+
+def checked_candidate(candidate, positions):
+    """Recheck stored evidence without rewriting history or upgrading a price."""
+    from autobot.market_requirements import technical_conflict
+    rows = {r['position_key']: r for r in positions}
+    prices, checks = [], [dict(c) for c in candidate.get('price_checks', [])]
+    for price in candidate.get('prices', []):
+        row = rows.get(price['position_key'])
+        reason = technical_conflict(row['name'], price.get('evidence', ''), require_all=True) if row else 'Строка сметы не найдена'
+        if not reason:
+            prices.append(price)
+            continue
+        checks = [c for c in checks if (c.get('position_key'), c.get('source_url')) != (price['position_key'], price.get('source_url'))]
+        checks.append({**price, 'accepted': False, 'status': 'review', 'reason': reason})
+    return {**candidate, 'prices': prices, 'price_checks': checks}
 
 
 def service_contact(node):
@@ -291,7 +311,8 @@ def page_facts(url, html):
     content = content.get_text(' ',strip=True)
     if not heading and len(content) < 600: heading = content
     editorial = bool(re.search(r'/(?:blog|news|articles?|wiki|forum|flood|computer_technology)(?:/|$)',urlsplit(url).path,re.I)
-                     or re.match(r'\s*(?:как\s|что\s+такое|обзор\b|инструкци|руководство|рейтинг\b)',heading,re.I))
+                     or any(re.match(r'\s*(?:как\s|что\s+(?:такое|входит)|обзор\b|инструкци|руководство|рейтинг\b)', node.get_text(' ',strip=True), re.I)
+                            for node in soup.select('title,h1')))
     if re.search(r'подтвердите,? что вы не робот|доступ ограничен|checking your browser', text[:10000], re.I):
         raise BuyerError('Сайт ограничил автоматическую проверку')
     emails = set()
@@ -412,14 +433,16 @@ def inspect(task, source, *, fetch=fetch_html):
                            'state':'published','observed_at':time.time()})
     channels=list({(c['channel'],re.sub(r'\D','',c['address'])[-10:] if c['channel']=='phone' else c['address']):c
                    for p in pages for c in p[2]['channels']}.values())
-    return {'id':'discovered-'+digest(identity)[:24], 'company':facts['name'], 'url':url,
+    return checked_candidate({'id':'discovered-'+digest(identity)[:24], 'company':facts['name'], 'url':url,
             'email':email,'emails':emails,'channels':channels,
             'position_keys':[r['position_key'] for r in rows], 'categories':[task['category']],
             'region':source['region'], 'region_note':regional or 'Регион поставки или выполнения работ нужно подтвердить',
-            'evidence_pages':evidence_pages,'prices':prices,'price_checks':price_checks,'image':facts['image'],'discovered':True}
+            'evidence_pages':evidence_pages,'prices':prices,'price_checks':price_checks,'image':facts['image'],'discovered':True}, rows)
 
 
 def verify_contact(supplier):
+    if directory_source(supplier.get('url', '')):
+        raise BuyerError('Источник не является поставщиком; служебные контакты исключены')
     email = supplier.get('email')
     if not email: raise BuyerError('Нет опубликованного email')
     failures = []

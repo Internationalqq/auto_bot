@@ -323,6 +323,80 @@ class DiscoveryTests(unittest.TestCase):
             '<h1>Завод Угличкабель</h1><p>Производство и поставка силовых кабелей. info@impx.ru</p>')
         self.assertEqual(facts['emails'],['info@impx.ru'])
 
+    def test_platform_government_and_editorial_sources_cannot_verify_contacts(self):
+        for url in ('https://uslugi.yandex.ru/16-yaroslavl/category/',
+                    'https://yandex.ru/services/yaroslavl_perevozka',
+                    'https://minstroyrf.gov.ru/docs/14575/',
+                    'https://stroy-podskazka.ru/pesok/vse/',
+                    'https://catalogmineralov.ru/mineral/pesok.html',
+                    'https://zalpstroy.ru/chto-vkhodit-v-blagoustroystvo-territorii/'):
+            with self.subTest(url=url):
+                self.assertTrue(discovery.directory_source(url))
+                with patch.object(discovery, 'fetch_html') as fetch:
+                    with self.assertRaisesRegex(BuyerError, 'не является поставщиком'):
+                        discovery.verify_contact({'url':url, 'email':'support@example.org',
+                                                  'evidence_pages':[{'url':'https://example.org/contact'}]})
+                    fetch.assert_not_called()
+        for url in ('https://minstroyrf.gov.ru.supplier.example/', 'https://yandex.ru/maps/',
+                    'https://zalpstroy.ru/services/blagoustroystvo/'):
+            self.assertFalse(discovery.directory_source(url))
+
+    def test_editorial_heading_is_detected_after_company_title(self):
+        facts=discovery.page_facts('https://builder.example/guide',
+            '<title>Строймастер</title><h1>Что входит в благоустройство территории</h1>Заказ услуг')
+        self.assertTrue(facts['editorial'])
+
+    def test_saved_gravel_price_requires_grade_without_changing_history(self):
+        self.source['positions']=[dict(row('g','Щебень М1200, фракция 20-40 мм'),unit='м3')]
+        run_id=store.enqueue(self.source)
+        price={'position_key':'g','price_kopecks':270000,'unit':'м3','source_url':'https://supplier.example/gravel',
+               'evidence':'Щебень гравийный фракции 20-40. 7 кубов: 2700 руб/м3', 'state':'published'}
+        candidate={'id':'gravel','url':price['source_url'],'company':'Карьер','position_keys':['g'],
+                   'prices':[price],'price_checks':[{'position_key':'g','source_url':price['source_url'],'accepted':True}]}
+        serialized=json.dumps(candidate)
+        with closing(box.connect()) as db, db:
+            db.execute('INSERT INTO buyer_search_candidates VALUES (?,?,?)',(run_id,'gravel',serialized))
+        for found in (store.candidates(self.source['tender_id'],run_id)[0],store.listing(self.source['tender_id'])[0]['candidates'][0]):
+            self.assertEqual(found['prices'],[])
+            self.assertEqual(len(found['price_checks']),1)
+            self.assertIn('прочность щебня',found['price_checks'][0]['reason'])
+            self.assertFalse(found['price_checks'][0]['accepted'])
+        with closing(box.connect()) as db:
+            self.assertEqual(db.execute('SELECT data FROM buyer_search_candidates').fetchone()[0],serialized)
+        price['evidence']='Щебень М1200 фракции 20-40, 2700 руб/м3'
+        self.assertEqual(discovery.checked_candidate(candidate,self.source['positions'])['prices'],[price])
+
+    def test_new_inspection_checks_missing_grade_but_keeps_supplier(self):
+        self.source['positions']=[dict(row('g','Щебень М1200, фракция 20-40 мм'),unit='м3')]
+        data=needs.snapshot(self.source)
+        task={'url':'https://supplier.example/gravel','category':'gravel','bucket':'materials','position_keys':['g']}
+        offer=SimpleNamespace(accepted=True,price=2700,unit='м3',status='published',reason='',
+                              evidence='Щебень фракции 20-40, 2700 руб/м3',extractor='table')
+        with patch('autobot.market_source_adapters.inspect_source_page',return_value=offer):
+            candidate=discovery.inspect(task,data,fetch=lambda url:(url,'<h1>Продажа щебня</h1>Купить щебень. sales@example.org'))
+        self.assertEqual(candidate['email'],'sales@example.org')
+        self.assertEqual(candidate['prices'],[])
+        self.assertFalse(candidate['price_checks'][0]['accepted'])
+
+    def test_newly_excluded_supplier_blocks_old_draft_and_already_queued_send(self):
+        self.pipeline()
+        job=jobs.jobs(self.source['tender_id'])[0]
+        key=box.enqueue(self.source['tender_id'],job['id'],0,'sales@example.org')
+        host=discovery.source_identity(job['payload']['draft_task']['supplier']['url'])
+        with patch.object(discovery,'_DIRECTORY_HOSTS',discovery._DIRECTORY_HOSTS|{host}):
+            with self.assertRaisesRegex(BuyerError,'не является поставщиком'):
+                box.enqueue(self.source['tender_id'],job['id'],0,'sales@example.org')
+            self.assertIsNone(box.claim('worker'))
+        self.assertEqual(next(r for r in box.listing(self.source['tender_id']) if r['id']==key)['status'],'blocked')
+
+    def test_report_recomputes_uncovered_after_saved_supplier_is_excluded(self):
+        run_id=self.pipeline()
+        self.assertEqual(report.build(self.source['tender_id'],run_id)['uncovered'],[])
+        with patch.object(discovery,'_DIRECTORY_HOSTS',discovery._DIRECTORY_HOSTS|{'supplier.example'}):
+            result=report.build(self.source['tender_id'],run_id)
+        self.assertEqual(result['companies'],[])
+        self.assertEqual([p['position_key'] for p in result['uncovered']],['c'])
+
     def test_new_qualification_policy_requires_new_run_and_blocks_old_send(self):
         run_id=self.pipeline()
         job=jobs.jobs(self.source['tender_id'])[0]

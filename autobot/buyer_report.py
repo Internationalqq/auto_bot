@@ -65,11 +65,23 @@ def build(tid, run_id=None):
     from contextlib import closing
     with closing(outbox.connect()) as db:
         errors = list(dict.fromkeys(r[0] for r in db.execute("SELECT error FROM buyer_search_steps WHERE run_id=? AND error<>''", (run_id,))))
+    covered = {key for company in companies for key in company['position_keys']}
+    # A policy change can remove a saved candidate. Recompute uncovered rows
+    # rather than presenting the stale coverage recorded during preparation.
+    protected_jobs = {m['draft_job_id'] for m in outgoing if m['status'] in ('queued','sending','sent','uncertain')}
+    for job in drafts:
+        if job['id'] in protected_jobs and job['id'] in prepared.get('job_ids', []):
+            covered.update(p['position_key'] for p in job['payload']['draft_task']['positions'])
+    prior_reasons = {p['position_key']: p['reason'] for p in prepared.get('uncovered', [])}
+    uncovered = run['payload'].get('rejected', []) + [
+        {'position_key': p['position_key'], 'name': p['name'],
+         'reason': prior_reasons.get(p['position_key'], 'Подходящий поставщик не подтверждён')}
+        for p in run['payload']['positions'] if p['position_key'] not in covered]
     return {'schema_version':1, 'tender_id':tid, 'run_id':run_id, 'status':run['status'],
             'delivery':run['payload'].get('delivery','draft'), 'companies':companies, 'errors':errors,
             'request_revision':revision(run['payload']), 'request_current':request_current,'version_note':version_note,
             'positions':run['payload']['positions'],
-            'uncovered':run['payload'].get('rejected', []) + prepared.get('uncovered', [])}
+            'uncovered':uncovered}
 
 
 def plain(data):
