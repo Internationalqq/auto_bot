@@ -472,7 +472,19 @@ def run_once():
         elif step['kind'] == 'prepare':
             from autobot.buyer_workflow import prepare_run
             store.finish(step, prepared=prepare_run(step['source']['tender_id'], step['run_id']))
-        else: store.finish(step, candidate=inspect(step['payload'], step['source']))
+        else:
+            captures = {}
+            def capture(url):
+                final, html = fetch_html(url)
+                captures[final] = (html, time.time())
+                return final, html
+            candidate = inspect(step['payload'], step['source'], fetch=capture)
+            if store.finish(step, candidate=candidate):
+                try:
+                    from autobot.buyer_catalog import publish_pages
+                    publish_pages(candidate, captures, step['payload'])
+                except Exception:
+                    log.exception('Supplier catalogue import failed for discovery step %s', step['id'])
     except (BuyerError, OSError, ValueError) as error:
         store.finish(step,error=str(error),retry=isinstance(error,OSError) or 'временно' in str(error))
     except Exception:

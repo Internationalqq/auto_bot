@@ -609,8 +609,7 @@ class DiscoveryTests(unittest.TestCase):
     def pipeline(self, delivery='draft', html=None):
         html = html or '<h1>Электроматериалы</h1>Кабель ВВГнг и светильники в Москве. <a href="mailto:sales@example.org">Отдел продаж</a>'
         key = store.enqueue(self.source, delivery=delivery)
-        original = discovery.inspect
-        with patch.object(discovery,'search',return_value=[{'url':'https://supplier.example/','title':'Компания'}]), patch.object(discovery,'inspect',side_effect=lambda task,source:original(task,source,fetch=lambda url:(url,html))):
+        with patch.object(discovery,'search',return_value=[{'url':'https://supplier.example/','title':'Компания'}]), patch.object(discovery,'fetch_html',side_effect=lambda url:(url,html)):
             for _ in range(150):
                 if not discovery.run_once(): break
             else: self.fail('Pipeline did not settle')

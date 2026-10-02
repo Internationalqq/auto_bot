@@ -61,6 +61,53 @@ def add_step(db, run_id, kind, scope, payload):
                (uuid.uuid4().hex, run_id, kind, scope, encoded(payload)))
 
 
+def enqueue_sources(source, links):
+    """Inspect observed public URLs without querying search engines or sending mail."""
+    from autobot.buyer_discovery import public_url, directory_source
+    from autobot.buyer_suppliers import category
+    from autobot.buyer_needs import work_profile
+    if not isinstance(links, list) or not 1 <= len(links) <= 1000:
+        raise BuyerError('Укажите от 1 до 1000 источников')
+    payload = snapshot(source)
+    rows = {p['position_key']: p for p in payload['positions']}
+    normalized = {}
+    for item in links:
+        if not isinstance(item, dict) or not isinstance(item.get('position_keys'), list) or not item['position_keys']:
+            raise BuyerError('У источника должны быть выбранные позиции')
+        if any(not isinstance(k, str) or k not in rows for k in item['position_keys']):
+            raise BuyerError('Источник относится к неизвестной позиции')
+        url = public_url(item.get('url'))
+        if directory_source(url):
+            raise BuyerError('Источник не является поставщиком')
+        for key in set(item['position_keys']):
+            row = rows[key]
+            work = row['type_slug'] in ('work', 'service')
+            task = {'url': url, 'title': row['name'], 'position_keys': [key],
+                    'bucket': 'works' if work else 'materials', 'category': category(row) or row['name'][:100],
+                    'intent': 'supplier' if work else 'product', 'work_profile': work_profile(row) if work else ''}
+            normalized[(key, url)] = task
+    if any(sum(k == row for k, _ in normalized) > SOURCES_PER_QUERY for row in rows):
+        raise BuyerError('Не более 10 источников на позицию')
+    tasks = [normalized[key] for key in sorted(normalized)]
+    selected = {key for key, _ in normalized}
+    payload.update(positions=[rows[k] for k in sorted(selected)], delivery='draft',
+                   discovery_version=DISCOVERY_VERSION, source_links=tasks)
+    fingerprint = digest(payload)
+    initialize()
+    with closing(outbox.connect()) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        old = db.execute('SELECT id FROM buyer_search_runs WHERE fingerprint=?', (fingerprint,)).fetchone()
+        if old:
+            return old['id']
+        key, now = uuid.uuid4().hex, time.time()
+        db.execute('INSERT INTO buyer_search_runs VALUES (?,?,?,?,?,?,?,?,?)',
+                   (key, fingerprint, payload['tender_id'], encoded(payload), 'searching', today_iso(), now, now, ''))
+        for task in tasks:
+            add_step(db, key, 'inspect', digest(task), task)
+        add_step(db, key, 'prepare', 'company-requests', {})
+        return key
+
+
 def claim():
     if not outbox.DB_PATH.is_file():
         return None
@@ -74,11 +121,13 @@ def claim():
             WHERE r.status='searching' AND s.status='queued' AND s.next_at<=?
             AND (s.kind<>'prepare' OR NOT EXISTS (SELECT 1 FROM buyer_search_steps pending
               WHERE pending.run_id=s.run_id AND pending.kind<>'prepare' AND pending.status IN ('queued','leased')))
-            ORDER BY r.created_at,s.rowid LIMIT 1""", (now,)).fetchone()
+            ORDER BY (SELECT count(*) FROM buyer_search_steps active
+                      WHERE active.run_id=r.id AND active.status='leased'),r.updated_at,s.rowid LIMIT 1""", (now,)).fetchone()
         if step is None:
             return None
         token = secrets.token_urlsafe(24)
         db.execute("UPDATE buyer_search_steps SET status='leased',token=?,lease_until=?,attempts=attempts+1 WHERE id=?", (token, now+180, step['id']))
+        db.execute('UPDATE buyer_search_runs SET updated_at=? WHERE id=?', (now, step['run_id']))
         return dict(step) | {'token': token, 'payload': json.loads(step['payload']), 'source': json.loads(step['source'])}
 
 
@@ -183,13 +232,16 @@ def candidates(tid, key):
 
 
 def cached_links(task, source):
-    """Reuse public product URLs from the same tender; always inspect them anew."""
-    if task.get('intent')!='product' or not outbox.DB_PATH.is_file():return []
+    """Reuse public URLs across tenders, with same-tender legacy compatibility."""
+    from autobot.buyer_catalog import links
+    shared = links(task, source)
+    if not outbox.DB_PATH.is_file() or task.get('intent') != 'product' or len(shared) >= SOURCES_PER_QUERY:
+        return shared
     wanted={(r['name'],r['unit'],r['type_slug']) for r in source['positions'] if r['position_key'] in task['position_keys']}
     from autobot.buyer_discovery import public_url, source_identity
-    found={}
+    found={p['url']:p for p in shared}
     with closing(outbox.connect()) as db:
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_search_runs'").fetchone():return []
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_search_runs'").fetchone():return shared
         runs=db.execute('SELECT id,payload FROM buyer_search_runs WHERE tender_id=? AND created_at>? ORDER BY created_at DESC LIMIT 30',
                         (source['tender_id'],time.time()-30*86400)).fetchall()
         for run in runs:
@@ -201,7 +253,7 @@ def cached_links(task, source):
                     if price['position_key'] not in keys:continue
                     try:url=public_url(price['source_url'])
                     except (BuyerError,KeyError):continue
-                    found.setdefault(source_identity(url),{'url':url,'title':company['company'],'reused':True})
+                    found.setdefault(url,{'url':url,'title':company['company'],'reused':True})
                     if len(found)>=SOURCES_PER_QUERY:return list(found.values())
     return list(found.values())
 

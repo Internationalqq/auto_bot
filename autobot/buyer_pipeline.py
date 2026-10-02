@@ -276,6 +276,9 @@ def project(tid, region, rows, *, drafts=(), runs=(), outbox=(), replies=(), cam
     positions = list(result.values())
     eligible = [p for p in positions if p['eligible']]
     return {'schema_version': 1, 'tender_id': tid, 'positions': positions,
+            'coverage': {'denominator': len(eligible),
+                         **{stage: round(100 * sum(p['flags'][stage] for p in eligible) / len(eligible), 1)
+                            if eligible else 0 for stage in STAGES}},
             'summary': {'total': len(positions), 'eligible': len(eligible), 'excluded': len(positions) - len(eligible),
                         **{stage: sum(p['flags'][stage] for p in eligible) for stage in STAGES}},
             'mail': mail or {'state': 'unknown', 'label': 'Состояние почты не проверено', 'checked_at': None}}

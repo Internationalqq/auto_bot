@@ -152,6 +152,17 @@ def pipeline(tid):
     return jsonify(ok=True, **build(tid))
 
 
+@blueprint.get('/api/tenders/<tid>/buyer/catalog')
+@user_route
+def supplier_catalog(tid):
+    from autobot.buyer_catalog import catalog
+    from autobot.buyer_workflow import current_source
+    from autobot.buyer_pipeline import build
+    keys = [p['position_key'] for p in build(tid)['positions'] if p['eligible']]
+    with current_source(tid, keys) as source:
+        return jsonify(ok=True, **catalog(source))
+
+
 @blueprint.post('/api/tenders/<tid>/activity')
 @user_route
 def tender_activity(tid):
