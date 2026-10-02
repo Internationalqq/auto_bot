@@ -73,7 +73,14 @@ def identifier_matches(term, text):
         value=re.sub(r'\(\s*','(',value)
         value=re.sub(r'\s*\)',')',value)
         return re.sub(r'(?<=\d)\s*х\s*(?=\d)', 'х', value)
-    return bool(re.search(r'(?<![\w.,])'+re.escape(canonical(term))+r'(?![\w.,])',canonical(text)))
+    wanted = canonical(term)
+    # A requested planar size can be written with thickness on a product page.
+    # This qualifies a URL only; the price adapter still checks every required
+    # characteristic. Never allow partial SKU or numeric matches.
+    ending = r'(?![\w.,])'
+    if re.fullmatch(r'\d+(?:\.\d+)?х\d+(?:\.\d+)?', wanted):
+        ending = r'(?:х\d+(?:\.\d+)?)?(?:\s*мм)?(?![\w.,])'
+    return bool(re.search(r'(?<![\w.,])'+re.escape(wanted)+ending,canonical(text)))
 
 
 WORK_PROFILES={

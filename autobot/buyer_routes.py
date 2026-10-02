@@ -160,7 +160,8 @@ def supplier_catalog(tid):
     from autobot.buyer_pipeline import build
     keys = [p['position_key'] for p in build(tid)['positions'] if p['eligible']]
     with current_source(tid, keys) as source:
-        return jsonify(ok=True, **catalog(source))
+        source = dict(source)
+    return jsonify(ok=True, **catalog(source))
 
 
 @blueprint.post('/api/tenders/<tid>/activity')

@@ -79,6 +79,9 @@ def main(argv=None):
     except BuyerError as error:
         print(json.dumps({'ok':False,'error':str(error)}, ensure_ascii=False))
         return 1
+    except TimeoutError:
+        print(json.dumps({'ok':False,'error':'Отчёт занят другим процессом; повторите команду позже'}, ensure_ascii=False))
+        return 1
 
 
 if __name__ == '__main__': raise SystemExit(main())

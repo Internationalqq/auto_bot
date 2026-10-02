@@ -159,7 +159,7 @@ def publish_pages(candidate, captures, task, *, path=None):
         contacts = ' · '.join(dict.fromkeys([*public['emails'], *[c['address'] for c in public['channels']]]))
         if contacts:
             store.save_contact(source_id, contacts, url, observed, path)
-        proof = source_region_evidence(html, '', task['bucket'])
+        proof = source_region_evidence(html, candidate.get('region', ''), task['bucket'])
         store.save_coverage(source_id, proof, url, observed, path=path)
         if url != root:
             store.save_page(source_id, url, html, observed, [], kind='context', path=path)

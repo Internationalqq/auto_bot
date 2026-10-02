@@ -139,5 +139,22 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.publish_pages({'url':self.url},{}, {'bucket':'materials'},path=self.catalog_path),0)
         self.assertFalse(self.catalog_path.exists())
 
+    def test_planar_dimensions_allow_explicit_thickness_but_not_partial_numbers(self):
+        from autobot.buyer_needs import identifier_matches
+        for text in ('300x100x60 мм','300 × 100 × 60мм','Размер 300х100 мм'):
+            self.assertTrue(identifier_matches('300x100',text),text)
+        for text in ('1300х100х60','300х1000х60','300х100х6000x80'):
+            self.assertFalse(identifier_matches('300x100',text),text)
+        self.assertFalse(identifier_matches('У733М','У733М1'))
+
+    def test_kerb_installation_is_a_paving_contractor_not_just_material_sales(self):
+        from autobot.buyer_discovery import inspect
+        source=self.source|{'positions':[self.row|{'name':'Установка бортовых камней бетонных','type_slug':'work','unit':'100 м'}]}
+        task={'url':self.url,'position_keys':['a'],'bucket':'works','category':'paving_work','intent':'supplier'}
+        result=inspect(task,source,fetch=lambda url:(url,'<h1>Установка бордюров</h1><p>Заказать услуги в Рыбинске</p>'))
+        self.assertEqual(result['position_keys'],['a'])
+        with self.assertRaises(BuyerError):
+            inspect(task,source,fetch=lambda url:(url,'<h1>Бордюры</h1><p>Продажа бордюров. Цена по запросу.</p>'))
+
 
 if __name__=='__main__':unittest.main()
