@@ -88,7 +88,19 @@ def enqueue_sources(source, links):
             normalized[(key, url)] = task
     if any(sum(k == row for k, _ in normalized) > SOURCES_PER_QUERY for row in rows):
         raise BuyerError('Не более 10 источников на позицию')
-    tasks = [normalized[key] for key in sorted(normalized)]
+    grouped = {}
+    for key in sorted(normalized):
+        task = normalized[key]
+        group = (task['url'], task['bucket'], task['category'], task['intent'], task['work_profile'])
+        grouped.setdefault(group, []).append(task)
+    tasks = []
+    for group in sorted(grouped):
+        members = grouped[group]
+        # One fetch covers the same supplier page for multiple estimate rows.
+        # Bound the group so a long price list can still finish within its lease.
+        for offset in range(0, len(members), 40):
+            batch = members[offset:offset+40]
+            tasks.append({**batch[0], 'position_keys': [p['position_keys'][0] for p in batch]})
     selected = {key for key, _ in normalized}
     payload.update(positions=[rows[k] for k in sorted(selected)], delivery='draft',
                    discovery_version=DISCOVERY_VERSION, source_links=tasks)

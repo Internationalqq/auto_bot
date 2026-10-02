@@ -103,6 +103,14 @@ class CatalogTests(unittest.TestCase):
             with self.assertRaises(BuyerError):store.enqueue_sources(self.source,links)
         self.assertFalse(box.DB_PATH.exists())
 
+    def test_one_public_page_is_checked_once_for_multiple_matching_rows(self):
+        source=self.source|{'positions':[self.row, self.row|{'position_key':'b','quantity':'20'}]}
+        key=store.enqueue_sources(source,[{'url':self.url,'position_keys':['b','a']}])
+        with closing(box.connect()) as db:
+            rows=db.execute("SELECT payload FROM buyer_search_steps WHERE run_id=? AND kind='inspect'",(key,)).fetchall()
+        self.assertEqual(len(rows),1)
+        self.assertEqual(json.loads(rows[0][0])['position_keys'],['a','b'])
+
     def test_claim_rotates_between_tenders(self):
         runs=[store.enqueue(self.source|{'tender_id':str(1234567890+i)}) for i in range(3)]
         picked=[store.claim()['run_id'] for _ in range(3)]
