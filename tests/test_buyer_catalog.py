@@ -139,6 +139,19 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.publish_pages({'url':self.url},{}, {'bucket':'materials'},path=self.catalog_path),0)
         self.assertFalse(self.catalog_path.exists())
 
+    def test_import_preserves_registered_price_list_parser_and_other_products(self):
+        price_store.initialize(self.catalog_path)
+        price_store.seed_sources(self.catalog_path)
+        src=next(s for s in price_store.sources(self.catalog_path) if 'gamma-beton' in s['url'])
+        html='<h1>Бетон</h1><table><tr><th>Наименование</th><th>Ед. изм.</th><th>Цена</th></tr><tr><td>Бетон В15</td><td>м3</td><td>5000 руб</td></tr><tr><td>Бетон В20</td><td>м3</td><td>5500 руб</td></tr></table>'
+        candidate={'url':src['url'],'evidence_pages':[{'url':src['url']}],'region':'Ярославская область'}
+        for stamp in (self.stamp,self.stamp+1):
+            self.assertEqual(catalog.publish_pages(candidate,{src['url']:(html,stamp)},{'bucket':'materials'},path=self.catalog_path),2)
+        items=price_store.items(source_id=src['id'],path=self.catalog_path)['items']
+        self.assertEqual({p['name'] for p in items},{'Бетон В15','Бетон В20'})
+        self.assertTrue(all(p['price_kind']!='unknown' for p in items))
+        self.assertEqual(price_store.source(src['id'],self.catalog_path)['config'],src['config'])
+
     def test_planar_dimensions_allow_explicit_thickness_but_not_partial_numbers(self):
         from autobot.buyer_needs import identifier_matches
         for text in ('300x100x60 мм','300 × 100 × 60мм','Размер 300х100 мм'):

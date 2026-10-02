@@ -141,7 +141,16 @@ def publish_pages(candidate, captures, task, *, path=None):
     # enter the common base under a buyer's requested M1200 label.
     config = {'name': facts['name'], 'url': root,
               'catalog': {'adapter': 'product', 'bucket': task['bucket']}}
-    records = extract(body, root, 'product', facts['heading'], config)
+    with store.connect(path) as db:
+        previous = db.execute('SELECT config_json FROM supplier_catalog_sources WHERE url=?', (root,)).fetchone()
+    if previous:
+        config = json.loads(previous['config_json'])
+    kind = 'product' if config.get('catalog', {}).get('adapter') == 'product' else 'catalog'
+    # Preserve the registered parser. Treating an entire existing price list as
+    # one product would mark all its other observations as missing in save_page.
+    records = extract(body, root, kind, facts['heading'], config)
+    if not records:
+        return 0
     source_id = store.digest(root)
     with store.connect(path, write=True) as db:
         db.execute('''INSERT OR IGNORE INTO supplier_catalog_sources
@@ -150,7 +159,7 @@ def publish_pages(candidate, captures, task, *, path=None):
             (source_id, urlsplit(root).hostname.removeprefix('www.'), facts['name'], root,
              task['bucket'], 'Регион и доставка уточняются', store.json_text(config), 1, stamp))
         source_id = db.execute('SELECT id FROM supplier_catalog_sources WHERE url=?', (root,)).fetchone()[0]
-    store.save_page(source_id, root, body, stamp, records, kind='product', path=path)
+    store.save_page(source_id, root, body, stamp, records, kind=kind, path=path)
     proven = {page['url'] for page in candidate.get('evidence_pages', [])}
     for url, (html, observed) in captures.items():
         if url not in proven:
