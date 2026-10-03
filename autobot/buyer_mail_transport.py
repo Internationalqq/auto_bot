@@ -271,6 +271,12 @@ def outgoing(job, account):
     message['From']=account;message['To']=recipient;message['Subject']=job['subject']
     message['Message-ID']=identifier
     message['Date']=format_datetime(datetime.fromtimestamp(job['created_at'],timezone.utc))
+    if job.get('in_reply_to'):
+        reference = job['in_reply_to']
+        if not isinstance(reference, str) or not re.fullmatch(r'<[^\s<>]{3,460}>', reference):
+            raise BuyerError('Некорректная ссылка на исходное письмо')
+        message['In-Reply-To'] = reference
+        message['References'] = reference
     message.set_content(job['body'])
     return message.as_bytes(),identifier
 
@@ -292,8 +298,8 @@ def sent_copy(config, identifier, raw, *, append):
             existing,_=read_message(connection,uid)
             candidate=BytesParser(policy=policy.default).parsebytes(existing)
             original=BytesParser(policy=policy.default).parsebytes(raw)
-            if (str(candidate.get('Message-ID')),str(candidate.get('From')),str(candidate.get('To')),str(candidate.get('Subject')),text_body(candidate,strip_quotes=False)) == (
-                    identifier,str(original['From']),str(original['To']),str(original['Subject']),text_body(original,strip_quotes=False)):
+            if (str(candidate.get('Message-ID')),str(candidate.get('From')),str(candidate.get('To')),str(candidate.get('Subject')),text_body(candidate,strip_quotes=False),candidate.get('In-Reply-To'),candidate.get('References')) == (
+                    identifier,str(original['From']),str(original['To']),str(original['Subject']),text_body(original,strip_quotes=False),original.get('In-Reply-To'),original.get('References')):
                 return True
         if uids:raise BuyerError('IMAP: Message-ID отправленного письма не совпадает с заданием')
         if not append:return False

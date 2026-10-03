@@ -31,6 +31,59 @@ class MessageTests(unittest.TestCase):
         args = dict(tid=TID,parent_id='parent',body=BODY,request_id=REQUEST,actor_id=7)
         return messages.enqueue(**(args|kwargs))
 
+    def incoming(self, key='reply-1', sender='manager@example.org', parent='parent', stamp=None):
+        with closing(replies.connect()) as db, db:
+            db.execute('INSERT INTO buyer_replies VALUES (?,?,?,?,?,?,?,?)',
+                       (key,parent,'rfc822:<'+key+'@example.org>',sender,'Ответ',stamp or time.time(),'IMAP',time.time()))
+
+    def test_reply_routes_to_manager_and_freezes_reference_across_restart(self):
+        self.incoming()
+        key = self.enqueue()
+        self.incoming(key='reply-2', sender='other-manager@example.org', stamp=time.time()+1)
+        self.assertEqual(self.enqueue(), key)
+        job = box.claim('local')
+        self.assertEqual(job['recipient'], 'manager@example.org')
+        self.assertEqual(job['in_reply_to'], '<reply-1@example.org>')
+        again = box.claim('local')
+        self.assertEqual((again['id'], again['in_reply_to']), (key, job['in_reply_to']))
+        box.update(key,'local',job['token'],dict(status='sent',detail='SMTP',evidence='proof'))
+        later = self.enqueue(request_id='new-request-123456789')
+        self.assertEqual(next(r for r in box.listing(TID) if r['id']==later)['recipient'], 'other-manager@example.org')
+        self.assertEqual(box.listing(TID)[0]['recipient'], 'supplier@example.org')
+
+    def test_foreign_reply_or_public_provider_neighbor_does_not_redirect(self):
+        self.incoming(sender='manager@evil.example.org')
+        key = self.enqueue()
+        self.assertEqual(next(r for r in box.listing(TID) if r['id']==key)['recipient'], 'supplier@example.org')
+        self.incoming(key='elsewhere', sender='manager@example.org', parent='different-tender')
+        next_key = self.enqueue(request_id='new-request-123456789')
+        with closing(box.connect()) as db:
+            self.assertEqual(messages.threading_headers(db, next_key), {})
+        self.assertIsNone(messages.reply_target({'recipient':'one@mail.ru'},
+            {'sender':'two@mail.ru','message_id':'rfc822:<one@mail.ru>'}))
+        self.assertIsNone(messages.reply_target({'recipient':'one@example.org'},
+            {'sender':'two@example.org','message_id':'rfc822:<a@example.org>\r\nBcc: x@evil.org'}))
+
+    def test_saved_manager_target_cannot_be_replaced_by_another_recipient_or_thread(self):
+        self.incoming()
+        key = self.enqueue()
+        with closing(box.connect()) as db, db:
+            db.execute("UPDATE outbound SET recipient='other@example.org' WHERE id=?", (key,))
+        self.assertIsNone(box.claim('local'))
+        self.assertEqual(next(r for r in box.listing(TID) if r['id']==key)['status'], 'blocked')
+        self.incoming(key='other-reply', parent='other-thread')
+        next_key = self.enqueue(request_id='new-request-123456789')
+        with closing(box.connect()) as db, db:
+            db.execute('UPDATE buyer_manual_reply_targets SET reply_id=? WHERE outbound_id=?', ('other-reply',next_key))
+        self.assertIsNone(box.claim('local'))
+
+    def test_additive_schema_reopen_preserves_existing_messages(self):
+        with closing(box.connect()) as db:
+            before=[tuple(r) for r in db.execute('SELECT * FROM outbound')]
+        with closing(box.connect()) as db:
+            self.assertEqual(before,[tuple(r) for r in db.execute('SELECT * FROM outbound')])
+            self.assertEqual(db.execute('SELECT count(*) FROM buyer_manual_reply_targets').fetchone()[0],0)
+
     def test_exact_text_recipient_subject_actor_and_concurrent_repeat(self):
         with ThreadPoolExecutor(max_workers=3) as pool:
             ids = list(pool.map(lambda _: self.enqueue(),range(3)))

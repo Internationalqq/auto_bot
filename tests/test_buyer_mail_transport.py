@@ -42,6 +42,17 @@ def connection(value):yield value
 
 
 class MailTests(unittest.TestCase):
+    def test_reply_headers_survive_smtp_and_invalid_reference_never_sends(self):
+        job = JOB | {'in_reply_to': '<manager-reply@example.org>'}
+        raw, _ = mail.outgoing(job, ACCOUNT)
+        msg = BytesParser(policy=policy.default).parsebytes(raw)
+        self.assertEqual(str(msg['In-Reply-To']), '<manager-reply@example.org>')
+        self.assertEqual(str(msg['References']), '<manager-reply@example.org>')
+        self.assertEqual(str(msg['To']), JOB['recipient'])
+        for bad in ('<x@example.org>\r\nBcc: attacker@example.org', 'not-an-id', ['<id@example.org>']):
+            with self.subTest(bad=bad), self.assertRaises(BuyerError):
+                mail.outgoing(JOB | {'in_reply_to': bad}, ACCOUNT)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)

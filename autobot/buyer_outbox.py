@@ -36,6 +36,8 @@ def connect():
         actor_id INTEGER NOT NULL, request_id TEXT NOT NULL, created_at REAL NOT NULL,
         UNIQUE(actor_id,request_id))''')
     db.execute('CREATE INDEX IF NOT EXISTS buyer_manual_parent ON buyer_manual_messages(parent_outbound_id)')
+    db.execute('''CREATE TABLE IF NOT EXISTS buyer_manual_reply_targets (
+        outbound_id TEXT PRIMARY KEY, reply_id TEXT NOT NULL)''')
     db.commit()
     return db
 
@@ -195,7 +197,8 @@ def claim(worker):
                 token, now = secrets.token_urlsafe(32), time.time()
                 db.execute("UPDATE outbound SET worker=?,token=?,status='sending',lease_until=?,updated_at=? WHERE id=?",
                            (worker, token, now+120, now, row['id']))
-                return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone()) | {
+                from autobot.buyer_messages import threading_headers
+                return dict(db.execute('SELECT * FROM outbound WHERE id=?', (row['id'],)).fetchone()) | threading_headers(db, row['id']) | {
                     'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
         except BuyerError as error:
             with closing(connect()) as db, db:
@@ -209,7 +212,8 @@ def _inflight(db, worker):
     """False means no occupied transport; None means occupied by another worker."""
     row = db.execute("SELECT * FROM outbound WHERE worker=? AND status IN ('sending','uncertain') AND receipt IS NULL ORDER BY created_at LIMIT 1", (worker,)).fetchone()
     if row:
-        return dict(row) | {'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
+        from autobot.buyer_messages import threading_headers
+        return dict(row) | threading_headers(db, row['id']) | {'attempt_number': db.execute('SELECT count(*) FROM outbound_attempt_history WHERE job_id=?', (row['id'],)).fetchone()[0]}
     if db.execute("SELECT 1 FROM outbound WHERE status IN ('sending','uncertain') AND receipt IS NULL LIMIT 1").fetchone(): return None
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='buyer_inbox_checks'").fetchone():
         if db.execute("SELECT 1 FROM buyer_inbox_checks WHERE status='checking' LIMIT 1").fetchone(): return None
