@@ -92,6 +92,26 @@ class WorkflowTests(unittest.TestCase):
         self.source['positions']=[row('c','Кабель ВВГнг',unit='100 м')]
         j=self.prepared();self.assertIn('10 × 100 м',j['result']['drafts'][0]['body'])
 
+    def test_written_request_does_not_disclose_buyer_phone(self):
+        self.source['phone'] = '+79991234567'
+        body = self.prepared()['result']['drafts'][0]['body']
+        self.assertIn('письменно в этой переписке', body)
+        self.assertIn('номера строк', body)
+        self.assertIn('артикулы', body)
+        self.assertNotIn('79991234567', body)
+
+    def test_disproved_assortments_are_not_prepared_again(self):
+        self.source['positions'] = [
+            row('asphalt', 'Смеси асфальтобетонные красные', unit='т'),
+            row('work', 'Армирование грунтовых насыпей георешетками', kind='work'),
+            row('material', 'Георешетка объёмная', unit='м2')]
+        result = suppliers.prepare(self.source)
+        self.assertEqual({p['position_key'] for p in result['uncovered']}, {'asphalt', 'work'})
+        prepared = jobs.jobs(TID)
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(prepared[0]['payload']['draft_task']['supplier']['id'], 'geodorstroy')
+        self.assertEqual(prepared[0]['result']['drafts'][0]['position_keys'], ['material'])
+
     def test_contact_rechecked_only_for_target_supplier(self):
         j=self.prepared();key=campaigns.start(TID,j['id'],0)
         with patch.object(campaigns,'fetch_contact',return_value='info@tl-electro.ru') as fetch:

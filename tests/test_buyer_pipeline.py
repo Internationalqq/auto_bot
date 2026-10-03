@@ -179,6 +179,34 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(buyer_replies.comparison_amount(12345, 'м', '100 м'), 1234500)
         self.assertIsNone(buyer_replies.comparison_amount(12345, 'шт', 'м2'))
 
+    def test_short_ruble_currency_roundtrip_keeps_server_validation(self):
+        target = row(name='Стеклошарики 100–600 мкм') | {'unit': 'кг'}
+        for currency in ('р', 'р.', 'руб.', '₽', 'RUB'):
+            with self.subTest(currency=currency):
+                quote = target['name'] + ' — 74,50 ' + currency + '/кг, с НДС'
+                parsed = prices(quote, [target])
+                self.assertEqual(len(parsed), 1)
+                values = buyer_replies.parse_price(parsed[0], target, quote)
+                self.assertEqual(values[1], 7450)
+                self.assertEqual(values[-2], 'comparable')
+
+    def test_short_ruble_currency_does_not_confirm_alternatives_or_unknown_units(self):
+        target = row(name='Стеклошарики 100–600 мкм') | {'unit': 'кг'}
+        for quote in ('Стеклошарики 106–600 мкм — 74 р/кг, с НДС',
+                      target['name'] + ' — 74 р/шт, с НДС',
+                      target['name'] + ' — 74 р/кг',
+                      target['name'] + ' — от 74 р/кг, с НДС'):
+            with self.subTest(quote=quote):
+                parsed = prices(quote, [target])
+                self.assertEqual(len(parsed), 1)
+                self.assertEqual(buyer_replies.parse_price(parsed[0], target, quote)[-2], 'review')
+        for quote in (target['name'] + ' — 74 p/кг, с НДС',
+                      target['name'] + ' — 74 р/месяц, с НДС',
+                      target['name'] + ' — 74 р/кг или 80 р/кг, с НДС',
+                      'Уточните адрес\nFrom: purchaser\n' + target['name'] + ' — 74 р/кг, с НДС'):
+            with self.subTest(quote=quote):
+                self.assertEqual(prices(quote, [target]), [])
+
     def test_server_does_not_trust_exact_match_flag_or_quoted_customer_text(self):
         target = row(name='Кабель ВВГнг 4х150')
         for quote in ['Кабель ВВГнг 4х15 — 120 руб/м, с НДС', 'Кабель ВВГнг 4х150: замена 4х70 — 120 руб/м, с НДС']:

@@ -138,11 +138,11 @@ def parse_price(item, row, raw):
             amount = int(number*100)
     except InvalidOperation: pass
     reasons = []
-    from autobot.buyer_reply_text import exact_identity_reason, unquoted
+    from autobot.buyer_reply_text import exact_identity_reason, unquoted, RUB_CURRENCY
     supplier_text = unquoted(raw)
     if row.get('_sender_unverified'): reasons.append('Ответ с другого адреса: подтвердите принадлежность поставщику')
     if row.get('_request_edited'): reasons.append('Текст запроса изменён: вручную проверьте привязку ответа к позиции')
-    literals = re.findall(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?)\s*(?:руб(?:\.|лей|ля)?|₽|RUB)\s*(?:/|за)\s*((?:10|100|1000)\s*)?(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)', quote, re.I)
+    literals = re.findall(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?)\s*'+RUB_CURRENCY+r'\s*(?:/|за)\s*((?:10|100|1000)\s*)?(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)', quote, re.I)
     if len(literals) != 1 or amount is None or not any(
         Decimal(n.replace(' ', '').replace('\u00a0', '').replace(',', '.')) * 100 == amount
         and unit_parts(scale + measure) == unit_parts(unit) for n, scale, measure in literals):
@@ -156,7 +156,7 @@ def parse_price(item, row, raw):
     if item.get('exact_match') is False: reasons.append('Соответствие товара не подтверждено при разборе ответа')
     if quote not in unquoted(raw): reasons.append('Цена находится в цитируемой переписке, а не в новом ответе')
     if re.search(r'\bот\s*\d|ориентир|примерн',quote,re.I): reasons.append('Цена ориентировочная')
-    if not re.search(r'руб|₽|RUB',quote,re.I): reasons.append('Не подтверждена валюта RUB')
+    if not literals: reasons.append('Не подтверждена валюта RUB с ценой за единицу')
     # Preserve terms verbatim, not model-invented descriptions.
     if availability and availability not in raw: raise BuyerError('Наличие отсутствует в ответе')
     if delivery and delivery not in raw: raise BuyerError('Доставка отсутствует в ответе')

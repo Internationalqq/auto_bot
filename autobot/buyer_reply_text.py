@@ -4,6 +4,10 @@ import json
 import re
 
 
+# Russian suppliers also write «74 р/кг». A following slash/«за» and known
+# measure are required by both parsers; Latin r/p are not currency evidence.
+RUB_CURRENCY = r'(?:руб(?:\.|лей|ля)?|₽|RUB|р\.?)'
+
 def exact_identity_reason(row, quote):
     """Only a literal, complete identity can automatically confirm a quote.
 
@@ -51,7 +55,7 @@ def prices(body,positions):
     """
     if not positions: return []
     body=unquoted(body)
-    pattern=re.compile(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?)\s*(?:руб(?:\.|лей|ля)?|₽|RUB)\s*(?:/|за)\s*(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)',re.I)
+    pattern=re.compile(r'(?<!\w)(\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?)\s*'+RUB_CURRENCY+r'\s*(?:/|за)\s*(пог\.\s*м|пм|м[²³23]?|шт|кг|т)(?!\w)',re.I)
     vat_pattern=re.compile(r'без\s+НДС|с\s+НДС|включая\s+НДС|НДС\s+(?:включ[её]н|не\s+облагается)',re.I)
     def normalized(value):
         return re.sub(r'[^\w]+','',value.casefold().replace('ё','е').replace('×','х'))

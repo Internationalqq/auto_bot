@@ -107,7 +107,8 @@ def process_pending():
                 subject = 'Re: '+re.sub(r'^(?:Re:\s*)+', '', reply['subject'], flags=re.I)
                 body = ('Добрый день!\n\nАдрес объекта по документации: '+source['address']+'.\n\n'
                         'Пожалуйста, рассчитайте доставку по этому адресу для объёма из нашего запроса. '
-                        'Стоимость доставки укажите отдельно от стоимости материалов.\n\nСпасибо!')
+                        'Стоимость доставки укажите отдельно от стоимости материалов. '
+                        'Ответ и вопросы просим направлять письменно в этой переписке.\n\nСпасибо!')
                 fingerprint = hashlib.sha256(encoded(['address-reply',reply['id']]).encode()).hexdigest()
                 now = time.time()
                 db.execute('''INSERT OR IGNORE INTO outbound

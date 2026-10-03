@@ -58,10 +58,8 @@ REGISTRY = (
          region_evidence='доставкой в регионы', region_note='Доставку в Ярославскую область нужно подтвердить.'),
     dict(id='siyan', company='СИЯН — бордюр и благоустройство', url='https://siyan.ru/contacts/',
          email='sbit@siyan.ru', categories=['curb'], evidence='бордюр'),
-    dict(id='proplus', company='Профиль-Плюс — асфальтобетон', url='https://proplus77.ru/',
-         email='info@proplus77.ru', categories=['asphalt'], evidence='асфальт'),
-    dict(id='road-stroy', company='Вектор — дорожное строительство', url='https://yaroslavl.road-stroy.com/services/dorstroy',
-         email='info.vectors@yandex.ru', categories=['geogrid_work'], evidence='георешет'),
+    # Supplier replies on 2026-10-02 disproved the former proplus/asphalt and
+    # road-stroy/geogrid_work mappings. Preserve old conversations, not leads.
     dict(id='ab-rent', company='АБ РЕНТ — бурение', url='https://www.ab-rent.ru/bkm-rent/',
          email='ab-rent@yandex.ru', categories=['drilling'], evidence='услуги ямобура'),
     dict(id='megastroy', company='Мегастрой — строительные смеси', url='https://www.megastroy-yar.ru/',
