@@ -6,6 +6,34 @@ from autobot.market_source_adapters import inspect_source_page, detect_price_uni
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_idistribute_price_and_measure_belong_to_same_main_product(self):
+        page = '''<section class="product" id="bx_117848907_77956">
+        <h1>Коммутатор Dahua DH-CS4220-16GT-190</h1><div class="product__controls">
+        <div class="product__cost-caption">розничная цена: 35 654.31 ₽</div>
+        <span id="bx_117848907_77956_price">22 462.22 ₽</span>
+        <input id="bx_117848907_77956_quantity" min="1" value="1">
+        <span id="bx_117848907_77956_quant_measure">шт</span></div>
+        <li>Цены указаны с учётом НДС 22%</li></section>
+        <div id="bx_99_10"><span id="bx_99_10_price">100 ₽</span>
+        <span id="bx_99_10_quant_measure">шт</span></div>'''
+        url = 'https://idistribute.ru/products/kommutator_dahua_dh_cs4220_16gt_190/'
+        args = dict(name='Коммутатор Dahua DH-CS4220-16GT-190, управляемый', target_unit='шт', position_bucket='materials')
+        result = inspect_source_page(page, url, **args)
+        self.assertTrue(result.accepted, result.reason)
+        self.assertEqual((result.price, result.unit), (22462.22, 'шт'))
+        self.assertIn('НДС 22%', result.evidence)
+        from autobot.supplier_catalog_extract import product_records
+        stored = product_records(page, url, '', 'product', 'materials')[0]
+        self.assertEqual((stored['price'], stored['unit'], stored['price_kind']), (22462.22, 'шт', 'published'))
+        for before, after in (('>шт</span></div>', '></span></div>'),
+                              ('77956_quant_measure', '12345_quant_measure'),
+                              ('77956_price', '12345_price'),
+                              ('min="1"', 'min="10"'),
+                              ('min="1"', 'min="1" step="5"'),
+                              ('DH-CS4220-16GT-190</h1>', 'Другой коммутатор</h1>')):
+            with self.subTest(before=before):
+                self.assertFalse(inspect_source_page(page.replace(before, after), url, **args).accepted)
+
     def test_shop220_main_price_keeps_explicit_piece_unit(self):
         page='''<h1>Сжим ответвительный SE У733М (16-35/1,5-10) U733M</h1>
         <div class="pc-price-block"><div class="pc-price-main"><span class="pc-price-now">91,20</span>

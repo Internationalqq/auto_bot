@@ -753,12 +753,16 @@ def inspect_source_page(
         or host.removeprefix('www.') == 'tdatm.ru' and path.startswith('/catalog/')
         or host.removeprefix('www.') == 'pkmegapolis.ru' and path.startswith('/dorozhnye-znaki/')
         or host.removeprefix('www.') == 'shop220.ru'
+        or host.removeprefix('www.') == 'idistribute.ru' and path.startswith('/products/')
         or host.removeprefix('www.') == 'elektro.ru' and path.startswith('/product/'))
     if specialised:
         # Use the same authoritative selling block for catalogue and live
         # searches. Generic text may contain a wholesale price or a modal.
         try:
-            if host.removeprefix('www.') == 'shop220.ru':
+            if host.removeprefix('www.') == 'idistribute.ru':
+                from autobot.supplier_catalog_sites import idistribute_records
+                records = idistribute_records(page_html, url)
+            elif host.removeprefix('www.') == 'shop220.ru':
                 from autobot.supplier_catalog_sites import shop220_records
                 records = shop220_records(page_html, url)
             elif host.removeprefix('www.') == 'gazony-esg.ru':

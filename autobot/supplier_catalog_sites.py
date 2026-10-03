@@ -6,6 +6,42 @@ from autobot.supplier_catalog_store import clean
 from autobot.market_strategy import normalize_unit
 
 
+def idistribute_records(body, url):
+    """Bind the main Bitrix card's current price to its own quantity measure."""
+    from autobot.market_source_adapters import parse_ruble_values
+    from autobot.market_evidence_policy import price_terms_reason
+    from autobot.supplier_evidence import outdated_price_notice
+    soup = BeautifulSoup(body, 'html.parser')
+    headings = soup.select('h1')
+    if len(headings) != 1: return []
+    product = headings[0].find_parent('section', class_='product')
+    if product is None or not re.fullmatch(r'bx_\d+_\d+', product.get('id', '')): return []
+    prefix = product['id']
+    def own(suffix):
+        nodes = product.find_all(id=prefix + suffix)
+        return nodes[0] if len(nodes) == 1 else None
+    price, measure, quantity = own('_price'), own('_quant_measure'), own('_quantity')
+    if price is None or measure is None or quantity is None: return []
+    controls = price.find_parent(class_='product__controls')
+    if controls is None or controls not in measure.parents or controls not in quantity.parents: return []
+    if quantity.get('min') != '1' or quantity.get('step', '1') != '1': return []
+    if price.find_parent(['s', 'del']) is not None: return []
+    raw_price = clean(price.get_text(' ', strip=True))
+    amounts = parse_ruble_values(raw_price)
+    raw_unit = clean(measure.get_text(' ', strip=True))
+    if len(amounts) != 1 or not re.fullmatch(r'шт\.?|кг|м|м[²³23]|т', raw_unit, re.I): return []
+    name = clean(headings[0].get_text(' ', strip=True))
+    evidence = f'{name} · ваша цена: {raw_price} / {raw_unit}'
+    for note in product.select('li'):
+        value = clean(note.get_text(' ', strip=True))
+        if len(value) < 200 and re.match(r'Цены указаны\b', value, re.I): evidence += ' · ' + value
+    reason = price_terms_reason({'evidence': evidence}) or outdated_price_notice(body)
+    return [{'name': name, 'url': url, 'unit': normalize_unit(raw_unit), 'price': amounts[0],
+             'bucket': 'materials', 'item_key': url, 'price_kind': 'conditional' if reason else 'published',
+             'reason': reason, 'evidence': evidence,
+             'details': {'price_scope': 'product', 'extractor': 'idistribute-main-product'}}]
+
+
 def shop220_records(body,url):
     """Main retail card: amount, currency and explicit selling denominator."""
     from autobot.market_source_adapters import parse_ruble_values
