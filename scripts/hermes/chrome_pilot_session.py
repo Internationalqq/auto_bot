@@ -99,7 +99,17 @@ def main():
     consent = json.loads(consent_path.read_text())
     if not consent['starts_at'] <= time.time() < consent['expires_at']:
         raise SystemExit('Chrome consent expired')
-    assert batch.name in {f'batch-{i}' for i in range(1, 11)}
+    if consent.get('mode') == 'full_tender':
+        manifest = json.loads((root / 'input.json').read_text())['source']
+        rows = manifest['positions']
+        assert manifest['tender_id'] == '0171200001926000664'
+        assert 1 <= len(rows) <= 2000
+        assert re.fullmatch(r'batch-[1-9][0-9]*', batch.name)
+        index = int(batch.name.split('-')[1]) - 1
+        assert 0 <= index < len(rows)
+        assert json.loads((batch / 'positions.json').read_text()) == [rows[index]]
+    else:
+        assert batch.name in {f'batch-{i}' for i in range(1, 11)}
     assert os.environ['HERMES_HOME'] == '/Users/egor/.hermes/profiles/commercial'
     import cli
     expected_path = root / 'expected-model.json'
