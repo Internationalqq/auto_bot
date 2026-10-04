@@ -60,7 +60,8 @@ Firefox, Safari, Telegram и почту не открывай. Никаких с
 Сначала capture Chrome. Ввод: cmd+l, свежий capture, type с element адресной
 строки, return. Ссылки кликай по element из свежего дерева. Если не перешло,
 можно открыть только реально наблюдаемый HTTPS URL через адресную строку.
-Назад: cmd+[. Не создавай окна/вкладки и не закрывай чужие.
+Назад: cmd+[. Обычное обновление страницы: cmd+r (разрешено пользователем).
+Не создавай окна/вкладки и не закрывай чужие.
 При отказе инструмента или повторном сбое принадлежности окна остановись.
 CAPTCHA, DDoS, 403, TLS — записать причину, не обходить, выбрать другой магазин.
 
@@ -117,7 +118,7 @@ def main():
         raise SystemExit('Run deadline reached; no consent renewal')
     consent = {'scope':'volga-google-public-product-search','mode':'full_tender',
                'starts_at':state['started_at'],'expires_at':state['deadline'],
-               'user_confirmation':'4 октября: пусть тогда делает прогон всего тенедера волги',
+               'user_confirmation':'4 октября: полный прогон Волги; после остановки на cmd+r пользователь подтвердил: пусть продолжпет я разрешаю',
                'browser':'Google Chrome','no_mail_or_purchases':True}
     save(ROOT/'chrome-consent.json',consent)
     save(ROOT/'expected-model.json',{'model':'gpt-6-astra','reasoning_effort':'xhigh'})

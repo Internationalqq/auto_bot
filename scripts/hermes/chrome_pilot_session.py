@@ -85,7 +85,7 @@ def decide(consent, action, args, now):
             return 'deny'
     elif action == 'key':
         key = args.get('keys', '').lower().replace('command', 'cmd').replace('control', 'ctrl').replace(' ', '')
-        if key not in {'cmd+l', 'cmd+a', 'cmd+t', 'cmd+[', 'cmd+]', 'enter', 'return', 'escape', 'tab', 'shift+tab', 'backspace', 'down', 'up', 'pagedown', 'pageup'}:
+        if key not in {'cmd+l', 'cmd+a', 'cmd+t', 'cmd+r', 'cmd+[', 'cmd+]', 'enter', 'return', 'escape', 'tab', 'shift+tab', 'backspace', 'down', 'up', 'pagedown', 'pageup'}:
             return 'deny'
     elif action not in {'click', 'scroll', 'focus_app'}:
         return 'deny'
