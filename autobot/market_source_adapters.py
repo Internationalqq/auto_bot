@@ -289,6 +289,11 @@ def _national_delivery(value: str) -> bool:
         r'достав\w*[^.!?;]{0,100}\bв\s+любой\s+город\s+(?:россии|рф)\b', value))
 
 
+_PRICE_UNIT_LABEL_RE = re.compile(
+    r'цена\s+за\s+(?:1\s+)?(?P<unit>метр|м|погонный\s+метр|пог\.?\s*м|шт\.?|штуку|кг|т|л|рулон)'
+    r'(?:\s+(?P<vat>с\s+НДС|без\s+НДС|включая\s+НДС))?\s*[.:]?', re.I)
+
+
 def _product_unit(product) -> str:
     """Read an explicit selling unit, never product weight or shipping time."""
     if product is None:
@@ -307,6 +312,9 @@ def _product_unit(product) -> str:
         match = re.fullmatch(r'(?:единица\s+измерения|ед\.?\s*изм\.?|цена\s+за\s+1)\s*[:—-]?\s*(шт\.?|кг|т|м[²³23]?|пог\.?\s*м|л|рулон)\.?', value, re.I)
         if match:
             units.add(normalize_unit(match.group(1)))
+        price_label = _PRICE_UNIT_LABEL_RE.fullmatch(value)
+        if price_label:
+            units.add(normalize_unit(price_label.group('unit')))
     units.discard('')
     return next(iter(units)) if len(units) == 1 else ''
 
@@ -315,10 +323,16 @@ def _product_vat(product) -> str:
     if product is None:
         return ''
     labels = set()
-    for tag in product.select('.price-label, [itemprop="priceSpecification"], p, small'):
+    for tag in product.select('.price-label, [itemprop="priceSpecification"], p, small, span'):
+        owner = tag.find_parent(attrs={'itemtype': re.compile(r'(?:/|:)Product$', re.I)})
+        if owner is not None and owner is not product:
+            continue
         value = _clean(tag.get_text(' ', strip=True))
         if re.fullmatch(r'цен[аы]\s+(?:указан[аы]\s+)?(?:с\s+НДС|без\s+НДС|включая\s+НДС)\s*[:.]?', value, re.I):
             labels.add(value.rstrip(':.'))
+        price_label = _PRICE_UNIT_LABEL_RE.fullmatch(value)
+        if price_label and price_label.group('vat'):
+            labels.add('Цена ' + price_label.group('vat'))
     return next(iter(labels)) if len(labels) == 1 else ''
 
 

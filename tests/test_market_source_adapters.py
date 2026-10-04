@@ -6,6 +6,31 @@ from autobot.market_source_adapters import inspect_source_page, detect_price_uni
 
 
 class MarketSourceAdapterTests(unittest.TestCase):
+    def test_explicit_price_per_metre_label_preserves_unit_and_vat(self):
+        page='''<div itemscope itemtype="https://schema.org/Product"><h1>ОГЦ-4А-7 (7кН) (4 волокна)</h1>
+        <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+        <meta itemprop="price" content="35.50"><meta itemprop="priceCurrency" content="RUB"></div>
+        <span>Цена за метр с НДС.</span></div>'''
+        args=dict(name='Кабель оптический ОГЦ-4А-7',target_unit='м',position_bucket='materials')
+        result=inspect_source_page(page,'https://lanset.ru/ogc-4a-7kn/',**args)
+        self.assertTrue(result.accepted,result.reason)
+        self.assertEqual((result.price,result.unit),(35.5,'м'))
+        self.assertIn('с НДС',result.evidence)
+        for label in ('Длина 1 метр','Цена за 10 метров с НДС.','Цена за метр с НДС при заказе от 100 м.'):
+            with self.subTest(label=label):
+                self.assertFalse(inspect_source_page(page.replace('Цена за метр с НДС.',label),'https://lanset.ru/ogc-4a-7kn/',**args).accepted)
+
+    def test_metre_price_label_does_not_leak_from_another_product(self):
+        page='''<div itemscope itemtype="https://schema.org/Product"><h1>ОГЦ-4А-7 (7кН) (4 волокна)</h1>
+        <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+        <meta itemprop="price" content="35.50"><meta itemprop="priceCurrency" content="RUB"></div>
+        <aside itemscope itemtype="https://schema.org/Product"><h2>Другой кабель</h2>
+        <span>Цена за метр с НДС.</span></aside></div>'''
+        args=dict(name='Кабель оптический ОГЦ-4А-7',target_unit='м',position_bucket='materials')
+        result=inspect_source_page(page,'https://lanset.ru/ogc-4a-7kn/',**args)
+        self.assertFalse(result.accepted)
+        self.assertNotIn('НДС',result.evidence)
+
     def test_idistribute_price_and_measure_belong_to_same_main_product(self):
         page = '''<section class="product" id="bx_117848907_77956">
         <h1>Коммутатор Dahua DH-CS4220-16GT-190</h1><div class="product__controls">
