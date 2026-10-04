@@ -1,4 +1,5 @@
 """User-requested 10-position Ivan search; independent bounded sessions."""
+import argparse
 import importlib.util
 import json
 import os
@@ -9,7 +10,6 @@ import subprocess
 import time
 
 BASE=Path('/Users/egor/.hermes/profiles/commercial/workspace/volga-chrome-pilot-20261004')
-ROOT=BASE/'ten-xhigh-retry-2'
 PYTHON='/Users/egor/.hermes/hermes-agent/venv/bin/python'
 LOCK=Path('/Users/egor/.hermes/team-browser-access/browser_lock.py')
 spec=importlib.util.spec_from_file_location('browser_lock',LOCK)
@@ -19,12 +19,17 @@ def save(path,value):
     tmp=path.with_suffix('.tmp'); tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2)); tmp.replace(path)
 
 def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--run-name', choices=['ten-xhigh-retry-2','ten-xhigh-retry-3'], default='ten-xhigh-retry-2')
+    parser.add_argument('--start-index', type=int, choices=range(10), default=3)
+    args=parser.parse_args()
+    ROOT=BASE/args.run_name
     ROOT.mkdir(exist_ok=False)
     shutil.copy2(BASE/'ivan_pilot_session.py',ROOT/'ivan_pilot_session.py')
     source=json.loads((BASE/'input.json').read_text())
     # First three positions have saved outcomes; resume SFP and the six
     # positions which the earlier permission stop prevented from running.
-    source['source']['positions']=source['source']['positions'][3:]
+    source['source']['positions']=source['source']['positions'][args.start_index:]
     save(ROOT/'input.json',source)
     save(ROOT/'expected-model.json',{'model':'gpt-6-astra','reasoning_effort':'xhigh'})
     started=time.time()
@@ -49,12 +54,18 @@ def main():
                 held=lock.operation(LOCK.parent/'state','acquire','commercial')
             if held['status']!='acquired':
                 state.update(status='browser_busy',owner=held.get('owner')); break
+            if (ROOT/'stop-request').exists() or time.time()>=consent['expires_at']-60:
+                lock.operation(LOCK.parent/'state','release','commercial',held['ticket'])
+                state['status']='stopped' if (ROOT/'stop-request').exists() else 'time_limit'
+                break
             state['status']='running'; state.pop('owner',None)
             remaining=consent['expires_at']-time.time()
             batch=ROOT/f'batch-{index}'; batch.mkdir()
             save(batch/'positions.json',[row])
             previous=[]
-            for oldroot in ('retry-primitive-1','ten-xhigh-1'):
+            for oldroot in ('retry-primitive-1','ten-xhigh-1','ten-xhigh-retry-2'):
+                if BASE/oldroot==ROOT:
+                    continue
                 for old in (BASE/oldroot).glob('batch-*/result.json'):
                     previous.extend(p for p in json.loads(old.read_text()).get('items',[]) if p['position_key']==row['position_key'])
             save(batch/'previous-evidence.json',previous)

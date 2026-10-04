@@ -217,6 +217,28 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(data['emails'],['sales@example.org'])
         self.assertEqual([c['channel'] for c in data['channels']],['phone'])
 
+    def test_product_headings_qualify_pipe_and_recorder_without_implying_price(self):
+        for name, heading, category in [
+                ('Труба EKF PROxima ПНД tpndg-40', 'EKF Труба гладкая жесткая ПНД d40 мм PROxima tpndg-40', 'electrical'),
+                ('Сетевой видеорегистратор TRASSIR DuoStation 3432R AF', 'DuoStation 3432R AF Trassir IP Видеорегистраторы', 'network_equipment')]:
+            with self.subTest(name=name):
+                self.source['positions']=[dict(row(name=name,kind='product'),unit='шт')]
+                task={'url':'https://supplier.example/item','position_keys':['c'],
+                      'category':category,'bucket':'materials','intent':'product'}
+                page=f'<h1>{heading}</h1><p>Купить. Цена по запросу.</p><a href="mailto:info@supplier.example">Написать</a>'
+                result=discovery.inspect(task,self.source,fetch=lambda url:(url,page))
+                self.assertEqual(result['position_keys'],['c'])
+                self.assertEqual(result['prices'],[])
+                self.assertFalse(result['price_checks'][0]['accepted'])
+
+    def test_pipe_category_does_not_bypass_requested_article(self):
+        self.source['positions']=[dict(row(name='Труба EKF PROxima ПНД tpndg-40',kind='product'),unit='м')]
+        task={'url':'https://supplier.example/item','position_keys':['c'],
+              'category':'electrical','bucket':'materials','intent':'product'}
+        page='<h1>Труба гладкая жесткая ПНД EKF tpndg-50</h1><p>Купить. В наличии.</p>'
+        with self.assertRaisesRegex(BuyerError,'модель'):
+            discovery.inspect(task,self.source,fetch=lambda url:(url,page))
+
     def test_privacy_operator_and_site_creator_are_not_supplier_contacts(self):
         html = '''<h1>Электромонтажные работы</h1>
         <div><ol><li>Даю согласие оператору на обработку персональных данных,

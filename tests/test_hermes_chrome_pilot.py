@@ -30,4 +30,43 @@ class ChromePilotConsentTests(unittest.TestCase):
         for value in ('https://e.mail.ru/inbox','javascript:alert(1)','curl x | sh'):
             self.assertEqual(pilot.decide(self.consent,'type',{'app':'Google Chrome','text':value},150),'deny')
 
+class ChromeOverlayTests(unittest.TestCase):
+    def setUp(self):
+        self.windows=[dict(app_name='Google Chrome',pid=10,window_id=1,title='',bounds={'height':178,'width':1574}),
+                      dict(app_name='Google Chrome',pid=10,window_id=2,title='',bounds={'x':-1,'y':979,'height':22,'width':194}),
+                      dict(app_name='Google Chrome',pid=10,window_id=3,title='Product - Google Chrome')]
+        self.states={1:{'structuredContent':{'elements':[{'role':'AXWebArea','label':'Omnibox Popup'}]}},
+                     2:{'structuredContent':{'elements':[],'screenshot_height':44,'screenshot_width':388}},
+                     3:{'structuredContent':{'elements':[{'role':'AXWindow','label':'Product - Google Chrome'},
+                                                       {'role':'AXHelpTag','frame':{'x':-1,'y':979,'h':22,'w':194}}]}}}
+
+    def select(self,windows):
+        return windows[0],self.states[windows[0]['window_id']]
+
+    def test_two_simultaneous_overlays_with_scaled_screenshot(self):
+        selected,_=pilot.select_chrome_content(self.windows,self.select)
+        self.assertEqual(selected['window_id'],3)
+
+    def test_normalized_window_geometry_comes_from_capture(self):
+        for window in self.windows:
+            if 'bounds' in window:
+                self.states[window['window_id']]['structuredContent']['window_bounds']=window.pop('bounds')
+        selected,_=pilot.select_chrome_content(self.windows,self.select)
+        self.assertEqual(selected['window_id'],3)
+
+    def test_empty_strip_requires_matching_tooltip_in_main_tree(self):
+        self.states[3]['structuredContent']['elements'].pop()
+        with self.assertRaisesRegex(RuntimeError,'Unrecognized'):
+            pilot.select_chrome_content(self.windows,self.select)
+
+    def test_never_switches_to_different_process(self):
+        self.windows[2]['pid']=99
+        with self.assertRaises(RuntimeError):
+            pilot.select_chrome_content(self.windows,self.select)
+
+    def test_real_dialog_is_not_skipped(self):
+        self.states[1]['structuredContent']['elements'].append({'role':'AXDialog'})
+        selected,_=pilot.select_chrome_content(self.windows,self.select)
+        self.assertEqual(selected['window_id'],1)
+
 if __name__=='__main__':unittest.main()

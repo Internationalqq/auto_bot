@@ -14,10 +14,11 @@ from urllib.parse import urlsplit
 
 def chrome_help_strip(window, state):
     sc = state.get('structuredContent') or {}
+    bounds = window.get('bounds') or sc.get('window_bounds') or {}
     return (window.get('app_name') == 'Google Chrome' and not window.get('title')
             and sc.get('elements') == []
-            and 0 < sc.get('screenshot_height', 0) <= 32
-            and sc.get('screenshot_width', 0) >= 400)
+            and 0 < bounds.get('height', 0) <= 24
+            and bounds.get('width', 0) > 0)
 
 
 def chrome_omnibox_popup(window, state):
@@ -25,6 +26,42 @@ def chrome_omnibox_popup(window, state):
     return (window.get('app_name') == 'Google Chrome' and not window.get('title')
             and any(e.get('role') == 'AXWebArea' and e.get('label') == 'Omnibox Popup' for e in elements)
             and not any(e.get('role') in ('AXDialog', 'AXSheet') for e in elements))
+
+
+def select_chrome_content(windows, select):
+    """Skip at most two observed Chrome overlays, proving tooltip identity.
+
+    Screenshot pixel sizes change with display scaling. The empty hover
+    strip must instead match an AXHelpTag's logical frame in the main tree.
+    Never skip an unknown overlay or select another process's window.
+    """
+    selected, state = select(windows)
+    pid = selected.get('pid')
+    skipped = []
+    strips = []
+    for _ in range(3):
+        strip = chrome_help_strip(selected, state)
+        omnibox = chrome_omnibox_popup(selected, state)
+        if not strip and not omnibox:
+            if not skipped:
+                return selected, state
+            elements = (state.get('structuredContent') or {}).get('elements') or []
+            main = any(e.get('role') == 'AXWindow' and 'Google Chrome' in e.get('label', '') for e in elements)
+            help_frames = [e.get('frame') or {} for e in elements if e.get('role') == 'AXHelpTag']
+            def matches(bounds, frame):
+                return all(abs(bounds.get(a, -9999) - frame.get(b, 9999)) <= 1
+                           for a,b in [('x','x'),('y','y'),('width','w'),('height','h')])
+            if not main or any(not any(matches(bounds,frame) for frame in help_frames) for bounds in strips):
+                raise RuntimeError('Unrecognized Chrome overlay; content selection stopped')
+            return selected, state
+        skipped.append(selected['window_id'])
+        if strip:
+            strips.append(selected.get('bounds') or (state.get('structuredContent') or {}).get('window_bounds') or {})
+        remaining = [w for w in windows if w['window_id'] not in skipped and w['pid'] == pid]
+        if not remaining:
+            break
+        selected, state = select(remaining)
+    raise RuntimeError('Chrome overlays have no verified content window')
 
 
 def decide(consent, action, args, now):
@@ -94,26 +131,10 @@ def main():
 
     CuaDriverBackend.__init__ = init_chrome
 
-    def select_chrome_content(self, windows):
-        selected, state = original_select(self, windows)
-        help_strip = chrome_help_strip(selected, state)
-        omnibox = chrome_omnibox_popup(selected, state)
-        if not (help_strip or omnibox):
-            return selected, state
-        remaining = [w for w in windows if w['window_id'] != selected['window_id']
-                     and w['pid'] == selected['pid']]
-        if not remaining:
-            raise RuntimeError('Chrome help strip has no verified content window')
-        target, content = original_select(self, remaining)
-        elements = (content.get('structuredContent') or {}).get('elements') or []
-        # Observed Chrome AXHelpTag is the URL hover strip, not a dialog.
-        # Only select the next window if its fresh tree proves both identities.
-        if not ((omnibox or any(e.get('role') == 'AXHelpTag' for e in elements))
-                and any(e.get('role') == 'AXWindow' and 'Google Chrome' in e.get('label', '') for e in elements)):
-            raise RuntimeError('Unrecognized Chrome overlay; content selection stopped')
-        return target, content
+    def select_content(self, windows):
+        return select_chrome_content(windows, lambda candidates: original_select(self, candidates))
 
-    CuaDriverBackend._select_content_window = select_chrome_content
+    CuaDriverBackend._select_content_window = select_content
 
     def approved(self, action, args, summary):
         verdict = decide(consent, action, args, time.time())
