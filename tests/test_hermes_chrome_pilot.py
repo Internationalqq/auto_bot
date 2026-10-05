@@ -34,6 +34,15 @@ class ChromePilotConsentTests(unittest.TestCase):
         self.consent['scope']='mail'
         self.assertEqual(self.key('cmd+r'), 'deny')
 
+    def test_find_in_page_requires_current_chrome_search_consent(self):
+        for key in ('cmd+f', 'command+f'):
+            self.assertEqual(self.key(key), 'approve_once')
+            self.assertEqual(self.key(key, app='Firefox'), 'deny')
+            self.assertEqual(self.key(key, app='Safari'), 'deny')
+            self.assertEqual(self.key(key, now=200), 'deny')
+        self.consent['scope']='mail'
+        self.assertEqual(self.key('cmd+f'), 'deny')
+
     def test_search_keeps_tab_and_window_close_shortcuts_blocked(self):
         for key in ('cmd+w','command+w','cmd+shift+w','cmd+q'):
             self.assertEqual(self.key(key), 'deny')
