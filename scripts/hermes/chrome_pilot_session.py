@@ -12,6 +12,39 @@ import time
 from urllib.parse import urlsplit
 
 
+# These prefixes are browser search syntax, not navigation URI schemes.
+SEARCH_OPERATORS = {'site', 'filetype', 'ext', 'intitle', 'allintitle', 'inurl',
+                    'allinurl', 'intext', 'allintext', 'before', 'after'}
+READING_KEYS = {
+    'cmd+l', 'cmd+a', 'cmd+t', 'cmd+r', 'cmd+f', 'cmd+g', 'cmd+shift+g',
+    'cmd+[', 'cmd+]', 'ctrl+tab', 'ctrl+shift+tab', 'cmd+shift+[', 'cmd+shift+]',
+    'cmd+1', 'cmd+2', 'cmd+3', 'cmd+4', 'cmd+5', 'cmd+6', 'cmd+7', 'cmd+8', 'cmd+9',
+    'enter', 'return', 'escape', 'tab', 'shift+tab', 'backspace', 'delete',
+    'left', 'right', 'down', 'up', 'home', 'end', 'pageup', 'pagedown',
+    'space', 'shift+space', 'shift+left', 'shift+right', 'cmd+left', 'cmd+right',
+    'cmd+up', 'cmd+down', 'cmd+shift+left', 'cmd+shift+right',
+    'cmd+-', 'cmd+=', 'cmd++', 'cmd+0',
+}
+
+
+def reading_text(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 1000:
+        return False
+    if any(ord(c) < 32 for c in value):
+        return False
+    value = value.strip()
+    prefix = re.match(r'^([a-z][a-z0-9+.-]*):', value, re.I)
+    if prefix and prefix.group(1).lower() not in SEARCH_OPERATORS:
+        try:
+            u = urlsplit(value)
+            return bool(u.scheme == 'https' and u.hostname and not u.username and not u.password
+                        and not any(s in u.hostname for s in
+                                    ('mail.', 'accounts.', 'account.', 'web.telegram.', 'web.whatsapp.')))
+        except ValueError:
+            return False
+    return not any(c in value for c in (';', '|', '`', '\\'))
+
+
 def chrome_help_strip(window, state):
     sc = state.get('structuredContent') or {}
     bounds = window.get('bounds') or sc.get('window_bounds') or {}
@@ -73,21 +106,13 @@ def decide(consent, action, args, now):
         return 'deny'
     if action in ('type', 'set_value'):
         value = args.get('text', args.get('value', ''))
-        if not isinstance(value, str) or not value.strip() or len(value) > 1000 or any(ord(c) < 32 for c in value):
-            return 'deny'
-        if re.match(r'^[a-z][a-z0-9+.-]*:', value, re.I):
-            u = urlsplit(value)
-            if u.scheme != 'https' or not u.hostname or u.username or u.password:
-                return 'deny'
-            if any(s in u.hostname for s in ('mail.', 'accounts.', 'account.', 'web.telegram.', 'web.whatsapp.')):
-                return 'deny'
-        elif any(c in value for c in (';', '|', '`', '\\')):
+        if not reading_text(value):
             return 'deny'
     elif action == 'key':
         key = args.get('keys', '').lower().replace('command', 'cmd').replace('control', 'ctrl').replace(' ', '')
         if key == 'cmd+w':
             return 'approve_once' if consent.get('mode') == 'full_tender' and consent.get('allow_own_tab_cleanup') is True else 'deny'
-        if key not in {'cmd+l', 'cmd+a', 'cmd+t', 'cmd+r', 'cmd+f', 'cmd+[', 'cmd+]', 'enter', 'return', 'escape', 'tab', 'shift+tab', 'backspace', 'down', 'up', 'pagedown', 'pageup'}:
+        if key not in READING_KEYS:
             return 'deny'
     elif action not in {'click', 'scroll', 'focus_app'}:
         return 'deny'
@@ -150,8 +175,11 @@ def main():
 
     def approved(self, action, args, summary):
         verdict = decide(consent, action, args, time.time())
+        audit = {'at': time.time(), 'action': action, 'app': args.get('app'), 'verdict': verdict}
+        if action == 'key':
+            audit['keys'] = args.get('keys')
         with (batch / 'approval-audit.jsonl').open('a') as log:
-            log.write(json.dumps({'at': time.time(), 'action': action, 'app': args.get('app'), 'verdict': verdict}) + '\n')
+            log.write(json.dumps(audit) + '\n')
         return verdict
 
     cli.HermesCLI._computer_use_approval_callback = approved

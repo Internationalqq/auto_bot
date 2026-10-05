@@ -68,6 +68,33 @@ class ChromePilotConsentTests(unittest.TestCase):
         for value in ('https://e.mail.ru/inbox','javascript:alert(1)','curl x | sh'):
             self.assertEqual(pilot.decide(self.consent,'type',{'app':'Google Chrome','text':value},150),'deny')
 
+    def test_search_operators_are_queries_not_uri_schemes(self):
+        for value in ('site:orion76.ru укладка геотекстиля цены',
+                      '  SITE:orion76.ru прайс  ', 'filetype:pdf прайс труба',
+                      'intitle:прайс inurl:price щебень', '-site:example.com цена',
+                      'after:2026-01-01 "кабель 4х150"'):
+            for action in ('type', 'set_value'):
+                field = 'text' if action == 'type' else 'value'
+                self.assertEqual(pilot.decide(self.consent,action,{'app':'Google Chrome',field:value},150),'approve_once')
+                self.assertEqual(pilot.decide(self.consent,action,{'app':'Safari',field:value},150),'deny')
+                self.assertEqual(pilot.decide(self.consent,action,{'app':'Google Chrome',field:value},200),'deny')
+
+    def test_unsafe_navigation_stays_denied_including_leading_spaces(self):
+        for value in (' javascript:alert(1)', 'data:text/html,hello', 'file:///etc/passwd',
+                      'chrome://settings', 'https://user:pass@example.com', 'https://[bad',
+                      'site:example.com\nhello', 'site:example.com; command', 'https://e.mail.ru/inbox'):
+            self.assertFalse(pilot.reading_text(value), value)
+        self.assertTrue(pilot.reading_text('https://shop.example/product?q=4%20x%20150'))
+
+    def test_routine_reading_keys_keep_browser_scope(self):
+        for key in ('cmd+g','cmd+shift+g','ctrl+tab','cmd+2','pageup','home',
+                    'cmd+0','cmd+-','cmd+=','cmd+shift+left'):
+            self.assertEqual(self.key(key),'approve_once')
+            self.assertEqual(self.key(key,app='Firefox'),'deny')
+            self.assertEqual(self.key(key,now=200),'deny')
+        for key in ('cmd+s','cmd+p','cmd+q','cmd+alt+i','cmd+shift+delete'):
+            self.assertEqual(self.key(key),'deny')
+
 class ChromeOverlayTests(unittest.TestCase):
     def setUp(self):
         self.windows=[dict(app_name='Google Chrome',pid=10,window_id=1,title='',bounds={'height':178,'width':1574}),
