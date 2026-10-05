@@ -96,6 +96,29 @@ class ChromePilotConsentTests(unittest.TestCase):
             self.assertEqual(self.key(key),'deny')
 
 class ChromeOverlayTests(unittest.TestCase):
+    def test_pixel_focus_uses_exact_window_and_never_rewrites_ax_clicks(self):
+        args={'pid':10,'window_id':3,'x':500,'y':400,'button':'left'}
+        routed=pilot.chrome_pointer_args('click',args)
+        self.assertEqual(routed,dict(args,delivery_mode='foreground'))
+        self.assertNotIn('delivery_mode',args)
+        for action,other in [('click',{'pid':10,'x':500,'y':400}),
+                             ('click',dict(args,element_index=2)),
+                             ('click',{'pid':10,'window_id':3,'element_index':2}),
+                             ('scroll',args)]:
+            self.assertEqual(pilot.chrome_pointer_args(action,other),other)
+
+    def test_find_bar_selects_same_process_main_window_without_dismissing_it(self):
+        find=dict(app_name='Google Chrome',pid=10,window_id=4,title='')
+        self.states[4]={'structuredContent':{'window_bounds':{'height':84,'width':403},'elements':[
+            {'role':'AXWindow','label':'Найти на странице\n    "Без имени"'},
+            {'role':'AXTextField','label':'Найти'},
+            {'role':'AXButton','label':'Закрыть панель поиска'}]}}
+        selected,_=pilot.select_chrome_content([find,self.windows[2]],self.select)
+        self.assertEqual(selected['window_id'],3)
+        self.states[4]['structuredContent']['elements'].append({'role':'AXDialog'})
+        selected,_=pilot.select_chrome_content([find,self.windows[2]],self.select)
+        self.assertEqual(selected['window_id'],4)
+
     def setUp(self):
         self.windows=[dict(app_name='Google Chrome',pid=10,window_id=1,title='',bounds={'height':178,'width':1574}),
                       dict(app_name='Google Chrome',pid=10,window_id=2,title='',bounds={'x':-1,'y':979,'height':22,'width':194}),

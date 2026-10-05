@@ -61,6 +61,32 @@ def chrome_omnibox_popup(window, state):
             and not any(e.get('role') in ('AXDialog', 'AXSheet') for e in elements))
 
 
+def chrome_find_popup(window, state):
+    sc = state.get('structuredContent') or {}
+    elements = sc.get('elements') or []
+    bounds = window.get('bounds') or sc.get('window_bounds') or {}
+    return (window.get('app_name') == 'Google Chrome' and not window.get('title')
+            and 24 < bounds.get('height', 0) <= 140 and 0 < bounds.get('width', 0) <= 800
+            and any(e.get('role') == 'AXWindow' and e.get('label', '').split('\n')[0].strip() in
+                    ('Найти на странице', 'Find in page') for e in elements)
+            and any(e.get('role') == 'AXTextField' and e.get('label') in ('Найти', 'Find') for e in elements)
+            and any(e.get('role') == 'AXButton' and e.get('label') in
+                    ('Закрыть панель поиска', 'Close find bar') for e in elements)
+            and not any(e.get('role') in ('AXDialog', 'AXSheet') for e in elements))
+
+
+def chrome_pointer_args(action, args):
+    # AXPress (even PX hit-test -> AX) does not establish renderer focus.
+    # Use the driver's documented foreground pixel rung for an explicitly
+    # requested pixel click, never synthesize clicks or drop the exact window.
+    result = dict(args)
+    if (action == 'click' and args.get('pid') is not None and args.get('window_id') is not None
+            and args.get('x') is not None and args.get('y') is not None
+            and args.get('element_index') is None and args.get('element_token') is None):
+        result['delivery_mode'] = 'foreground'
+    return result
+
+
 def select_chrome_content(windows, select):
     """Skip at most two observed Chrome overlays, proving tooltip identity.
 
@@ -75,7 +101,8 @@ def select_chrome_content(windows, select):
     for _ in range(3):
         strip = chrome_help_strip(selected, state)
         omnibox = chrome_omnibox_popup(selected, state)
-        if not strip and not omnibox:
+        find_bar = chrome_find_popup(selected, state)
+        if not strip and not omnibox and not find_bar:
             if not skipped:
                 return selected, state
             elements = (state.get('structuredContent') or {}).get('elements') or []
@@ -157,6 +184,7 @@ def main():
     from tools.computer_use.cua_backend import CuaDriverBackend
     original_select = CuaDriverBackend._select_content_window
     original_init = CuaDriverBackend.__init__
+    original_action = CuaDriverBackend._action
 
     def init_chrome(self, *args, **kwargs):
         if 'Google Chrome' in (kwargs.get('allowed_apps') or []):
@@ -173,6 +201,11 @@ def main():
         return select_chrome_content(windows, lambda candidates: original_select(self, candidates))
 
     CuaDriverBackend._select_content_window = select_content
+
+    def focused_pointer(self, action, args):
+        return original_action(self, action, chrome_pointer_args(action, args))
+
+    CuaDriverBackend._action = focused_pointer
 
     def approved(self, action, args, summary):
         verdict = decide(consent, action, args, time.time())
