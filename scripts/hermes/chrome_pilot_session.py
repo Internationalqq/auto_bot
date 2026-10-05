@@ -131,8 +131,9 @@ def main():
         rows = manifest['positions']
         assert manifest['tender_id'] == '0171200001926000664'
         assert 1 <= len(rows) <= 2000
-        assert re.fullmatch(r'batch-[1-9][0-9]*', batch.name)
-        index = int(batch.name.split('-')[1]) - 1
+        match = re.fullmatch(r'batch-([1-9][0-9]*)(?:-attempt-(2))?', batch.name)
+        assert match
+        index = int(match.group(1)) - 1
         assert 0 <= index < len(rows)
         assert json.loads((batch / 'positions.json').read_text()) == [rows[index]]
     else:
@@ -190,11 +191,11 @@ def main():
 наблюдаемый URL ссылки из дерева и открывай через cmd+l, свежий capture,
 set_value адресной строки полным URL, capture с точным совпадением значения,
 return и проверку перехода. Посимвольный type для адресной строки не используй. Не
-придумывай URL. После одной карточки сразу сохрани результат; незакрытая
-модель или сайт с ошибкой не должны съесть время второй позиции.
+придумывай URL. После одной карточки сразу сохрани результат; неподходящий
+товар или сайт с ошибкой не должны съесть всё время проверки позиции.
 '''
     cli.main(query=prompt, quiet=True,
-             toolsets='computer_use,file', max_turns=24)
+             toolsets='computer_use,file', max_turns=60 if consent.get('mode') == 'full_tender' else 24)
 
 
 if __name__ == '__main__':

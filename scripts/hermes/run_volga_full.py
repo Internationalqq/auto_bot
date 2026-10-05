@@ -11,6 +11,8 @@ BASE = Path('/Users/egor/.hermes/profiles/commercial/workspace/volga-chrome-pilo
 ROOT = BASE / 'full-tender-20261004'
 PYTHON = '/Users/egor/.hermes/hermes-agent/venv/bin/python'
 LOCK = Path('/Users/egor/.hermes/team-browser-access/browser_lock.py')
+SESSION_SECONDS = 900
+IDLE_SECONDS = 300
 
 
 def save(path, value):
@@ -22,7 +24,7 @@ def save(path, value):
 def result_or_error(batch, key):
     try:
         result = json.loads((batch / 'result.json').read_text())
-        if not isinstance(result.get('items'), list) or any(i.get('position_key') != key for i in result['items']):
+        if not isinstance(result.get('items'), list) or not result['items'] or any(i.get('position_key') != key for i in result['items']):
             raise ValueError('Unexpected position in result')
         return result
     except (OSError, ValueError, AttributeError, TypeError) as exc:
@@ -50,6 +52,83 @@ def observed_links(result, key):
 def browser_unavailable(result):
     """A browser failure must stop the queue, not consume more positions."""
     return any(item.get('outcome') == 'browser_error' for item in result.get('items', []))
+
+
+def needs_retry(entry):
+    result = entry.get('result') or {}
+    if entry.get('status') in ('timed_out', 'interrupted') or result.get('status') != 'completed':
+        return True
+    items = result.get('items') or []
+    return not items or any(i.get('outcome') != 'price_found' or not any(
+        o.get('observation') == 'current' and isinstance(o.get('price_rub'), (int, float))
+        and o['price_rub'] > 0 and o.get('unit') and o.get('evidence') and o.get('url')
+        for o in i.get('offers', [])) for i in items)
+
+
+def latest_entries(state):
+    latest = {}
+    for entry in state['batches']:
+        if entry.get('finished_at'):
+            latest[entry['batch']] = entry
+    return latest
+
+
+def update_progress(state):
+    latest = latest_entries(state)
+    state['completed'] = len(latest)
+    state['attempts_completed'] = sum(bool(b.get('finished_at')) for b in state['batches'])
+    state['retry_completed'] = sum(b.get('attempt', 1) == 2 and bool(b.get('finished_at')) for b in state['batches'])
+    state['retry_total'] = len(state.get('retry_plan', []))
+    state['unresolved'] = [{'batch': i, 'position_key': b['position_key'], 'name': b['name'],
+                            'reason': b.get('result', {}).get('blocker') or
+                            '; '.join(x.get('reason', '') for x in b.get('result', {}).get('items', [])) or
+                            'Нет завершённого проверенного результата',
+                            'next_steps': [x.get('next_step') for x in b.get('result', {}).get('items', []) if x.get('next_step')]}
+                           for i, b in latest.items() if needs_retry(b)]
+    state['updated_at'] = time.time()
+
+
+def next_work(state, rows):
+    # First finish every first attempt; only then make one durable retry plan.
+    for index, row in enumerate(rows, 1):
+        first = next((b for b in state['batches'] if b['batch'] == index and b.get('attempt', 1) == 1), None)
+        if not first or not first.get('finished_at'):
+            state['phase'] = 'first_pass'
+            return index, row, 1, first
+    if 'retry_plan' not in state:
+        state['retry_plan'] = [i for i, b in sorted(latest_entries(state).items()) if needs_retry(b)]
+    state['phase'] = 'retry_pass'
+    for index in state['retry_plan']:
+        retry = next((b for b in state['batches'] if b['batch'] == index and b.get('attempt', 1) == 2), None)
+        if not retry or not retry.get('finished_at'):
+            return index, rows[index - 1], 2, retry
+    state['phase'] = 'complete'
+    return None
+
+
+def session_stop_reason(started, last_activity, now, deadline):
+    if now >= deadline - 15:
+        return 'run_deadline'
+    if now - started >= SESSION_SECONDS:
+        return 'session_limit'
+    if now - last_activity >= IDLE_SECONDS:
+        return 'no_activity'
+    return None
+
+
+def activity_fingerprint(batch):
+    return tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None
+                 for p in (batch/'result.json', batch/'approval-audit.jsonl'))
+
+
+def prior_evidence(items):
+    # Never relabel last session's observations as freshly read in this one.
+    copied = json.loads(json.dumps(items))
+    for item in copied:
+        for field in ('offers', 'attempts'):
+            for observation in item.get(field, []):
+                observation['observation'] = 'prior'
+    return copied
 
 
 def prompt_for(batch, row, region):
@@ -109,8 +188,18 @@ set_value проверен на этом Chrome реальным запросо�
 При отказе инструмента или повторном сбое принадлежности окна остановись.
 CAPTCHA, DDoS, 403, TLS — записать причину, не обходить, выбрать другой магазин.
 
-До 4 минут, 24 итерации, 3 поисковых запроса и 3 страницы. Сначала создай
+До 15 минут, 60 итераций, до 5 целевых запросов и 5 страниц. Сначала создай
 result.json со статусом partial, после КАЖДОЙ карточки сразу обновляй его.
+Не откладывай запись: сохрани URL, цитату, единицу и расхождения ДО следующего
+перехода. Доведи проверку хотя бы одного подходящего предложения до результата,
+не трать всё время на новые ссылки. previous-evidence.json может содержать
+предыдущую неудачную попытку ЭТОЙ строки: сначала доработай её конкретные пробелы,
+а не повторяй тот же поиск с нуля. Не ходи повторно по явно недоступным страницам.
+В конце обязательно сохрани итог: completed означает завершённую проверку,
+даже если точной цены нет; partial — если полезная проверка осталась недоделана.
+price_found только при соответствии товара/работы и явной единице, иначе честно
+needs_clarification/spec_mismatch/no_price с конкретным вопросом поставщику.
+Не объявляй цену сопоставимой ради счётчика: это отдельно проверяет сервер.
 Не трать время на вступления. Сохраняй evidence, URL, цену и явную единицу.
 Цена из сниппета — только подсказка. Не выдумывай цену по опыту.
 Для материалов/оборудования проверяй артикул, характеристики, фасовку,
@@ -178,23 +267,26 @@ def main():
     signal.signal(signal.SIGTERM,stop)
     signal.signal(signal.SIGINT,stop)
     try:
-        for index,row in enumerate(rows,1):
-            batch = ROOT/f'batch-{index}'
-            old = next((b for b in state['batches'] if b['batch']==index),None)
-            if old and old.get('finished_at'):
-                continue
+        while True:
+            work = next_work(state, rows)
+            update_progress(state)
+            save(statepath, state)
+            if work is None:
+                break
+            index, row, attempt, old = work
+            batch = ROOT/(f'batch-{index}' if attempt == 1 else f'batch-{index}-attempt-{attempt}')
             if old:
                 # An interrupted process is not silently started again.
                 old.update(finished_at=time.time(),status='interrupted',
                            result=result_or_error(batch,row['position_key']))
-                state['completed']=sum(bool(b.get('finished_at')) for b in state['batches'])
+                update_progress(state)
                 save(statepath,state)
                 continue
-            if (ROOT/'stop-request').exists() or time.time()>state['deadline']-260:
+            if (ROOT/'stop-request').exists() or time.time()>state['deadline']-60:
                 state['status']='stopped' if (ROOT/'stop-request').exists() else 'time_limit'
                 break
             held = lock.operation(LOCK.parent/'state','acquire','commercial')
-            while held['status']=='busy' and not (ROOT/'stop-request').exists() and time.time()<state['deadline']-260:
+            while held['status']=='busy' and not (ROOT/'stop-request').exists() and time.time()<state['deadline']-60:
                 state.update(status='waiting_for_browser',owner=held.get('owner'))
                 save(statepath,state)
                 time.sleep(15)
@@ -203,23 +295,26 @@ def main():
                 state['status']='stopped' if (ROOT/'stop-request').exists() else 'browser_busy'
                 held=None
                 break
-            if (ROOT/'stop-request').exists() or time.time()>state['deadline']-260:
+            if (ROOT/'stop-request').exists() or time.time()>state['deadline']-60:
                 state['status']='stopped'
                 break
-            state.update(status='running',current=index)
+            state.update(status='running',current=index,current_attempt=attempt)
             state.pop('owner',None)
             batch.mkdir(exist_ok=False)
             save(batch/'positions.json',[row])
             previous=[source.get('existing',{}).get(row['position_key'],{})]
+            previous += [dict(item, prior_attempt=b.get('attempt', 1))
+                         for b in state['batches'] if b['position_key']==row['position_key'] and b.get('finished_at')
+                         for item in b.get('result', {}).get('items', [])]
             for run in ('ten-xhigh-1','ten-xhigh-retry-2','ten-xhigh-retry-3'):
                 for path in (BASE/run).glob('batch-*/result.json'):
                     try:
                         previous += [item for item in json.loads(path.read_text()).get('items',[]) if item.get('position_key')==row['position_key']]
                     except (OSError,ValueError):
                         continue
-            save(batch/'previous-evidence.json',previous)
+            save(batch/'previous-evidence.json',prior_evidence(previous))
             (batch/'prompt.txt').write_text(prompt_for(batch,row,source['source']['region']))
-            entry={'batch':index,'position_key':row['position_key'],'name':row['name'],'started_at':time.time()}
+            entry={'batch':index,'attempt':attempt,'position_key':row['position_key'],'name':row['name'],'started_at':time.time()}
             state['batches'].append(entry)
             save(statepath,state)
             try:
@@ -228,16 +323,23 @@ def main():
                                           cwd=batch,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
                     entry['pid']=proc.pid
                     save(statepath,state)
-                    try:
-                        entry['exit_code']=proc.wait(timeout=250)
-                    except subprocess.TimeoutExpired:
-                        entry['timeout']=True
-                        os.killpg(proc.pid,signal.SIGTERM)
-                        try: proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(proc.pid,signal.SIGKILL)
-                            proc.wait()
-                        entry['exit_code']=proc.returncode
+                    last_activity = time.time()
+                    fingerprint = activity_fingerprint(batch)
+                    while proc.poll() is None:
+                        current = activity_fingerprint(batch)
+                        if current != fingerprint:
+                            fingerprint, last_activity = current, time.time()
+                        reason = session_stop_reason(entry['started_at'], last_activity, time.time(), state['deadline'])
+                        if reason:
+                            entry.update(timeout=True, stop_reason=reason)
+                            os.killpg(proc.pid,signal.SIGTERM)
+                            try: proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+                            break
+                        try: proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired: pass
+                    entry['exit_code']=proc.returncode
                     proc=None
                 entry['result']=result_or_error(batch,row['position_key'])
                 entry['links']=observed_links(entry['result'],row['position_key'])
@@ -257,7 +359,7 @@ def main():
                 entry['lock_status']=lock.operation(LOCK.parent/'state','release','commercial',held['ticket'])['status']
                 held=None
                 entry['finished_at']=time.time()
-                state['completed']=sum(bool(b.get('finished_at')) for b in state['batches'])
+                update_progress(state)
                 save(statepath,state)
             if state['status']!='running':
                 break
@@ -271,7 +373,7 @@ def main():
     finally:
         if held and held.get('status')=='acquired':
             lock.operation(LOCK.parent/'state','release','commercial',held['ticket'])
-        state['updated_at']=time.time()
+        update_progress(state)
         if state['status']=='finished':state['finished_at']=time.time()
         save(statepath,state)
         consent.update(expires_at=time.time(),closed=True)

@@ -16,6 +16,68 @@ relay=module('sync_volga_full')
 
 
 class FullRunTests(unittest.TestCase):
+    def test_previous_evidence_is_marked_prior_without_mutating_history(self):
+        items=[{'offers':[{'observation':'current','price_rub':100}],
+                'attempts':[{'observation':'current','url':'https://shop.example'}]}]
+        previous=worker.prior_evidence(items)
+        self.assertEqual(previous[0]['offers'][0]['observation'],'prior')
+        self.assertEqual(previous[0]['attempts'][0]['observation'],'prior')
+        self.assertEqual(items[0]['offers'][0]['observation'],'current')
+
+    def entry(self, index, attempt=1, complete=False):
+        return {'batch':index,'attempt':attempt,'position_key':str(index),'name':str(index),
+                'finished_at':1,'status':'attempted','result':{
+                    'status':'completed' if complete else 'partial','items':[{
+                        'position_key':str(index),'outcome':'price_found' if complete else 'needs_clarification',
+                        'offers':[{'observation':'current','price_rub':100,'unit':'шт','evidence':'100 руб/шт','url':'https://shop.example'}]}]}}
+
+    def test_retry_starts_after_all_first_attempts_and_survives_restart(self):
+        rows=[{'position_key':str(i)} for i in (1,2,3)]
+        state={'batches':[self.entry(1),self.entry(2,complete=True)]}
+        self.assertEqual(worker.next_work(state,rows)[:3],(3,rows[2],1))
+        self.assertNotIn('retry_plan',state)
+        state['batches'].append(self.entry(3))
+        self.assertEqual(worker.next_work(state,rows)[:3],(1,rows[0],2))
+        self.assertEqual(state['retry_plan'],[1,3])
+        state=json.loads(json.dumps(state))
+        state['batches'].append(self.entry(1,2))
+        self.assertEqual(worker.next_work(state,rows)[:3],(3,rows[2],2))
+        state['batches'].append(self.entry(3,2,True))
+        self.assertIsNone(worker.next_work(state,rows))
+        worker.update_progress(state)
+        self.assertEqual(state['completed'],3)
+        self.assertEqual(state['attempts_completed'],5)
+        self.assertEqual(state['retry_completed'],2)
+        self.assertEqual([x['batch'] for x in state['unresolved']],[1])
+
+    def test_timeout_and_prior_prices_are_never_skipped_by_retry(self):
+        entry=self.entry(1,complete=True)
+        entry['status']='timed_out'
+        self.assertTrue(worker.needs_retry(entry))
+        entry['status']='attempted'
+        entry['result']['items'][0]['offers'][0]['observation']='prior'
+        self.assertTrue(worker.needs_retry(entry))
+        self.assertTrue(worker.needs_retry({'result':{'status':'completed','items':[]}}))
+
+    def test_retry_delivery_keeps_legacy_receipts_and_is_repeatable(self):
+        one=self.entry(1)
+        two=self.entry(1,2)
+        for e in (one,two): e['links']=[{'url':'https://shop.example','position_keys':['1']}]
+        source={'source':{'tender_id':'t','region':'r','positions':[{'position_key':'1'}]}}
+        state={'batches':[one,two]}
+        synced={'1':{'run_id':'legacy'}}
+        groups=list(relay.groups(state,source,synced))
+        self.assertEqual(groups[0][0],[two])
+        synced[relay.receipt_key(two)]={'run_id':'retry'}
+        self.assertEqual(list(relay.groups(state,source,synced)),[])
+        self.assertEqual(len(list(relay.groups(state,source,{}))),2)
+
+    def test_watchdog_allows_progress_past_old_cutoff_but_limits_stalls(self):
+        self.assertIsNone(worker.session_stop_reason(100,500,600,5000))
+        self.assertEqual(worker.session_stop_reason(100,200,501,5000),'no_activity')
+        self.assertEqual(worker.session_stop_reason(100,995,1000,5000),'session_limit')
+        self.assertEqual(worker.session_stop_reason(100,195,200,210),'run_deadline')
+
     def test_browser_failure_stops_queue_even_with_prior_offers(self):
         self.assertTrue(worker.browser_unavailable({'items':[
             {'outcome':'browser_error','offers':[{'observation':'prior','url':'https://shop.example'}]}]}))

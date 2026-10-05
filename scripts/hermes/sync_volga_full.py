@@ -14,11 +14,25 @@ def save(path,value):
     tmp.replace(path)
 
 
+def receipt_key(entry):
+    # Preserve existing first-pass receipts; retries have their own delivery identity.
+    key = entry['position_key']
+    return key if entry.get('attempt', 1) == 1 else f"{key}:attempt-{entry['attempt']}"
+
+
 def groups(state,source,synced):
     rows={r['position_key']:r for r in source['source']['positions']}
-    ready=[b for b in state['batches'] if b.get('finished_at') and b['position_key'] not in synced]
-    for offset in range(0,len(ready),10):
-        batch=ready[offset:offset+10]
+    ready=[b for b in state['batches'] if b.get('finished_at') and receipt_key(b) not in synced]
+    batches, batch, keys = [], [], set()
+    for entry in ready:
+        if len(batch) == 10 or entry['position_key'] in keys:
+            batches.append(batch)
+            batch, keys = [], set()
+        batch.append(entry)
+        keys.add(entry['position_key'])
+    if batch:
+        batches.append(batch)
+    for batch in batches:
         wanted=[b for b in batch if b.get('links')]
         payload={'source':{'tender_id':source['source']['tender_id'],'region':source['source']['region'],
                            'positions':[rows[b['position_key']] for b in wanted]},
@@ -44,11 +58,13 @@ def main():
     mac=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=15','mac-mini-hermes']
     server=['ssh','-i',str(args.key),'-o','BatchMode=yes','-o','ConnectTimeout=15','root@193.187.94.165',
             'docker exec -i -w /app -e PYTHONPATH=/app -e BUYER_DISCOVERY_WORKER=0 pmbi-autobot python /app/data/buyer-pilot-evidence/import_volga_observations.py']
-    deadline=sync['started_at']+38*3600
+    deadline=sync.get('deadline',sync['started_at']+38*3600)
     while time.time()<deadline and not (root/'full-tender-sync-stop').exists():
         try:
             result=subprocess.run(mac+['cat '+REMOTE],capture_output=True,text=True,encoding='utf-8',timeout=40,check=True)
             state=json.loads(result.stdout)
+            deadline=state.get('deadline',deadline-7200)+7200
+            sync['deadline']=deadline
             save(root/'full-tender-state.json',state)
             for batch,payload in groups(state,source,sync['synced']):
                 receipt={'reason':'Наблюдаемые URL отсутствуют'}
@@ -56,9 +72,11 @@ def main():
                     result=subprocess.run(server,input=json.dumps(payload,ensure_ascii=False),capture_output=True,
                                           text=True,encoding='utf-8',timeout=100,check=True)
                     receipt=json.loads(result.stdout)
-                for item in batch:sync['synced'][item['position_key']]=receipt
+                for item in batch:sync['synced'][receipt_key(item)]=receipt
                 save(statusfile,sync)
             sync.update(status='synced',updated_at=time.time(),mac_status=state['status'],completed=state['completed'],total=state['total'])
+            sync.update(phase=state.get('phase','first_pass'),retry_completed=state.get('retry_completed',0),
+                        retry_total=state.get('retry_total',0),attempts_completed=state.get('attempts_completed',state['completed']))
             sync.pop('error',None)
             save(statusfile,sync)
             if state['status']=='finished':
