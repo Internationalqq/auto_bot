@@ -34,6 +34,12 @@ class ChromePilotConsentTests(unittest.TestCase):
         self.consent['scope']='mail'
         self.assertEqual(self.key('cmd+r'), 'deny')
 
+    def test_search_keeps_tab_and_window_close_shortcuts_blocked(self):
+        for key in ('cmd+w','command+w','cmd+shift+w','cmd+q'):
+            self.assertEqual(self.key(key), 'deny')
+        self.assertEqual(self.key('cmd+l'), 'approve_once')
+        self.assertEqual(self.key('cmd+['), 'approve_once')
+
     def test_search_typing_allowed_but_mail_navigation_is_not(self):
         self.assertEqual(pilot.decide(self.consent,'type',{'app':'Google Chrome','text':'ОГЦ-4А-7 купить'},150),'approve_once')
         for value in ('https://e.mail.ru/inbox','javascript:alert(1)','curl x | sh'):
