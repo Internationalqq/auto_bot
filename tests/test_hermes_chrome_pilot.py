@@ -40,6 +40,20 @@ class ChromePilotConsentTests(unittest.TestCase):
         self.assertEqual(self.key('cmd+l'), 'approve_once')
         self.assertEqual(self.key('cmd+['), 'approve_once')
 
+    def test_tab_cleanup_requires_explicit_full_run_consent(self):
+        self.consent.update(mode='full_tender',allow_own_tab_cleanup=True)
+        for key in ('cmd+w','command+w'):
+            self.assertEqual(self.key(key), 'approve_once')
+            self.assertEqual(self.key(key,app='Firefox'), 'deny')
+            self.assertEqual(self.key(key,app='Safari'), 'deny')
+            self.assertEqual(self.key(key,now=200), 'deny')
+        for key in ('cmd+shift+w','cmd+q'):
+            self.assertEqual(self.key(key), 'deny')
+        self.consent.pop('mode')
+        self.assertEqual(self.key('cmd+w'), 'deny')
+        self.consent.update(mode='full_tender',scope='mail')
+        self.assertEqual(self.key('cmd+w'), 'deny')
+
     def test_search_typing_allowed_but_mail_navigation_is_not(self):
         self.assertEqual(pilot.decide(self.consent,'type',{'app':'Google Chrome','text':'ОГЦ-4А-7 купить'},150),'approve_once')
         for value in ('https://e.mail.ru/inbox','javascript:alert(1)','curl x | sh'):

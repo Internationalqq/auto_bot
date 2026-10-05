@@ -85,6 +85,8 @@ def decide(consent, action, args, now):
             return 'deny'
     elif action == 'key':
         key = args.get('keys', '').lower().replace('command', 'cmd').replace('control', 'ctrl').replace(' ', '')
+        if key == 'cmd+w':
+            return 'approve_once' if consent.get('mode') == 'full_tender' and consent.get('allow_own_tab_cleanup') is True else 'deny'
         if key not in {'cmd+l', 'cmd+a', 'cmd+t', 'cmd+r', 'cmd+[', 'cmd+]', 'enter', 'return', 'escape', 'tab', 'shift+tab', 'backspace', 'down', 'up', 'pagedown', 'pageup'}:
             return 'deny'
     elif action not in {'click', 'scroll', 'focus_app'}:
