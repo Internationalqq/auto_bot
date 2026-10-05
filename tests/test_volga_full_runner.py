@@ -16,6 +16,14 @@ relay=module('sync_volga_full')
 
 
 class FullRunTests(unittest.TestCase):
+    def test_browser_failure_stops_queue_even_with_prior_offers(self):
+        self.assertTrue(worker.browser_unavailable({'items':[
+            {'outcome':'browser_error','offers':[{'observation':'prior','url':'https://shop.example'}]}]}))
+
+    def test_individual_shop_failure_does_not_stop_queue(self):
+        for outcome in ('site_blocked','not_found','price_found','no_price'):
+            self.assertFalse(worker.browser_unavailable({'items':[{'outcome':outcome}]}))
+
     def test_result_cannot_be_assigned_to_another_position(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
