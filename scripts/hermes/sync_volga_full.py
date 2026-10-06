@@ -44,6 +44,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--directory',type=Path,required=True)
     parser.add_argument('--key',type=Path,required=True)
+    parser.add_argument('--watch',action='store_true',help='Keep relaying while the existing runner waits for recovery')
     args=parser.parse_args()
     root=args.directory.resolve()
     source=json.loads((root/'volga-full-input-20261004.json').read_text(encoding='utf-8'))
@@ -82,7 +83,8 @@ def main():
             if state['status']=='finished':
                 sync['status']='finished';save(statusfile,sync);return
             if state['status'] in ('needs_attention','stopped','interrupted','time_limit'):
-                sync['status']='needs_attention';save(statusfile,sync);return
+                sync['status']='needs_attention';save(statusfile,sync)
+                if not args.watch or state['status'] in ('stopped','time_limit'):return
         except (OSError,ValueError,subprocess.SubprocessError) as exc:
             sync.update(status='retrying',updated_at=time.time(),error=str(exc)[:400])
             save(statusfile,sync)
