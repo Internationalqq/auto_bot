@@ -34,7 +34,7 @@ def test_human_login_does_not_expire_after_thirty_minutes(tmp_path,monkeypatch):
     info={'socket_dir':str(tmp_path),'team_root':str(tmp_path),'session':'human'}
     assert c.run(info,'open',['https://example.com'],True)['success']
     assert seen[0][1]['AGENT_BROWSER_IDLE_TIMEOUT_MS']=='0'
-    assert seen[0][0][seen[0][0].index('--headed')+1]=='true'
+    assert seen[0][0][seen[0][0].index('--headed')+1]=='false'
 
 
 def test_closed_login_window_releases_lease_without_reopening(tmp_path,monkeypatch):
@@ -42,13 +42,15 @@ def test_closed_login_window_releases_lease_without_reopening(tmp_path,monkeypat
     monkeypatch.setattr(c,'BASE',tmp_path)
     monkeypatch.setattr(c.sys,'argv',['control','login','agent'])
     monkeypatch.setattr(c,'attach',lambda info,*a:dict(info,team_root=str(root)))
-    run=Mock(return_value={'success':True});release=Mock()
+    run=Mock(side_effect=[{'success':True},{'success':True},{'success':True,'data':{'port':12345}}]);release=Mock()
     monkeypatch.setattr(c,'run',run)
     monkeypatch.setattr(c,'release',release)
     monkeypatch.setattr(c,'daemon_alive',lambda info:False)
     monkeypatch.setattr(c.time,'sleep',lambda x:None)
     monkeypatch.setattr(c.signal,'signal',lambda *a:None)
     c.main()
-    assert run.call_count==1
-    assert run.call_args.args[1]=='open'
+    assert run.call_count==3
+    assert run.call_args_list[1].args[1]=='open'
+    assert json.loads((root/'status.json').read_text())['headless'] is True
+    assert json.loads((root/'status.json').read_text())['stream_port']==12345
     release.assert_called_once()

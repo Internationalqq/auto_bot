@@ -1,6 +1,7 @@
 """Operator controls for a single agent: inspect, human login, finish login.
 
-No listener or remote debugging port is exposed to the network.
+Manual control uses the bundled loopback-only dashboard and stream.
+Browser processes remain headless, including during human login.
 """
 import argparse
 import json
@@ -17,12 +18,12 @@ sys.path.insert(0, str(BASE / 'hermes-agent'))
 from tools.team_headless import attach, release, write_state
 
 
-def run(info, command, args=(), headed=False):
+def run(info, command, args=(), human=False):
     env = dict(os.environ, AGENT_BROWSER_SOCKET_DIR=info['socket_dir'],
-               AGENT_BROWSER_IDLE_TIMEOUT_MS='0' if headed else '1800000')
+               AGENT_BROWSER_IDLE_TIMEOUT_MS='0' if human else '1800000')
     cmd = [str(BASE/'node/bin/agent-browser'), '--session', info['session'],
            '--profile', str(Path(info['team_root'])/'profile'),
-           '--headed', 'true' if headed else 'false', '--json', command, *args]
+           '--headed', 'false', '--json', command, *args]
     # Daemon inherits descriptors: regular files, not pipes, avoid an EOF hang.
     root = Path(info['team_root'])
     with (root/'operator-output.json').open('w+') as out, (root/'operator-error.log').open('w') as err:
@@ -59,7 +60,7 @@ def main():
         if state.get('status') != 'human_login':
             raise SystemExit('No human login session')
         (root/'finish-login').touch()
-        print('Login window will close; profile will be retained.')
+        print('Manual browser session will close; profile will be retained.')
         return
     if args.action == 'peek':
         state = json.loads((root/'status.json').read_text())
@@ -76,16 +77,19 @@ def main():
     from urllib.parse import urlsplit
     if urlsplit(args.url).scheme != 'https':
         raise SystemExit('Login requires an HTTPS URL')
-    session = 'login_'+uuid.uuid4().hex[:10]
+    session = 'login_'+args.profile+'_'+uuid.uuid4().hex[:8]
     info = attach({'session_name':session}, 'human-login', home, True)
     from tools.browser_tool import _socket_safe_tmpdir
-    socket = Path(_socket_safe_tmpdir())/('agent-browser-'+session)
+    socket = Path(_socket_safe_tmpdir())/'agent-browser-team-manual'
     socket.mkdir(mode=0o700, exist_ok=True)
     state = dict(session=session, team_root=str(root),socket_dir=str(socket),
-                 status='human_login',pid=os.getpid(),updated_at=time.time())
+                 status='human_login',pid=os.getpid(),updated_at=time.time(),headless=True)
     stop = root/'finish-login'
     stop.unlink(missing_ok=True)
     try:
+        dashboard = run(state, 'dashboard', ['start'], True)
+        if not dashboard.get('success'):
+            raise RuntimeError('Manual browser dashboard is unavailable')
         result = run(state,'open',[args.url], True)
         if not result.get('success'):
             # Navigation can exceed the page timeout while the login page is
@@ -94,8 +98,14 @@ def main():
             if not observed.get('success'):
                 raise RuntimeError(result.get('error'))
             state['navigation_warning'] = str(result.get('error'))[:200]
+        stream = run(state, 'stream', ['status'], True)
+        port = (stream.get('data') or {}).get('port')
+        if not stream.get('success') or not isinstance(port, int):
+            raise RuntimeError('Manual browser stream is unavailable')
+        state['stream_port'] = port
+        state['viewer_url'] = f'http://localhost:4848/?port={port}'
         write_state(root,state)
-        print('Human login window ready; no passwords are logged.',flush=True)
+        print('Headless manual session ready: '+state['viewer_url'],flush=True)
         def stop_login(signum, frame):
             raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM,stop_login)
@@ -106,7 +116,7 @@ def main():
                 break
     finally:
         if daemon_alive(state):
-            run(state,'close',headed=True)
+            run(state,'close',human=True)
         release(info)
         stop.unlink(missing_ok=True)
 

@@ -7,6 +7,8 @@ import sys
 import time
 
 BASE=Path('/Users/egor/.hermes')
+OLD_LOGIN_TEXT='окно входа именно этого агента.'
+NEW_LOGIN_TEXT='панель невидимого браузера именно этого агента (headless_control, localhost:4848 на Mac). Не открывай окно браузера на рабочем столе.'
 NOTICE='''
 
 ## 6 октября 2026: отдельный фоновый браузер
@@ -25,7 +27,7 @@ browser_snapshot даёт свежие refs, browser_navigate/click/type/scroll 
 После сбоя неизвестного исхода отправки сначала проверь историю, не повторяй сообщение.
 CAPTCHA, QR/вход, 403, отказ аккаунта не обходить: укажи требуемый вход или точную ошибку.
 Профили новые: при странице входа проси пользователя авторизоваться через подготовленное
-окно входа именно этого агента. Не считай канал без входа проверенным. Не запрашивай
+панель невидимого браузера именно этого агента (headless_control, localhost:4848 на Mac). Не открывай окно браузера на рабочем столе. Не считай канал без входа проверенным. Не запрашивай
 пароли/коды в переписке и не копируй сессии других агентов. Telegram также через рабочий
 Telegram Web; если не подключён, отметь отдельно. Нативный клиент для веб-задач не занимай.
 Никаких новых разрешений на рассылку, покупки, заказы и раскрытие данных этот переход
@@ -43,14 +45,17 @@ if __name__=='__main__':
         target=home/'AGENTS.md'
         if target.exists():shutil.copy2(target,backup/(name+'.md'))
         old=target.read_text() if target.exists() else ''
+        old=old.replace(OLD_LOGIN_TEXT,NEW_LOGIN_TEXT)
         if '## 6 октября 2026: отдельный фоновый браузер' not in old:
-            target.write_text(old+NOTICE)
+            old+=NOTICE
+        target.write_text(old)
     os.environ['HERMES_HOME']=str(BASE/'profiles/gulya')
     sys.path.insert(0,str(BASE/'hermes-agent'))
     from cron.jobs import get_job,update_job
     job=get_job('5d2dbdf7247f')
     (backup/'gulya-job.json').write_text(json.dumps(job,ensure_ascii=False))
-    prompt=job['prompt'] if NOTICE.strip() in job['prompt'] else job['prompt']+NOTICE
+    prompt=job['prompt'].replace(OLD_LOGIN_TEXT,NEW_LOGIN_TEXT)
+    if NOTICE.strip() not in prompt:prompt+=NOTICE
     enabled=[x for x in job.get('enabled_toolsets',[]) if x!='computer_use']
     if 'browser' not in enabled:enabled.append('browser')
     update_job(job['id'],{'prompt':prompt,'enabled_toolsets':enabled})
