@@ -17,9 +17,10 @@ ROOT=BASE/'full-tender-20261004'
 def decision(state, alive, now):
     if now >= state['deadline'] or state.get('status')=='finished':return 'complete'
     if alive:return 'running'
-    if state.get('status') in ('running','starting','waiting_for_browser','interrupted'):return 'preflight'
     batches=state.get('batches',[])
     last=batches[-1] if batches else {}
+    if last.get('stop_reason')=='access_challenge':return 'needs_attention'
+    if state.get('status') in ('running','starting','waiting_for_browser','interrupted'):return 'preflight'
     if state.get('status')=='needs_attention' and last.get('exit_code')==0:
         if any(i.get('outcome')=='browser_error' for i in last.get('result',{}).get('items',[])):
             return 'preflight'

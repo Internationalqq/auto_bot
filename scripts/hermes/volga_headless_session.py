@@ -8,6 +8,15 @@ import sys
 import time
 
 
+def access_challenge(out):
+    """Recognize explicit human checks, not ordinary supplier-page failures."""
+    text = json.dumps(out, ensure_ascii=False).lower()
+    return any(s in text for s in (
+        'google.com/sorry', 'our systems have detected unusual traffic',
+        'verify you are human', 'подтвердите, что вы не робот',
+        'подтвердите, что вы человек', 'с вашей сети поступают необычные запросы'))
+
+
 def viewport_capture(original, task_id, command, args=None, **kwargs):
     """Bound only this run's browser screenshots before native vision encodes them.
 
@@ -74,7 +83,13 @@ def main():
     def audited(task_id, command, args=None, **kwargs):
         if time.time() >= state['deadline']:
             return {'success':False,'error':'Run deadline reached'}
+        if (batch/'access-challenge.json').exists():
+            return {'success':False,'error':'Human verification required. Save current evidence and stop; do not retry or switch browsers.'}
         out=viewport_capture(original,task_id,command,args,**kwargs)
+        if access_challenge(out):
+            (batch/'access-challenge.json').write_text(json.dumps(
+                dict(at=time.time(), reason='human_verification_required', command=command)))
+            out={'success':False,'error':'Human verification required. Save partial result and stop. Do not switch browser/profile or retry the request.'}
         with (batch/'approval-audit.jsonl').open('a') as log:
             log.write(json.dumps(dict(at=time.time(),action=command,backend='headless',
                                      success=out.get('success'),verdict='observed',
