@@ -36,10 +36,16 @@ def main():
             if not buttons:
                 print('Нужен другой способ входа или подтверждение на сайте. Не пытаюсь обойти проверку.')
                 input('После подтверждения нажми Enter для проверки.');continue
-            for i,button in enumerate(buttons):print(f"{i+1}. {button['label']}")
-            choice=input('Номер кнопки (Enter — 1, q — выход): ').strip() or '1'
-            if choice.lower()=='q':return
-            request({'action':'click','token':form['token'],'index':int(choice)-1})
+            # Login-only buttons have already been filtered by the Mac bridge.
+            # The usual single-field flow requires no numbered-menu interaction.
+            if len(buttons)==1:
+                index=0
+            else:
+                for i,button in enumerate(buttons):print(f"{i+1}. {button['label']}")
+                choice=input('Номер кнопки (Enter — 1, q — выход): ').strip() or '1'
+                if choice.lower()=='q':return
+                index=int(choice)-1
+            request({'action':'click','token':form['token'],'index':index})
             time.sleep(1)
         except (RuntimeError,ValueError,IndexError,subprocess.TimeoutExpired) as error:
             print('Шаг не выполнен:',error)
