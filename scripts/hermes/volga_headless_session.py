@@ -3,8 +3,41 @@ import json
 import os
 from pathlib import Path
 import re
+import struct
 import sys
 import time
+
+
+def viewport_capture(original, task_id, command, args=None, **kwargs):
+    """Bound only this run's browser screenshots before native vision encodes them.
+
+    browser_vision otherwise always requests --full, including arbitrarily tall
+    pages. Keep readable viewport pixels; scroll for the rest. If the driver ever
+    ignores viewport mode, return a normal tool error rather than poison the
+    model conversation with an oversized image. Original artifacts are preserved.
+    """
+    if command != 'screenshot':
+        return original(task_id, command, args, **kwargs)
+    capture_args = [a for a in (args or []) if a not in ('--full', '--full-page')]
+    out = original(task_id, command, capture_args, **kwargs)
+    if not out.get('success'):
+        return out
+    try:
+        path = Path(out.get('data', {}).get('path') or capture_args[-1])
+        with path.open('rb') as f:
+            header = f.read(24)
+        if (len(header) != 24 or header[:8] != b'\x89PNG\r\n\x1a\n'
+                or header[12:16] != b'IHDR'):
+            raise ValueError('Expected a PNG browser screenshot')
+        width, height = struct.unpack('>II', header[16:24])
+        if (not width or not height or max(width, height) > 2048
+                or width * height > 3_000_000 or path.stat().st_size > 8_000_000):
+            raise ValueError(f'Viewport image is too large: {width}x{height}')
+    except (OSError, ValueError, IndexError, TypeError) as exc:
+        return {'success':False, 'error':f'Image not sent to model: {exc}. '
+                'Use browser_snapshot and browser_scroll to read the page; '
+                'do not retry a full-page image.'}
+    return dict(out, capture_mode='viewport', image_dimensions=[width, height])
 
 
 def main():
@@ -41,16 +74,23 @@ def main():
     def audited(task_id, command, args=None, **kwargs):
         if time.time() >= state['deadline']:
             return {'success':False,'error':'Run deadline reached'}
-        out=original(task_id,command,args,**kwargs)
+        out=viewport_capture(original,task_id,command,args,**kwargs)
         with (batch/'approval-audit.jsonl').open('a') as log:
             log.write(json.dumps(dict(at=time.time(),action=command,backend='headless',
-                                     success=out.get('success'),verdict='observed'))+'\n')
+                                     success=out.get('success'),verdict='observed',
+                                     capture_mode=out.get('capture_mode'),
+                                     image_dimensions=out.get('image_dimensions')))+'\n')
         return out
     browser._run_browser_command=audited
     (batch/'runtime-model.json').write_text(json.dumps(dict(model=expected['model'],
         reasoning={'effort':expected['reasoning_effort']},browser='local-headless')))
     try:
-        cli.main(query=(batch/'prompt.txt').read_text(),quiet=True,toolsets='volga-headless',max_turns=60)
+        vision_note = ('\nBrowser vision captures only the current viewport, not the whole page. '
+                       'For long price lists use browser_snapshot and browser_scroll, then '
+                       'capture again when needed. A screenshot-size tool error is not a '
+                       'site access denial; continue using text snapshots.\n')
+        cli.main(query=(batch/'prompt.txt').read_text()+vision_note,quiet=True,
+                 toolsets='volga-headless',max_turns=60)
     finally:
         browser.cleanup_all_browsers()
 
