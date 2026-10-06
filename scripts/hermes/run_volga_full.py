@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 
 BASE = Path('/Users/egor/.hermes/profiles/commercial/workspace/volga-chrome-pilot-20261004')
@@ -280,6 +281,8 @@ def main():
     spec = importlib.util.spec_from_file_location('browser_lock', LOCK)
     lock = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(lock)
+    sys.path.insert(0, str(LOCK.parent))
+    from browser_turn_queue import acquire_turn
     statepath = ROOT / 'run-state.json'
     if statepath.exists():
         state = json.loads(statepath.read_text())
@@ -328,12 +331,14 @@ def main():
             if (ROOT/'stop-request').exists() or time.time()>state['deadline']-60:
                 state['status']='stopped' if (ROOT/'stop-request').exists() else 'time_limit'
                 break
-            held = lock.operation(lock_state,'acquire','commercial')
+            held = (lock.operation(lock_state,'acquire','commercial') if headless
+                    else acquire_turn(lock,lock_state,'commercial'))
             while held['status']=='busy' and not (ROOT/'stop-request').exists() and time.time()<state['deadline']-60:
                 state.update(status='waiting_for_browser',owner=held.get('owner'))
                 save(statepath,state)
                 time.sleep(15)
-                held=lock.operation(lock_state,'acquire','commercial')
+                held=(lock.operation(lock_state,'acquire','commercial') if headless
+                      else acquire_turn(lock,lock_state,'commercial'))
             if held['status']!='acquired':
                 state['status']='stopped' if (ROOT/'stop-request').exists() else 'browser_busy'
                 held=None
