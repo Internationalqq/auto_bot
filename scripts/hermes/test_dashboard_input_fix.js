@@ -17,3 +17,15 @@ assert.equal(sent.slice(7).filter(e=>e.eventType==='keyDown').map(e=>e.text).joi
 context.document.activeElement.tagName='INPUT';const count=sent.length;
 listeners.paste({});assert.equal(sent.length,count);
 console.log('PASS: special keys, Cyrillic, paste, dashboard input isolation');
+// Corners, scaled image and letterboxed margins must map to the same page point.
+const point=context.window.__pmViewportPoint;
+for (const size of [[800,450],[800,700],[500,200]]) {
+ const canvas={width:1280,height:720,getBoundingClientRect:()=>({left:35,top:81,width:size[0],height:size[1]})};
+ const scale=Math.min(size[0]/1280,size[1]/720),w=1280*scale,h=720*scale;
+ for(const [x,y] of [[10,10],[640,360],[1260,700]]) {
+  const result=point(canvas,{clientX:35+(size[0]-w)/2+x*scale,clientY:81+(size[1]-h)/2+y*scale},1280,720);
+  assert.ok(Math.abs(result.x-x)<=1 && Math.abs(result.y-y)<=1);
+ }
+ if(size[1]>h)assert.equal(point(canvas,{clientX:36,clientY:82},1280,720),null);
+}
+console.log('PASS: scaled coordinates and ignored letterbox margins');

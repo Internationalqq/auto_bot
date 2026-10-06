@@ -1,5 +1,17 @@
 /* Compatibility fix for agent-browser 0.26: CDP rejects null keyboard fields. */
 (() => {
+  // object-fit:contain may letterbox the bitmap inside the canvas CSS box.
+  window.__pmViewportPoint = (canvas, event, width, height) => {
+    const rect = canvas.getBoundingClientRect();
+    if (!canvas.width || !canvas.height || !rect.width || !rect.height) return null;
+    const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+    const imageWidth = canvas.width * scale, imageHeight = canvas.height * scale;
+    const x = event.clientX - rect.left - (rect.width - imageWidth) / 2;
+    const y = event.clientY - rect.top - (rect.height - imageHeight) / 2;
+    if (x < 0 || y < 0 || x >= imageWidth || y >= imageHeight) return null;
+    return {x: Math.floor(x * width / imageWidth), y: Math.floor(y * height / imageHeight)};
+  };
+
   const originalSend = WebSocket.prototype.send;
   let activeSocket;
   WebSocket.prototype.send = function (payload) {

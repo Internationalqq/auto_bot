@@ -42,14 +42,14 @@ def test_closed_login_window_releases_lease_without_reopening(tmp_path,monkeypat
     monkeypatch.setattr(c,'BASE',tmp_path)
     monkeypatch.setattr(c.sys,'argv',['control','login','agent'])
     monkeypatch.setattr(c,'attach',lambda info,*a:dict(info,team_root=str(root)))
-    run=Mock(side_effect=[{'success':True},{'success':True},{'success':True,'data':{'port':12345}}]);release=Mock()
+    run=Mock(side_effect=[{'success':True},{'success':True},{'success':True},{'success':True,'data':{'port':12345}}]);release=Mock()
     monkeypatch.setattr(c,'run',run)
     monkeypatch.setattr(c,'release',release)
     monkeypatch.setattr(c,'daemon_alive',lambda info:False)
     monkeypatch.setattr(c.time,'sleep',lambda x:None)
     monkeypatch.setattr(c.signal,'signal',lambda *a:None)
     c.main()
-    assert run.call_count==3
+    assert run.call_count==4
     assert run.call_args_list[1].args[1]=='open'
     assert json.loads((root/'status.json').read_text())['headless'] is True
     assert json.loads((root/'status.json').read_text())['stream_port']==12345

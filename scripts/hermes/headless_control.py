@@ -98,6 +98,9 @@ def main():
             if not observed.get('success'):
                 raise RuntimeError(result.get('error'))
             state['navigation_warning'] = str(result.get('error'))[:200]
+        viewport = run(state, 'set', ['viewport', '1280', '720'], True)
+        if not viewport.get('success'):
+            raise RuntimeError('Could not establish the browser viewport')
         stream = run(state, 'stream', ['status'], True)
         port = (stream.get('data') or {}).get('port')
         if not stream.get('success') or not isinstance(port, int):

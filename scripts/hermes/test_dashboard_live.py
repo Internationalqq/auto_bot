@@ -18,6 +18,7 @@ with tempfile.TemporaryDirectory(prefix='ui-',dir='/tmp') as tmp:
   target,viewer=sessions
   target['socket_dir']='/tmp/agent-browser-team-manual'
   call(target,'open',['data:text/html,'+quote('<input id="a" style="position:absolute;left:10px;top:10px;width:200px;height:40px"><input id="b" style="position:absolute;left:10px;top:80px">')])
+  call(target,'set',['viewport','1280','720'])
   port=call(target,'stream',['status'])['port']
   opened=c.run(viewer,'open',[f'http://localhost:4850/?port={port}'],True)
   if not opened['success']:print('NAV',opened,call(viewer,'get',['url']))
