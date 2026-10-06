@@ -19,7 +19,7 @@ from tools.team_headless import attach, release, write_state
 
 def run(info, command, args=(), headed=False):
     env = dict(os.environ, AGENT_BROWSER_SOCKET_DIR=info['socket_dir'],
-               AGENT_BROWSER_IDLE_TIMEOUT_MS='1800000')
+               AGENT_BROWSER_IDLE_TIMEOUT_MS='0' if headed else '1800000')
     cmd = [str(BASE/'node/bin/agent-browser'), '--session', info['session'],
            '--profile', str(Path(info['team_root'])/'profile'),
            '--headed', 'true' if headed else 'false', '--json', command, *args]
@@ -31,6 +31,17 @@ def run(info, command, args=(), headed=False):
         try: result = json.load(out)
         except ValueError: result = {'success': False, 'error': f'CLI exit {p.returncode}'}
     return result
+
+
+def daemon_alive(info):
+    """Inspect process state only; never start a daemon just to check it."""
+    try:
+        pidfile=Path(info['socket_dir'])/(info['session']+'.pid')
+        pid=int(pidfile.read_text().strip())
+        process=subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True)
+        return process.returncode==0 and 'agent-browser' in process.stdout
+    except (OSError,ValueError,KeyError):
+        return False
 
 
 def main():
@@ -55,12 +66,7 @@ def main():
         if state['status'] not in ('ready', 'human_login', 'error'):
             raise SystemExit('No active browser; latest metadata: '+json.dumps(state))
         # Never silently create a replacement session just to inspect it.
-        socket = Path(state.get('socket_dir','/nonexistent'))
-        if not (socket/(state['session']+'.pid')).exists():
-            raise SystemExit('Browser daemon ended; no current screen available')
-        pid = int((socket/(state['session']+'.pid')).read_text().strip())
-        process = subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True)
-        if process.returncode or 'agent-browser' not in process.stdout:
+        if not daemon_alive(state):
             raise SystemExit('Browser daemon ended; stale metadata retained')
         info = dict(state, team_root=str(root))
         output = root/'latest.png'
@@ -95,8 +101,12 @@ def main():
         signal.signal(signal.SIGTERM,stop_login)
         while not stop.exists():
             time.sleep(2)
+            if not daemon_alive(state):
+                print('Login browser ended; releasing this profile.',flush=True)
+                break
     finally:
-        run(state,'close',headed=True)
+        if daemon_alive(state):
+            run(state,'close',headed=True)
         release(info)
         stop.unlink(missing_ok=True)
 
