@@ -15,13 +15,16 @@ ACCOUNTS={
  'avito': {'url':'https://www.avito.ru/','username':'','vault':'pm_work_avito','method':'phone_confirmation'},
  'whatsapp': {'url':'https://web.whatsapp.com/','username':'','method':'qr'},
  'telegram': {'url':'https://web.telegram.org/a/','username':'','method':'qr_or_phone'},
+ 'max': {'url':'https://web.max.ru/','username':'','method':'qr_or_phone'},
 }
 
 def config():
-    if not CONFIG.exists():
-        CONFIG.write_text(json.dumps(ACCOUNTS,ensure_ascii=False,indent=2))
+    existing=json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+    accounts={**ACCOUNTS,**existing}
+    if not CONFIG.exists() or accounts!=existing:
+        CONFIG.write_text(json.dumps(accounts,ensure_ascii=False,indent=2))
         CONFIG.chmod(0o600)
-    return json.loads(CONFIG.read_text())
+    return accounts
 
 def vault(args,password=None):
     result=subprocess.run([str(BASE/'node/bin/agent-browser'),'--json','auth',*args],

@@ -17,12 +17,24 @@ def test_password_goes_only_to_stdin(monkeypatch):
     assert seen[0][1]['input']=='fixture-secret\n'
     assert 'shell' not in seen[0][1]
 
-def test_qr_channel_does_not_ask_for_password(monkeypatch):
+@pytest.mark.parametrize('channel',['whatsapp','telegram','max'])
+def test_qr_channel_does_not_ask_for_password(monkeypatch,channel):
     monkeypatch.setattr(a,'config',lambda:a.ACCOUNTS)
-    monkeypatch.setattr(sys,'argv',['accounts','configure','whatsapp'])
+    monkeypatch.setattr(sys,'argv',['accounts','configure',channel])
     prompt=Mock();monkeypatch.setattr(a.getpass,'getpass',prompt)
     with pytest.raises(SystemExit,match='QR'):a.main()
     prompt.assert_not_called()
+
+def test_registry_adds_channels_without_overwriting_accounts(tmp_path,monkeypatch):
+    path=tmp_path/'accounts.json'
+    existing={'mail':{'username':'kept@example.test','url':'https://mail.ru/'}}
+    path.write_text(json.dumps(existing))
+    monkeypatch.setattr(a,'CONFIG',path)
+    result=a.config()
+    assert result['mail']==existing['mail']
+    assert result['max']['url']=='https://web.max.ru/'
+    assert json.loads(path.read_text())==result
+    assert a.config()==result
 
 def test_saved_password_does_not_claim_logged_in(monkeypatch,capsys):
     monkeypatch.setattr(a,'config',lambda:a.ACCOUNTS)
