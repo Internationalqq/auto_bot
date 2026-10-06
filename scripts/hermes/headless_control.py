@@ -103,7 +103,7 @@ def main():
         if not stream.get('success') or not isinstance(port, int):
             raise RuntimeError('Manual browser stream is unavailable')
         state['stream_port'] = port
-        state['viewer_url'] = f'http://localhost:4848/?port={port}'
+        state['viewer_url'] = f'http://localhost:4850/?port={port}'
         write_state(root,state)
         print('Headless manual session ready: '+state['viewer_url'],flush=True)
         def stop_login(signum, frame):
