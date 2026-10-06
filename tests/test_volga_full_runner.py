@@ -16,6 +16,15 @@ relay=module('sync_volga_full')
 
 
 class FullRunTests(unittest.TestCase):
+    def test_headless_prompt_keeps_evidence_contract_without_gui_steps(self):
+        prompt=worker.headless_prompt(Path('/tmp/batch-122'),{'name':'Кабель','position_key':'cable'},'Ярославская область')
+        self.assertIn('browser_navigate',prompt)
+        self.assertIn('supplier_confirmed',prompt)
+        self.assertIn('price_found только',prompt)
+        self.assertIn('/tmp/batch-122/result.json',prompt.replace('\\','/'))
+        self.assertNotIn('Сначала capture Chrome',prompt)
+        self.assertNotIn('cmd+l',prompt)
+
     def test_previous_evidence_is_marked_prior_without_mutating_history(self):
         items=[{'offers':[{'observation':'current','price_rub':100}],
                 'attempts':[{'observation':'current','url':'https://shop.example'}]}]

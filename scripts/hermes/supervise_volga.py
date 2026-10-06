@@ -58,30 +58,40 @@ def main():
         if action=='running':
             report('running',current=state.get('current'),completed=state.get('completed'))
             time.sleep(30);continue
-        held=operation(Path('/Users/egor/.hermes/team-browser-access/state'),'acquire','commercial')
+        headless=(ROOT/'headless-enabled.json').exists()
+        lock_state=ROOT/'headless-queue-lock' if headless else Path('/Users/egor/.hermes/team-browser-access/state')
+        held=operation(lock_state,'acquire','commercial')
         if held['status']!='acquired':
             report('waiting_for_browser',owner=held.get('owner'));time.sleep(60);continue
         b=None
         try:
-            b=CuaDriverBackend(allowed_apps=['Google Chrome'])
-            b.start()
-            recover_browser(b,'Google Chrome')
+            if headless:
+                from tools import browser_tool
+                try:
+                    check=browser_tool._run_browser_command('volga-preflight','open',['about:blank'])
+                    if not check.get('success'):raise RuntimeError(check.get('error','headless preflight failed'))
+                finally:
+                    browser_tool.cleanup_browser('volga-preflight')
+            else:
+                b=CuaDriverBackend(allowed_apps=['Google Chrome'])
+                b.start()
+                recover_browser(b,'Google Chrome')
         except Exception as e:
             message=str(e)
-            retryable=retryable_window_error(message) or 'cooldown' in message
+            retryable=('agent_browser_busy' in message) if headless else (retryable_window_error(message) or 'cooldown' in message)
             report('waiting_for_browser' if retryable else 'needs_attention',reason=message[:500])
             if not retryable:return
         else:
             # Recheck after recovery; never start a second runner/child.
             procs=subprocess.check_output(['ps','-axo','command'],text=True)
-            if not any('run_volga_full.py' in x or 'ivan_pilot_session.py' in x for x in procs.splitlines()):
+            if not any('run_volga_full.py' in x or 'ivan_pilot_session.py' in x or 'volga_headless_session.py' in x for x in procs.splitlines()):
                 with (ROOT/'supervised-runner.log').open('a') as log:
                     p=subprocess.Popen([sys.executable,str(BASE/'run_volga_full.py')],cwd=BASE,
                         stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
                 report('resumed',runner_pid=p.pid,completed=state.get('completed'))
         finally:
             if b:b.stop()
-            operation(Path('/Users/egor/.hermes/team-browser-access/state'),'release','commercial',held['ticket'])
+            operation(lock_state,'release','commercial',held['ticket'])
         time.sleep(30)
 
 
