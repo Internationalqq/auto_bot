@@ -96,6 +96,14 @@ class ChromePilotConsentTests(unittest.TestCase):
             self.assertEqual(self.key(key),'deny')
 
 class ChromeOverlayTests(unittest.TestCase):
+    def test_ai_omnibox_editor_keeps_own_window_and_snapshot(self):
+        self.states[1]['structuredContent']['elements'].append(
+            {'role':'AXTextArea','label':'Задайте вопрос','token':'popup-question'})
+        selected, state = pilot.select_chrome_content(self.windows, self.select)
+        self.assertEqual(selected['window_id'], 1)
+        self.assertIs(state, self.states[1])
+        self.assertEqual(state['structuredContent']['elements'][-1]['token'], 'popup-question')
+
     def test_pixel_focus_uses_exact_window_and_never_rewrites_ax_clicks(self):
         args={'pid':10,'window_id':3,'x':500,'y':400,'button':'left'}
         routed=pilot.chrome_pointer_args('click',args)
