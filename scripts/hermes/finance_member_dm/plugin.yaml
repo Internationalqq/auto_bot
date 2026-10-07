@@ -1,0 +1,5 @@
+name: finance-member-dm
+version: 1.0.0
+description: Verify Anya finance group membership before admitting private chat turns.
+hooks:
+  - pre_gateway_dispatch
