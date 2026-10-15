@@ -22,7 +22,8 @@ class ParseLimits:
     total_bytes: int = 512 * 1024 * 1024
     sheets: int = 100
     sheet_rows: int = 50_000
-    columns: int = 256
+    # Current Grand-Smeta RIM exports use A:JV (282 columns), including layout.
+    columns: int = 512
     cells: int = 2_000_000
     pdf_pages: int = 250
     page_pixels: int = 25_000_000

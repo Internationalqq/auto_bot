@@ -8,6 +8,23 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+
+def test_current_rim_layout_keeps_far_right_values_and_still_bounds_width(tmp_path):
+    import openpyxl
+    from autobot import estimate_parse_worker as worker
+    source = tmp_path / 'rim-wide.xlsx'
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.cell(1, 1, 'Позиция')
+    sheet.cell(1, 282, 'Последняя колонка РИМ')
+    book.save(source)
+    frame = next(iter(worker.read_excel_bounded(source, worker.ParseLimits()).values()))
+    assert frame.iloc[0, 281] == 'Последняя колонка РИМ'
+    sheet.cell(1, 513, 'За пределом безопасного формата')
+    book.save(source)
+    with pytest.raises(worker.EstimateParseRejected, match='лимит'):
+        worker.read_excel_bounded(source, worker.ParseLimits())
+
 from autobot import main, estimate_parse_worker as worker, estimate_publication as publication
 
 
