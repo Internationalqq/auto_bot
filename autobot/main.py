@@ -1314,10 +1314,15 @@ def is_pdf_file(path: Path) -> bool:
 
 def select_estimate_pdf_files(paths: list[Path]) -> list[Path]:
     """Берёт ЛСР из выборки для торгов; полный комплект ПСД служит резервом."""
-    existing = [p for p in paths if p.exists() and is_pdf_file(p)]
+    def estimate_named(path):
+        return any(marker in path.name.casefold() for marker in ('лср', 'локальн', 'смет'))
+
+    # Visual design sheets are retained as sources, but are not an OCR estimate.
+    existing = [p for p in paths if p.exists() and is_pdf_file(p)
+                and (estimate_named(p) or not re.search(r'дизайн[\s_-]*проект|визуализац', p.name, re.I))]
     named = [
         p for p in existing
-        if any(marker in p.name.casefold() for marker in ("лср", "локальн", "смет"))
+        if estimate_named(p)
     ]
     trade_selection = [p for p in named if "выборк" in p.as_posix().casefold()]
     candidates = trade_selection or named or existing

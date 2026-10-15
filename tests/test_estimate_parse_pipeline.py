@@ -25,6 +25,20 @@ def test_current_rim_layout_keeps_far_right_values_and_still_bounds_width(tmp_pa
     with pytest.raises(worker.EstimateParseRejected, match='лимит'):
         worker.read_excel_bounded(source, worker.ParseLimits())
 
+
+def test_design_pdf_is_retained_but_not_selected_for_estimate_ocr(tmp_path):
+    from autobot.main import select_estimate_pdf_files
+    design = tmp_path / 'А3 Новоалександровск 2026 (Дизайн-проект).pdf'
+    design.write_bytes(b'visual design source')
+    generic = tmp_path / 'Документ.pdf'
+    generic.write_bytes(b'possible unnamed estimate')
+    estimate = tmp_path / 'ЛСР дизайн-проекта.pdf'
+    estimate.write_bytes(b'named estimate takes precedence')
+    assert select_estimate_pdf_files([design]) == []
+    assert select_estimate_pdf_files([design, generic]) == [generic]
+    assert select_estimate_pdf_files([design, generic, estimate]) == [estimate]
+    assert design.read_bytes() == b'visual design source'
+
 from autobot import main, estimate_parse_worker as worker, estimate_publication as publication
 
 
